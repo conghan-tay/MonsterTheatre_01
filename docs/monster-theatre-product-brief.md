@@ -12,14 +12,17 @@ Randomness in dialogue and delivery is part of the experience. Turn order, votin
 
 ## Actors
 
-- **Director:** Creates and publishes a room, shares its audience link, starts or stops the performance, and inspects saved artifacts through the S3 console.
+- **Director:** Creates and publishes a room, shares its audience link, starts the performance, and inspects saved artifacts through the S3 console.
 - **Audience member:** Enters through the shared link, listens, and votes on dialogue choices.
 - **Demo operator:** Inspects Flink processing and recovery, and queries structured performance data. The director may also fill this role.
 
 ## First-milestone scope
 
 - Access is limited to the director and a small group of invited demo users.
+- The first working milestone is an AWS-hosted demo reachable by invited users through the shared link. Temporal Cloud manages the automatic workflow; Go workers run on AWS.
 - One active performance at a time, with up to ten audience members.
+- One performance per room. Another performance requires a new room and audience link, including after a failed run.
+- After the initial Start, the flow proceeds automatically. There are no Stop or manual retry controls.
 - Two uploaded character images, two character names, and two hardcoded voices. Optional short character briefs.
 - A short scene topic, optional scene description, and optional genre.
 - Eight alternating speaking turns: four per character, beginning with Character A.
@@ -63,14 +66,14 @@ The final premiere uses the recorded audio from the individual turns. It does no
 
 ## Prioritized functional requirements
 
-### 1. Create, publish, and control a room
+### 1. Create, publish, and start a room
 
-**A director should be able to create a room with two characters and scene context, publish an audience link, and start or stop its performance.**
+**A director should be able to create a room with two characters and scene context, publish an audience link, and start its automatic performance.**
 
 - **Trigger and outcome:** The director submits valid setup, publishes, then starts; audience members can enter the waiting room and follow the performance.
-- **Validation and authorization:** Require character images and names, validate supported image formats and size limits, and bound text inputs. Only the director can edit, publish, start, or stop. Audience links grant viewing and voting access only. Prevent duplicate starts.
+- **Validation and authorization:** Require character images and names, validate supported image formats and size limits, and bound text inputs. Only the director can edit, publish, or start. Audience links grant viewing and voting access only. Prevent duplicate starts and a second performance in the same room.
 - **State:** Create a room and character assets; starting creates a performance with an immutable setup snapshot.
-- **Visible failures:** Explain invalid uploads or inputs. Reject unauthorized controls and conflicting starts. Show a stopped performance explicitly rather than treating it as successfully completed.
+- **Visible failures:** Explain invalid uploads or inputs. Reject unauthorized actions and conflicting starts. Show an unrecoverable failed performance explicitly rather than treating it as successfully completed.
 
 ### 2. Choose and hear each turn
 
@@ -79,7 +82,7 @@ The final premiere uses the recorded audio from the individual turns. It does no
 - **Trigger and outcome:** A voting round opens after valid choices are ready; eligible votes produce one committed winner, followed by tagged synthesis and playback.
 - **Validation and authorization:** One vote per audience session per turn. Server receipt time determines eligibility. Reject invalid choices and votes received after the deadline. Retried submissions must not add votes.
 - **State:** Save choices, accepted votes, tally, winner, original/tagged text, synthesis attempts, and turn audio. The winner becomes immutable before synthesis starts.
-- **Visible failures:** Reject late votes clearly. Show **Counting votes…** if processing is behind. Preserve the winner and pause the turn on synthesis failure; the director can retry without reopening voting.
+- **Visible failures:** Reject late votes clearly. Show **Counting votes…** if processing is behind. Preserve the winner on synthesis failure and retry automatically within bounded limits without reopening voting. Show recovery status; if recovery is exhausted, retain partial artifacts and mark the run failed.
 
 Voting defaults:
 
@@ -97,7 +100,7 @@ Voting defaults:
 - **Trigger and outcome:** All turns finish and the assembled playback is ready; the room plays the complete performance. The director later uses the S3 console to locate/download its artifacts.
 - **Validation and authorization:** Require all completed turn recordings before the premiere countdown. S3 access is restricted to the operator; sharing a room does not grant bucket access.
 - **State:** Save the complete audio and a manifest linking the performance, character assets, ordered turns, and timing. Mark completion explicitly.
-- **Visible failures:** Show preparation or retry status if assembly/storage fails. Mark partial performances as incomplete; never present missing audio as a successful full recording.
+- **Visible failures:** Show preparation or automatic-retry status if assembly/storage fails. Mark unrecoverable partial performances as failed/incomplete; never present missing audio as a successful full recording.
 
 ## Flink and S3 responsibilities
 
@@ -131,7 +134,7 @@ These are first-milestone acceptance targets, to validate against actual provide
 - **Latency:** Vote acknowledgement p95 under 300 ms; winner committed within one second of window closure under normal operation; first audible output p95 under two seconds after submitting/flushing a tagged turn. Measure choice-generation and tag-enhancement time separately.
 - **Ordering and consistency:** One active turn and voting round per performance, one committed winner per round, strict speaker order, and no automatic return to a completed round. Client reconnects receive current room state.
 - **Durability and recovery:** Acknowledged votes and committed choices survive a worker restart. Keep completed turn audio for exact replay. Target Flink recovery within 60 seconds and finalized lake records within 60 seconds of performance completion under normal operation.
-- **Degradation:** Pause voting-result progression while Flink cannot finalize a round. Already available audio can continue playing. On speech-provider failure, retain the chosen line and offer an explicit retry. Dashboard-free lake inspection may lag behind live playback.
+- **Degradation:** Pause voting-result progression while Flink cannot finalize a round and resume automatically after recovery. Already available audio can continue playing. On speech-provider failure, retain the chosen line and retry automatically within bounded limits. Expose recovery/failure status without manual performance controls. Dashboard-free lake inspection may lag behind live playback.
 - **Security:** Director authentication, audience access through a room link, server-side provider keys, private encrypted S3 objects, and limits on uploads, text, room starts, and synthesis retries.
 - **Retention:** Use synthetic demo content; retain performance assets and event data for seven days by default, with a manual preservation option for selected demo runs. Expiration includes associated media and structured records.
 - **Environment:** Desktop browsers first. Activate the audio player during Enter theatre or director Start, retain a playback-blocked fallback, and do not depend on every browser finishing in lockstep.
@@ -156,7 +159,7 @@ Deferred: variable turn counts, voice selection, microphone input, animation, au
 
 Future animation should begin as offline processing of saved assets, potentially with individual character shots. InfiniteTalk supports image-and-audio inputs, but arbitrary monster portraits and a combined two-character scene require separate validation. The MVP does not promise animation compatibility.
 
-Technical design will settle the durable event source, vote-finalization contract, client synchronization, exact providers/model IDs, concrete length limits, audio assembly, lake query tooling, and deployment setup. These choices do not change the product concept.
+Technical design will settle the durable event source, vote-finalization contract, client synchronization, exact providers/model IDs, concrete length limits, automatic-retry budgets and recovery deadlines, audio assembly, lake query tooling, and deployment setup. These choices do not change the product concept.
 
 ## Reference documentation
 

@@ -1,0 +1,30 @@
+# Secrets — never commit API keys
+.env
+.env.*
+!.env.example
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Python bytecode / build artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+build/
+dist/
+
+# Generated audio output
+*.mp3
+*.wav
+
+# Editor / OS cruft
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Claude Code local overrides
+.claude/settings.local.json

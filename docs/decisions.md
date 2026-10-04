@@ -54,9 +54,9 @@ Only explicit product-brief decisions or later user agreements are accepted. Pro
 
 **Decision:** Give these concepts separate durable identities and authorities.
 
-**Context / requirement:** A shareable room has mutable setup; Start freezes a run; voting commits once; failed speech can retry without changing dialogue.
+**Context / requirement:** A shareable room has immutable setup; Start creates its run; voting commits once; failed speech can retry without changing dialogue.
 
-**Chosen approach:** Use the proposed core-entity model in [system design](system-design.md). Treat choices and committed selection as round-owned data, metrics as derived data, and browser connection state as separate from audience identity.
+**Chosen approach:** Use the proposed core-entity model in [system design](system-design.md). Room owns scene and character components, fixed through create-and-publish (D013/D014). Treat choices and committed selection as round-owned data, metrics as derived data, and browser connection state as separate from audience identity.
 
 **Why it fits:** Expresses the product's retry, reconnect, snapshot, and replay rules without conflating their lifecycles.
 
@@ -124,7 +124,7 @@ Only explicit product-brief decisions or later user agreements are accepted. Pro
 
 **Context / requirement:** Eight repeated generation/vote/speech stages, external result waits, playback timers, retries, and restart recovery must proceed without director intervention.
 
-**Chosen approach:** One stable workflow ID per performance. Deterministic Go workflow code sequences activities and durable timers. Activities use PostgreSQL-backed idempotency and conditional commits around provider/storage work. Pass media references through workflow history, not bytes.
+**Chosen approach:** One stable workflow ID per performance, separate from the room setup workflow added in D014. Deterministic Go workflow code sequences activities and durable timers. Activities use PostgreSQL-backed idempotency and conditional commits around provider/storage work. Pass media references through workflow history, not bytes.
 
 **Why it fits:** Matches the user's preferred durable-workflow stack without operating a Temporal cluster.
 
@@ -181,3 +181,35 @@ Only explicit product-brief decisions or later user agreements are accepted. Pro
 **Tradeoffs and consequences:** Higher bandwidth, a custom browser PCM player, and possible repetition of partial lines after recovery. Real-provider/browser tests must confirm model/output access and the first-audio target.
 
 **Status:** proposed.
+
+## D013 — Room owns immutable scene and character context
+
+**Decision:** Characters A/B and scene context are components of Room, not independent character resources.
+
+**Context / requirement:** Every room has exactly two characters; the director supplies all context once, and dialogue generation needs to retrieve it together.
+
+**Chosen approach:** Room owns scene topic/description/genre and character slots A/B with names, briefs, fixed voices, and S3 portrait references. No global character IDs, separate lifecycles, or character CRUD APIs. GetRoom returns all static setup; generation adds selected performance dialogue, current speaker/beat, and remaining turns. Context is immutable when creation/publication succeeds; Start uses the already fixed setup.
+
+**Why it fits:** Ownership and retrieval match the product's single-room setup. Portrait bytes remain media artifacts without creating independent character management.
+
+**Alternatives considered:** Independently managed characters or setup editing until Start; neither is needed for this milestone.
+
+**Tradeoffs and consequences:** Any context/portrait change requires a new room. Database embedding versus room-owned child tables does not change the resource boundary. Saved performance artifacts include the room context for standalone inspection.
+
+**Status:** accepted — user discussion and explicit request to update the docs on 2026-10-04.
+
+## D014 — Single create-and-publish request with Temporal setup compensation
+
+**Decision:** One complete request creates and publishes immutable Room setup and returns its shareable link; the director then has Start.
+
+**Context / requirement:** The director wants a single simple setup submission containing scene context, both characters, and both portraits, with no revision/edit stage. PostgreSQL and S3 writes can fail independently.
+
+**Chosen approach:** Accept one authenticated multipart POST with JSON context, portraits A/B, and an idempotency key. Validate complete input and stage portrait bytes privately in S3. Durably hand off a stable creation identity and object references to a separate Temporal setup workflow. Its activities create an internal provisioning Room, copy portraits to deterministic room-owned keys, then atomically commit ready/published state and one audience-link token. Return the ready room ID and link from the creation request. Clean staging afterward. Remove separate room edit, portrait upload/replacement, and publication APIs.
+
+**Why it fits:** Gives the director one form submission and a link/Start result while preserving recoverable cross-store provisioning. Temporal inputs contain references rather than raw image payloads.
+
+**Alternatives considered:** Editable drafts plus separate upload/publication calls, or synchronous setup with best-effort cleanup; the agreed flow uses durable setup recovery and compensating actions.
+
+**Tradeoffs and consequences:** Staging/copy adds S3 operations and internal provisioning state, not a user-editable draft. Reuse creation/workflow/object identities across retries; different input with the same key conflicts. Before readiness, definitive setup failure marks provisioning failed and compensates owned objects, with cleanup retries/reconciliation. Reconcile ambiguous publication before deletion. After readiness, lost HTTP responses, staging-cleanup failures, and later performance failures must not roll back the Room. A retried submission returns the original link; setup changes require a new room. Exact wait/retry/expiry budgets remain open design parameters.
+
+**Status:** accepted — user approved the discussed setup flow and requested the documentation update on 2026-10-04.

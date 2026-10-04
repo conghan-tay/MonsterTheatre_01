@@ -12,7 +12,7 @@ Randomness in dialogue and delivery is part of the experience. Turn order, votin
 
 ## Actors
 
-- **Director:** Creates and publishes a room, shares its audience link, starts the performance, and inspects saved artifacts through the S3 console.
+- **Director:** Submits complete room setup once, receives and shares its audience link, starts the performance, and inspects saved artifacts through the S3 console.
 - **Audience member:** Enters through the shared link, listens, and votes on dialogue choices.
 - **Demo operator:** Inspects Flink processing and recovery, and queries structured performance data. The director may also fill this role.
 
@@ -22,6 +22,8 @@ Randomness in dialogue and delivery is part of the experience. Turn order, votin
 - The first working milestone is an AWS-hosted demo reachable by invited users through the shared link. Temporal Cloud manages the automatic workflow; Go workers run on AWS.
 - One active performance at a time, with up to ten audience members.
 - One performance per room. Another performance requires a new room and audience link, including after a failed run.
+- One setup submission creates and publishes the room with all scene context, both character contexts, and both portraits. The director then sees the shareable link and a Start button. Setup cannot be edited or revised; any change requires a new room.
+- Scene context and characters A/B belong to the Room resource. Characters have no independent resource lifecycle or management APIs.
 - After the initial Start, the flow proceeds automatically. There are no Stop or manual retry controls.
 - Two uploaded character images, two character names, and two hardcoded voices. Optional short character briefs.
 - A short scene topic, optional scene description, and optional genre.
@@ -33,10 +35,10 @@ Randomness in dialogue and delivery is part of the experience. Turn order, votin
 
 ## Audience and director journey
 
-1. The director creates a room, uploads two images, names the characters, and supplies the scene context.
-2. The director publishes the room and shares its audience link.
+1. The director completes a single setup form with scene context, both character names/briefs, and two portraits, then submits everything in one request to create and publish the room.
+2. Once setup succeeds, the director sees the shareable audience link and a **Start** button, and shares the link. The room setup is already immutable; changes require a new room.
 3. Each audience member clicks **Enter theatre**. This joins the room and activates audio playback in that browser. If playback remains blocked, show **Tap to hear audio**.
-4. The director clicks **Start**. Character and scene settings are frozen for this performance.
+4. The director clicks **Start**. The automatic performance begins using the room's already fixed character and scene settings.
 5. The AI generates three choices for the scheduled character and story beat, using the selected dialogue so far.
 6. Once the choices are ready, the server opens a ten-second voting window.
 7. Flink computes the result; the application commits one winner.
@@ -66,14 +68,14 @@ The final premiere uses the recorded audio from the individual turns. It does no
 
 ## Prioritized functional requirements
 
-### 1. Create, publish, and start a room
+### 1. Create and publish a room in one submission, then start
 
-**A director should be able to create a room with two characters and scene context, publish an audience link, and start its automatic performance.**
+**A director should be able to submit complete scene context, both characters, and both portraits in one request, receive a published room's audience link, and start its automatic performance.**
 
-- **Trigger and outcome:** The director submits valid setup, publishes, then starts; audience members can enter the waiting room and follow the performance.
-- **Validation and authorization:** Require character images and names, validate supported image formats and size limits, and bound text inputs. Only the director can edit, publish, or start. Audience links grant viewing and voting access only. Prevent duplicate starts and a second performance in the same room.
-- **State:** Create a room and character assets; starting creates a performance with an immutable setup snapshot.
-- **Visible failures:** Explain invalid uploads or inputs. Reject unauthorized actions and conflicting starts. Show an unrecoverable failed performance explicitly rather than treating it as successfully completed.
+- **Trigger and outcome:** The director submits valid complete setup once; the backend saves the room and portraits and returns the shareable link. Present the link and Start button after successful creation. Audience members can enter the waiting room before the director starts.
+- **Validation and authorization:** Require both character images and names and a scene topic, validate supported image formats and size limits, and bound text inputs. Only an authenticated director can create or start its room. Setup has no edit/revision operation or separate publication step. Audience links grant viewing and voting access only. Prevent duplicate creation on retried submissions, duplicate starts, and a second performance in the same room.
+- **State:** Room owns immutable scene context and both character components, identified by slots A/B, with references to their private S3 portraits. Internal provisioning must complete before the room is shareable or startable. Start creates a performance referencing the already fixed room setup; saved artifacts include that context for inspection.
+- **Visible failures:** Explain invalid uploads or inputs and failed setup. Do not show a shareable link or enabled Start for incomplete provisioning. A retried submission can recover its existing creation result after a lost response. Reject unauthorized actions and conflicting starts. Show an unrecoverable failed performance explicitly rather than treating it as successfully completed.
 
 ### 2. Choose and hear each turn
 

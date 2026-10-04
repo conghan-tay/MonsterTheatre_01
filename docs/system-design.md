@@ -1,6 +1,6 @@
 # Monster Theatre — System Design
 
-Status: Design in progress. Requirements, room-owned characters, one create-and-publish request with immutable setup, Temporal setup recovery/compensation, one performance per room, automatic progression without Stop controls, an AWS-hosted milestone, and Temporal Cloud with Go workflows are agreed with the user. Remaining entities, interfaces, business data flows, and the high-level architecture below are a design draft. Deep dives and final design sign-off remain outstanding.
+Status: Design in progress. Requirements, room-owned characters, immutable create-and-publish, Temporal setup compensation, one Performance resource with nested components and hybrid milestone snapshots, one performance per room, automatic progression without Stop controls, an AWS-hosted milestone, and Temporal Cloud with Go workflows are agreed with the user. Remaining interfaces, business data flows, and the high-level architecture below are a design draft. Deep dives and final design sign-off remain outstanding.
 
 Source of truth: [Product brief](monster-theatre-product-brief.md). Significant choices are recorded in [Decisions](decisions.md).
 
@@ -25,6 +25,8 @@ The director can also act as the demo operator. Operator bucket access is separa
 - After the initial director Start, progression and bounded retries are automatic; there are no Stop or manual retry controls.
 - The first working milestone is reachable remotely on AWS. Temporal Cloud manages durable workflow execution, with Go workers hosted on AWS.
 - Room owns two character components, identified only within the room as slots A and B, each with an uploaded portrait reference, name, optional brief, and a hardcoded voice. Portrait bytes remain S3 media assets.
+- Performance owns eight turn components; each turn contains its one voting round and synthesis-attempt summaries. Turns, rounds, votes, and attempts have no independent CRUD resource APIs.
+- Use the agreed hybrid model: Temporal owns internal execution progress and working context; PostgreSQL owns published milestone snapshots, accepted vote truth, and immutable winner commitments. Persist accepted votes in a separate ledger without rewriting the whole Performance snapshot on every vote.
 - Eight alternating turns, beginning with A's introduction and ending with B's EXPLAIN + PUNCHLINE. Middle beats are REACT or QUESTION.
 - Three distinct dialogue choices and a ten-second voting window for each turn. Generation finishes before the window opens.
 - One accepted vote per audience session per turn. Reconnection retains the same identity. Late joiners observe the current phase and become eligible at the next round opening.
@@ -64,26 +66,62 @@ These are validation targets, not verified provider or deployment guarantees.
 - At least eleven binary media artifacts are referenced by a normal completed run: two portraits, eight turn recordings, and one assembled recording. Scripts and manifests are additional artifacts. Cross-room asset sharing is unnecessary for this milestone.
 - There are ten audience listeners plus the director. Stream bandwidth, recording sizes, and storage retention footprint are deferred to the audio/media deep dive, where codecs, duration limits, upload limits, and expected runs per day can inform the estimates.
 
-## 2. Proposed core entities
+## 2. Core resources and durable records
 
-Authority here means ownership of business truth, not a selected service or database. Physical storage, schemas, and transport choices come later.
+The resource boundaries for Room and Performance are agreed. This table also names durable inspection/admission records; naming a record does not require an independent CRUD resource or table for every concept. Detailed schemas and remaining transport choices come later.
 
 | Entity | Stable identity / owner | Responsibility and relationships | Lifecycle | Authority |
 | --- | --- | --- | --- | --- |
 | Director identity | Authenticated director ID | Owns rooms and is authorized for complete setup submission and Start. Authentication mechanism remains open. | Managed by the chosen authentication mechanism | Authentication establishes identity; application enforces resource ownership |
 | Room | Room ID; director ID | Shareable theatre owning immutable scene context, character components A/B and portrait references, audience memberships, and zero or one performance reference | Internal provisioning → ready/published or provisioning failed; no setup edits and no second run | Application for context/state; S3 for portrait bytes |
 | Audience session | Session ID; scoped room membership | Anonymous voting identity restored on reconnect. Presence and connection state are distinct from identity. | Joined → disconnected/reconnected; session expiry to be specified | Application |
-| Performance | Performance ID; room ID and director ID | One automatic run with immutable setup, ordered turns, current phase, room playback timeline, and artifact references | Running → preparing premiere → countdown → premiering → completed; unrecoverable error from any nonterminal phase → failed | Application |
-| Turn | Turn ID; performance ID + ordinal 1–8 | Scheduled speaker/beat, one round, committed dialogue, tagged text, synthesis attempts, selected recording, playback progress | Generating choices → voting → counting → enhancing tags → synthesizing/playing → completed; failures pause the current stage | Application; room timeline determines completion, not listener acknowledgements |
-| Voting round | Round ID; exactly one per turn | Three stable choice IDs and texts, opening/deadline, eligibility membership, tally and committed selection | Preparing → open → counting → committed; performance failure before commitment → cancelled | Application owns boundaries/commitment; Flink derives tally |
-| Accepted vote | Vote ID; round ID + audience session ID | One durable eligible choice selection with authoritative receipt time. Duplicate/late/invalid submissions are separate inspection events, not extra votes. | Accepted → included in the finalized tally; cannot be changed into a second vote | Application owns acceptance; Flink deduplicates replay and tallies |
-| Synthesis attempt | Attempt ID; turn ID + attempt number | Records tagged input, provider/model/voice used, progress, error, and any associated partial or completed audio | Requested → streaming → succeeded or failed; retries have new attempt IDs | Application records attempts; provider supplies speech bytes |
+| Performance | Performance ID; room ID and director ID | One automatic run owning eight nested turns, their voting fields, synthesis-attempt summaries, current published phase, room playback timeline, and artifact references | Running → preparing premiere → countdown → premiering → completed; unrecoverable error from any nonterminal phase → failed | PostgreSQL for published business milestones; Temporal for internal execution |
+| Accepted vote ledger record | Vote ID; scoped performance/turn and audience session ID | One durable eligible choice selection with authoritative receipt time. Owned by Performance, stored outside its snapshot; duplicate/late/invalid submissions are inspection events, not extra votes. | Accepted → included in the finalized tally; cannot be changed into a second vote | Application owns acceptance; Flink deduplicates replay and tallies |
 | Media artifact | Artifact ID; linked room/performance/turn/attempt as appropriate | Portrait, turn audio, full audio, script/decisions, or manifest. Stores object reference, readiness/completeness, and preservation/expiry metadata. | Pending → ready or failed/partial → expired, subject to preservation | Application for metadata and readiness; S3 for object bytes |
 | Performance event | Event ID + schema version; room/performance/turn IDs where applicable | Durable replayable facts about votes, rounds, turns, synthesis, and playback; references artifacts without embedding media | Durably recorded → replayed/processed → included in finalized lake output | Originating application facts; Flink processing and lake projections are derived |
 
 Dialogue choices belong to the round and do not need an independent lifecycle. The immutable selection belongs to that same round, including counts, chosen ID, and majority/tie/no-vote reason. Selected dialogue alone becomes story history.
 
 Lake metrics are derived records, not a second authority for live room state. Their calculations and query contracts will be defined during the Flink/data-lake design.
+
+### Performance-owned components
+
+```text
+Performance
+├── Room reference, published phase, playback timeline, final artifact references
+└── Turns 1–8
+    ├── Speaker, story beat, selected dialogue, tagged text, recording reference
+    ├── Voting: three choices, eligibility, opening/deadline, closure, tally, winner
+    └── Synthesis-attempt summaries: attempt identity, status, timings, artifact references
+```
+
+Turn number identifies a component within its performance. Each turn has exactly one voting round, so the round is a group of fields within the turn rather than an independently managed resource. Attempts likewise belong to their turn. Keep stable scoped turn/round/attempt identifiers for event correlation, idempotency, and audio delivery; those identifiers do not imply separate REST resources.
+
+Persist one bounded Performance snapshot containing its nested turn data and committed tallies. Enrich the authorized response with the viewer's receipt from the separate ledger, which enforces uniqueness by performance/turn/session. Do not persist a viewer-specific receipt into the shared snapshot, rewrite it for each accepted vote, or expose other audience members' receipts/identities.
+
+Detailed provider-attempt events and audio artifacts remain durable even when only summaries are nested in the snapshot. Temporal activity retry metadata supports execution recovery; explicit synthesis events still provide provider usage, first-audio latency, failure details, and partial-artifact inspection. This does not require an independent attempt resource or one SQL row per attempt.
+
+### Hybrid state ownership and database calls
+
+| State | Owner / storage | Database interaction |
+| --- | --- | --- |
+| Immutable room context and turn schedule | Load Room once at performance startup; carry its small context through Temporal workflow input/state | Initial read, then pass context to activities instead of re-reading Room per stage |
+| Current internal step, timers, result waits, retries, selected dialogue history | Temporal deterministic workflow state and recorded activity results | No SQL read/write for every internal assignment or timer |
+| Generation/tagging results and ordered audio references | Temporal working state; retain required inspection facts in durable events/artifacts | Publish choices once at round opening; combine other persistence with relevant milestones/events rather than independent entity updates |
+| Published voting state and committed winner | Nested PostgreSQL Performance snapshot | Persist opening/closure and one immutable result commitment; include corresponding event/outbox writes in those transactions |
+| Accepted vote truth | Separate ledger and event/outbox | One durable acceptance transaction per vote; no full Performance snapshot rewrite |
+| Playback anchors, turn completion, premiere readiness, terminal outcome | PostgreSQL Performance snapshot plus referenced S3 artifacts | Milestone transactions, not writes per audio chunk |
+| Audio bytes and detailed artifact content | S3; bounded in-memory delivery buffers for live chunks | No SQL or workflow-history audio payloads |
+
+Temporal working state is recovered from recorded input, activity outcomes, and replay-safe decisions; it is not an ordinary process-memory cache. SQL remains authoritative for externally published state and committed choices, and workflow state carries those persisted outcomes forward. [Temporal event history](https://docs.temporal.io/workflow-execution/event).
+
+Use these persistence boundaries: Start/single-active-run claim; round opening; each accepted vote; round closure/completeness boundary; winner commitment before speech; playback anchors and completed turn recording; premiere readiness/timeline; completion or terminal failure. At snapshot milestones, update the snapshot and append its durable events/publication intent in the same transaction. Vote acceptance instead commits ledger/event/outbox without a snapshot update. Provider attempt facts still need durable inspection events around side effects, but not separate Turn/Round/Attempt CRUD writes.
+
+Vote admission uses the database's published choices, eligibility, deadline, and uniqueness constraint rather than sending every vote through a Temporal handler. Reconnect/state reads use the latest published snapshot and do not require a live workflow worker. Published snapshots describe meaningful product phases; they need not expose every private generation/tagging/retry substep. The live state and room timeline can reflect the last durable milestone while workers recover; recovery must never invent newer state or roll back a committed result.
+
+This reduces application database calls by avoiding repeated context/history reads and batching milestone persistence. It does not eliminate durable storage: Temporal writes execution history, and the vote/event pipeline still persists replayable facts. Resource count, storage layout, and round-trip count are separate design concerns. Exact snapshot columns/JSON representation and event flush details remain implementation choices consistent with these boundaries.
+
+Required acceptance scenarios: a Performance read returns authorized nested turn/voting/attempt data; duplicate voting creates one accepted ledger entry and does not rewrite the shared snapshot; published-state reads still work while a workflow worker is unavailable; recovered activities return the same committed winner; workflow recovery preserves room context and selected dialogue history; provider-attempt failures remain inspectable through events/artifacts; streaming audio produces no per-chunk SQL snapshot writes.
 
 ### Room-owned setup and dialogue context
 
@@ -127,7 +165,7 @@ Start does not freeze or revise setup: the submitted context is already fixed, a
 
 ### Core-entity checkpoint outcome
 
-The user chose **room-owned characters**, **one create-and-publish request with immutable setup**, **one performance per room**, and **automatic progression with no Stop controls**. Setup changes and subsequent runs require a new room and link. See D005, D007, D013, and D014.
+The user chose **room-owned characters**, **immutable create-and-publish**, **one Performance resource with nested components and hybrid milestone snapshots**, **one performance per room**, and **automatic progression with no Stop controls**. Setup changes and subsequent runs require a new room and link. See D005, D007, D013–D016.
 
 Every core capability now maps to identified entities with logical ownership. Proceed to interface design; physical stores and schemas remain open.
 
@@ -151,6 +189,12 @@ Idempotency keys are scoped to caller and operation, and to a resource where one
 
 The create handler waits for setup readiness before returning the link. An HTTP timeout or disconnect does not cancel a durably handed-off setup workflow or trigger compensation. Retrying the same submission/key recovers its current operation or completed response. Never report provisioning as successful while portraits or publication are incomplete.
 
+### Performance snapshot query
+
+`GET /api/v1/performances/{performanceId}` returns an authorized nested Performance view: published phase/revision, current turn, voting fields/committed results, selected dialogue, safe attempt summaries, playback anchors, and authorized audio references. Allow the owning director or an audience session scoped to its room. Include only the caller's voting eligibility/receipt; do not expose other audience identities, provider credentials, or raw provider errors.
+
+Read the persisted milestone snapshot and the caller's receipt without querying Temporal. Room reads continue to supply static scene/character setup and current performance identity/state for the theatre. No independent Turn, VotingRound, AcceptedVote, or SynthesisAttempt CRUD/read endpoints are required; nested snapshot data and the voting command cover the MVP.
+
 ### Audience commands and queries
 
 The share link carries an opaque room-access capability, not director or bucket permissions. Exchange it on Enter theatre for a room-scoped session credential. Browser Enter theatre also activates local audio; server admission cannot itself guarantee autoplay permission.
@@ -159,7 +203,7 @@ The share link carries an opaque room-access capability, not director or bucket 
 | --- | --- | --- |
 | `POST /api/v1/audience-sessions` | Room-access capability; existing session credential if reconnecting → room/session identity and current snapshot | Invalid/expired capability rejected; reconnect reuses identity; enforce ten admitted audience sessions; new session during an open round is eligible from the next opening |
 | `GET /api/v1/audience/rooms/{roomId}` | Room-scoped session credential → current audience snapshot | May view only its room; no accepted-voter list, director controls, raw capabilities, or bucket access |
-| `POST /api/v1/rounds/{roundId}/votes` | Choice ID + submission idempotency key → durable accepted vote receipt, server receipt time | Identity comes from session credential; require eligible session, active open round, valid choice, and receipt before deadline; duplicate same choice returns original receipt; a different choice after an accepted vote returns `409`; invalid/late vote has a visible reason |
+| `POST /api/v1/performances/{performanceId}/turns/{turnNumber}/votes` | Choice ID + submission idempotency key → durable accepted vote receipt, server receipt time | Identity comes from session credential; require room-scoped access, eligible session, turn 1–8 with active open voting, valid choice, and receipt before deadline; duplicate same choice returns original receipt; a different choice after an accepted vote returns `409`; invalid/late vote has a visible reason |
 
 The first valid vote is final in this draft: one vote per session per round means no vote-changing operation. A retry of an already accepted submission returns its original receipt even if the round has since closed. A new submission after the deadline is rejected. Atomic acceptance versus close ordering will be resolved in the vote-finalization deep dive.
 
@@ -198,7 +242,7 @@ Character count bounds limit inputs but do not guarantee speech duration. Tagged
 
 ### Interface checkpoint outcome
 
-The user removed Stop controls and requested automatic flow. Keep the initial Start from the agreed journey; automate every subsequent stage and bounded retry. Setup now uses a single complete create-and-publish request, with no edit/upload/publish actions afterward. See D007 and D014.
+The user removed Stop controls and requested automatic flow. Keep the initial Start from the agreed journey; automate every subsequent stage and bounded retry. Setup uses a single complete create-and-publish request. Performance reads expose nested components, and the voting command is scoped to a performance/turn; separate round/attempt CRUD interfaces are unnecessary. See D007 and D014–D016.
 
 ## 4. Business data flows
 
@@ -212,7 +256,7 @@ These sequences establish business ownership, ordering, and failure behavior wit
 4. In one PostgreSQL transaction, mark the Room `ready` (published), persist final portrait references and one audience-link token, and record the readiness event. No audience admission, Start, or successful creation response is permitted before this commit.
 5. The original create request returns `201` with room ID and shareable link after readiness. The director sees that link and Start. Delete staging objects afterward; staging cleanup failure does not revoke a ready room. HTTP response loss does not undo publication; the same-key retry returns the existing link.
 6. Enter theatre admits or restores a room-scoped audience session and returns current state. The browser activates audio locally. New sessions during an open round wait until the next round to vote.
-7. Start atomically claims the single active-run slot and creates the room's only performance using already immutable setup. Acknowledge only after that state and recoverable workflow-start intent are durable. A retry returns the same result.
+7. Start atomically claims the single active-run slot and creates the room's only Performance snapshot using already immutable setup. Acknowledge only after that state and recoverable workflow-start intent are durable. A retry returns the same result. Load Room context once for the workflow and carry it forward with the turn schedule.
 
 ### Setup compensation and recovery
 
@@ -229,16 +273,16 @@ Required setup acceptance scenarios: valid single-submit returns a ready room/li
 
 ### One turn, repeated eight times
 
-1. **Generate choices:** application retrieves all static scene/character context from the immutable Room, adds the performance's selected dialogue, scheduled speaker/beat, and remaining turns, and invokes generation asynchronously. Validate three distinct lines; use bounded retries and a valid fallback. Persist choices before opening the round; rejected choices never enter story history.
-2. **Open round:** application records the immutable choice IDs, eligible session set, opening time, and ten-second server deadline, then notifies clients. Replayed work cannot open another round for the same turn.
-3. **Accept votes:** synchronous application receipt checks identity, eligibility, choice, deadline, and uniqueness. Durably persist acceptance plus replayable processing intent before acknowledgement. Same-submission retries return the original receipt; rejected submissions produce inspection events without contributing votes.
+1. **Generate choices:** Temporal uses the immutable Room context loaded at startup plus its selected dialogue history, scheduled speaker/beat, and remaining turns to invoke a generation activity. Validate three distinct lines; use bounded retries and a valid fallback. Carry valid results into the opening activity; rejected choices never enter story history. No Room/history database re-read or independent Turn write is needed per generation step.
+2. **Open round:** in one milestone transaction, persist the turn's voting fields in the nested Performance snapshot: immutable choice IDs/text, eligible session set, opening time, and ten-second server deadline, together with events/publication intent. Notify clients after durable commitment. Replayed work returns the same published round rather than creating another.
+3. **Accept votes:** synchronous application receipt checks the published voting fields, identity, eligibility, deadline, and uniqueness. Durably persist a separate ledger record plus replayable processing intent in one transaction before acknowledgement; do not rewrite the Performance snapshot for every vote. Same-submission retries return the original receipt; rejected submissions produce inspection events without contributing votes. Flink still performs replay deduplication and aggregation.
 4. **Close and finalize:** application freezes admission at the deadline and emits a durable closure boundary that can prove completeness. Flink consumes/replays accepted input, deduplicates it, and emits all three counts only after every eligible accepted vote before that boundary is included. The concrete boundary/source protocol remains open; processing-time arrival alone is insufficient.
-5. **Commit selection:** application validates a result against the matching round/boundary, persists counts and one majority/tie/no-vote selection atomically, and advances once. Repeated results return the persisted choice and cannot reroll randomness. While result processing recovers, show Counting votes… and accept no new votes for the closed round.
-6. **Enhance tags:** application uses the immutable winning text to generate delivery tags and validates preservation of its words. Persist original and tagged text. Retry automatically within a budget; final fallback policy remains to be validated against the chosen model/provider.
-7. **Synthesize, stream, and record:** application creates a distinct durable attempt, submits tagged text to ElevenLabs, relays ordered chunks to authorized listeners, and records the same attempt audio. Persist progress/events and final recording readiness. Retry a failed attempt automatically without reopening voting; interrupted partial playback and replacement-attempt timing are an audio deep dive.
-8. **Complete turn:** after complete recording readiness and the end of the room playback interval, persist completion and automatically schedule the next turn. Individual browser completion/telemetry cannot block this transition. After turn eight, enter premiere preparation instead.
+5. **Commit selection:** application validates a result against the matching turn's voting boundary, atomically updates its nested counts and one majority/tie/no-vote selection with the result event, and returns that durable outcome to Temporal. Repeated results return the persisted choice and cannot reroll randomness. While result processing recovers, show Counting votes… and accept no new votes for the closed round.
+6. **Enhance tags:** an activity uses the immutable winning text carried by Temporal to generate delivery tags and validates preservation of its words. Carry tagged output in workflow state; retain original/tagged text in durable synthesis events/artifacts and the turn's published summary as appropriate. A standalone tag-stage SQL snapshot write is not required. Retry automatically within a budget; final fallback policy remains to be validated against the chosen model/provider.
+7. **Synthesize, stream, and record:** coordinate a distinct identified provider attempt through activities, submit tagged text to ElevenLabs, relay ordered chunks to authorized listeners, and record the same attempt audio. Persist required attempt/timing/error events, playback anchors, and final artifact readiness; keep audio chunks out of SQL/workflow history. Retry a failed attempt automatically without reopening voting; interrupted partial playback and replacement-attempt timing are an audio deep dive.
+8. **Complete turn:** after complete recording readiness and the end of the room playback interval, commit its nested dialogue/tagged-text/attempt summary, selected recording reference, timing, and completion event as a milestone, then automatically schedule the next turn. Individual browser completion/telemetry cannot block this transition. After turn eight, enter premiere preparation instead.
 
-Each automatic stage requires durable pending/completed intent and an identity that makes recovered work distinguishable from new work. This does not imply exactly-once external generation. The storage and execution mechanism is intentionally deferred to architecture design.
+Each automatic stage requires recoverable intent and an identity that makes recovered work distinguishable from new work. Temporal records internal orchestration and activity results; database milestone transactions and durable events cover published truth and side effects. Do not mirror every workflow-local state change into SQL. This does not imply exactly-once external generation.
 
 ### Premiere and completion
 
@@ -270,7 +314,7 @@ Keep one Go application responsible for business state, HTTP, live delivery, Tem
 | Next.js web frontend | Director setup and audience theatre, static portraits, controls, voting, audio player | Preferred web stack and the agreed browser experience |
 | Application Load Balancer + ECS Fargate | HTTPS ingress; containerized Next.js and Go runtime | AWS hosting for invited users; long-lived browser/provider streams |
 | Go application | APIs, authorization, room state, event/outbox relay, live audio fan-out, and Temporal worker | Preferred backend; keep one business-state authority |
-| RDS PostgreSQL | Room/session/performance/round/vote/attempt/artifact metadata; durable events, outbox, room updates, derived Flink tallies | Atomic acceptance, uniqueness, immutable commitment, restart recovery |
+| RDS PostgreSQL | Room/session metadata, one Performance milestone snapshot with nested turn/voting/attempt summaries, separate accepted-vote ledger, durable events/outbox, artifact references, derived Flink tallies | Atomic acceptance, uniqueness, immutable published commitment, snapshot reads during worker recovery |
 | Temporal Cloud | One setup workflow per creation for provisioning/compensation; a separate workflow per performance for durable timers, activities, retries, eight-turn progression and finale | Accepted engine for recoverable setup and automatic performance |
 | Kinesis Data Streams | Replayable Flink input, with stable event IDs and performance partition key | Separate vote acknowledgement from recoverable stream processing |
 | Amazon Managed Service for Apache Flink | Keyed deduplication/tallies, completeness gating, lifecycle metrics, checkpointed Parquet output | Deliberate learning objective; managed runtime rather than operating a cluster |
@@ -304,8 +348,8 @@ flowchart LR
 ### Responsibility and transaction boundaries
 
 - **PostgreSQL is authoritative for business state.** Enforce one room creation per director/idempotency key, one performance per room, one accepted vote per round/session, one result commitment per round, and one active run through constraints plus a transactionally claimed demo guard row. Setup is immutable; phase revisions protect runtime transitions. External calls run outside database locks.
-- **Atomic state and publication:** each business transition commits its event/outbox record and audience-visible room update in the same transaction. The relay publishes at least once and preserves event identities; mark publication only after acknowledgement. Creation records recoverable intent to start setup workflow `room-setup/{creationId}` once staging is ready; Start records intent for the separate workflow `performance/{id}`. A recovered relay reuses existing workflow identities, never creates a second room or run. Room readiness and its link token commit atomically after portraits are ready.
-- **Temporal orchestrates; PostgreSQL validates transitions.** Workflow code performs deterministic orchestration and uses durable timers; activities perform database/provider/S3 I/O. An activity retry reads durable state and returns completed work or conditionally claims a new attempt. Keep media bytes out of workflow history. This follows [Temporal's durable timer model](https://docs.temporal.io/develop/go/workflows/timers).
+- **Atomic milestone state and publication:** externally meaningful milestone updates commit their snapshot/event/outbox records together; vote acceptance commits its separate ledger/event/outbox without rewriting the shared snapshot. Workflow-local assignments and every audio chunk do not need database transactions. The relay publishes at least once and preserves event identities; mark publication only after acknowledgement. Creation records recoverable intent to start setup workflow `room-setup/{creationId}` once staging is ready; Start records intent for the separate workflow `performance/{id}`. A recovered relay reuses existing workflow identities, never creates a second room or run. Room readiness and its link token commit atomically after portraits are ready.
+- **Temporal owns internal execution; PostgreSQL owns published milestones.** Workflow code carries room context, selected dialogue history, generation/tagging outcomes, ordered artifact references, timers, waits, and retry coordination. Activities perform database/provider/S3 I/O, reuse completed outcomes, and conditionally commit milestones or side-effect facts. Reconnect and vote admission read published snapshots/ledger directly, without needing workflow queries. Keep media bytes out of workflow history. This follows [Temporal's durable timer model](https://docs.temporal.io/develop/go/workflows/timers) and [event-history recovery](https://docs.temporal.io/workflow-execution/event).
 - **Flink's result table is derived.** Give its database role access only to its result tables, not winner/phase/accepted-vote mutation. Emit final results keyed by round and closure identity through idempotent JDBC writes. The Go activity waits for a complete result, validates identity/completeness, and commits the winner exactly once. Connector version and flush settings require verification; JDBC supports primary-key-based idempotent writes, but the currently published stable page notes missing connector support for its newest engine version. [Flink JDBC connector](https://nightlies.apache.org/flink/flink-docs-stable/docs/connectors/table/jdbc/).
 - **No checkpoint wait in live winner commitment.** A derived complete tally may be persisted before the next checkpoint; replay must reproduce an identical tally and cannot alter an already committed winner. Parquet finalization follows checkpoints separately.
 - **S3 and database updates converge.** Upload immutable attempt-specific objects, then conditionally mark readiness after successful storage. Recovery can reconcile an existing object before uploading again. Unselected/partial attempts cannot become the premiere's recording.

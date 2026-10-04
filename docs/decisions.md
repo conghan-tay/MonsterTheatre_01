@@ -52,19 +52,7 @@ Only explicit product-brief decisions or later user agreements are accepted. Pro
 
 ## D004 — Separate room, performance, round, and synthesis-attempt lifecycles
 
-**Decision:** Give these concepts separate durable identities and authorities.
-
-**Context / requirement:** A shareable room has immutable setup; Start creates its run; voting commits once; failed speech can retry without changing dialogue.
-
-**Chosen approach:** Use the proposed core-entity model in [system design](system-design.md). Room owns scene and character components, fixed through create-and-publish (D013/D014). Treat choices and committed selection as round-owned data, metrics as derived data, and browser connection state as separate from audience identity.
-
-**Why it fits:** Expresses the product's retry, reconnect, snapshot, and replay rules without conflating their lifecycles.
-
-**Alternatives considered:** One mutable room record for all phases would obscure frozen setup and historical attempt/result identity.
-
-**Tradeoffs and consequences:** More identifiers and lifecycle transitions; exact schemas/storage remain deferred until interfaces and access patterns are traced.
-
-**Status:** proposed.
+**Status:** superseded before acceptance — Room owns immutable setup (D013/D014); Performance owns nested turn, voting, and attempt components with hybrid state (D015/D016). Their distinct lifecycle states and correlation identifiers remain useful without independent CRUD resources.
 
 ## D005 — One performance per room
 
@@ -124,7 +112,7 @@ Only explicit product-brief decisions or later user agreements are accepted. Pro
 
 **Context / requirement:** Eight repeated generation/vote/speech stages, external result waits, playback timers, retries, and restart recovery must proceed without director intervention.
 
-**Chosen approach:** One stable workflow ID per performance, separate from the room setup workflow added in D014. Deterministic Go workflow code sequences activities and durable timers. Activities use PostgreSQL-backed idempotency and conditional commits around provider/storage work. Pass media references through workflow history, not bytes.
+**Chosen approach:** One stable workflow ID per performance, separate from the room setup workflow added in D014. Deterministic Go workflow code sequences activities and durable timers, carrying room context and dialogue history. Under D016, activities persist published milestone snapshots and accepted-vote/side-effect facts rather than mirroring every internal step. Use idempotency and conditional commits around provider/storage work. Pass media references through workflow history, not bytes.
 
 **Why it fits:** Matches the user's preferred durable-workflow stack without operating a Temporal cluster.
 
@@ -213,3 +201,35 @@ Only explicit product-brief decisions or later user agreements are accepted. Pro
 **Tradeoffs and consequences:** Staging/copy adds S3 operations and internal provisioning state, not a user-editable draft. Reuse creation/workflow/object identities across retries; different input with the same key conflicts. Before readiness, definitive setup failure marks provisioning failed and compensates owned objects, with cleanup retries/reconciliation. Reconcile ambiguous publication before deletion. After readiness, lost HTTP responses, staging-cleanup failures, and later performance failures must not roll back the Room. A retried submission returns the original link; setup changes require a new room. Exact wait/retry/expiry budgets remain open design parameters.
 
 **Status:** accepted — user approved the discussed setup flow and requested the documentation update on 2026-10-04.
+
+## D015 — One Performance resource with nested components
+
+**Decision:** Performance is the root resource for turns, their voting state, and synthesis-attempt summaries; accepted votes are durable records owned by the performance.
+
+**Context / requirement:** The first milestone has eight fixed turns, exactly one voting round per turn, and no independent turn/round/attempt editing. Reduce resource/API complexity without weakening vote and playback invariants.
+
+**Chosen approach:** Return an authorized nested view through GetPerformance. Identify turns within a performance by numbers 1–8, with voting fields and attempt summaries beneath each turn. Scope the voting command to performance/turn. Keep stable correlation and attempt identifiers in events/audio metadata. No separate Turn, VotingRound, AcceptedVote, or SynthesisAttempt CRUD/read APIs are needed. Keep accepted-vote truth in a separate uniqueness-enforced ledger. Store summaries/committed tallies in the shared Performance snapshot and enrich its authorized response with the caller's own receipt from the ledger; do not persist viewer-specific receipts or all voter records into that snapshot.
+
+**Why it fits:** These concepts share ownership and are consumed as one performance. The ledger preserves durable acknowledgement, idempotent submissions, and Flink replay without rewriting a shared snapshot per vote.
+
+**Alternatives considered:** Independent resources/tables for every concept, or one mutable JSON document containing every vote. Resource ownership does not dictate one table for all underlying facts.
+
+**Tradeoffs and consequences:** Nested snapshots need conditional milestone updates and bounded summaries. Actor-specific views must protect audience identities and provider details. Provider-attempt events and S3 artifacts remain independently inspectable even without standalone attempt APIs.
+
+**Status:** accepted — user approved the proposed consolidation and requested the documentation update on 2026-10-04.
+
+## D016 — Temporal working state with PostgreSQL milestone snapshots
+
+**Decision:** Use the hybrid model: Temporal owns internal execution/context; PostgreSQL stores published performance milestones, accepted votes, and immutable commitments.
+
+**Context / requirement:** Reduce repeated context reads and per-step database writes while preserving current published state during workflow-worker recovery, durable voting, and historical inspection.
+
+**Chosen approach:** Load immutable Room context once at startup and carry the schedule, selected dialogue history, generation/tagging results, timers, waits, retries, and audio references in recoverable workflow state. Persist milestone snapshots at Start, round opening/closure, winner commitment, playback anchors/turn completion, premiere readiness/timeline, and terminal outcome. Combine each applicable snapshot change and event/outbox publication intent in one transaction. Each accepted vote has its own durable ledger/event/outbox transaction without rewriting the snapshot. Read published state/own receipts and validate votes through PostgreSQL rather than querying/signaling Temporal for every client request.
+
+**Why it fits:** The user explicitly selected hybrid snapshots. Clients can read committed public state while workers recover; workflow orchestration need not re-read Room/history or persist every local assignment. [Temporal event history](https://docs.temporal.io/workflow-execution/event).
+
+**Alternatives considered:** Workflow-first live reads with fewer SQL snapshots, which depend on available workflow workers for fresh queries; mirroring every internal state in PostgreSQL adds unnecessary application writes.
+
+**Tradeoffs and consequences:** Published state can reflect the last durable product milestone while internal execution progresses or recovers. SQL commitment is authoritative; Temporal carries the committed result and cannot reroll it. Explicit provider-attempt/usage/latency/error events still need durable inspection storage. Audio chunks remain in bounded delivery buffers and S3, not SQL/history. Fewer application SQL calls do not eliminate Temporal history or replay-log persistence. Detailed budgets, schema encoding, and projection/event flushing remain open implementation choices.
+
+**Status:** accepted — user selected hybrid snapshots and approved the documentation update on 2026-10-04.

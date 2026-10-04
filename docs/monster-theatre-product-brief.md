@@ -24,6 +24,7 @@ Randomness in dialogue and delivery is part of the experience. Turn order, votin
 - One performance per room. Another performance requires a new room and audience link, including after a failed run.
 - One setup submission creates and publishes the room with all scene context, both character contexts, and both portraits. The director then sees the shareable link and a Start button. Setup cannot be edited or revised; any change requires a new room.
 - Scene context and characters A/B belong to the Room resource. Characters have no independent resource lifecycle or management APIs.
+- Performance is the resource for one run, containing its eight turns, each turn's voting state, and synthesis-attempt summaries. Accepted votes are durable records owned by the performance, without independent CRUD APIs.
 - After the initial Start, the flow proceeds automatically. There are no Stop or manual retry controls.
 - Two uploaded character images, two character names, and two hardcoded voices. Optional short character briefs.
 - A short scene topic, optional scene description, and optional genre.
@@ -83,7 +84,7 @@ The final premiere uses the recorded audio from the individual turns. It does no
 
 - **Trigger and outcome:** A voting round opens after valid choices are ready; eligible votes produce one committed winner, followed by tagged synthesis and playback.
 - **Validation and authorization:** One vote per audience session per turn. Server receipt time determines eligibility. Reject invalid choices and votes received after the deadline. Retried submissions must not add votes.
-- **State:** Save choices, accepted votes, tally, winner, original/tagged text, synthesis attempts, and turn audio. The winner becomes immutable before synthesis starts.
+- **State:** Performance owns turn choices, voting state, committed winners, and synthesis-attempt summaries. Save accepted votes in a separate durable ledger and retain original/tagged text, attempt events, and audio artifacts for inspection. Temporal carries execution context; database milestone snapshots expose published performance state. The winner becomes immutable before synthesis starts.
 - **Visible failures:** Reject late votes clearly. Show **Counting votes…** if processing is behind. Preserve the winner on synthesis failure and retry automatically within bounded limits without reopening voting. Show recovery status; if recovery is exhausted, retain partial artifacts and mark the run failed.
 
 Voting defaults:
@@ -134,7 +135,7 @@ These are first-milestone acceptance targets, to validate against actual provide
 
 - **Workload:** One active room/performance and ten audience sessions; eight voting bursts of at most ten accepted votes each. No multi-region deployment requirement.
 - **Latency:** Vote acknowledgement p95 under 300 ms; winner committed within one second of window closure under normal operation; first audible output p95 under two seconds after submitting/flushing a tagged turn. Measure choice-generation and tag-enhancement time separately.
-- **Ordering and consistency:** One active turn and voting round per performance, one committed winner per round, strict speaker order, and no automatic return to a completed round. Client reconnects receive current room state.
+- **Ordering and consistency:** One active turn and voting round per performance, one committed winner per round, strict speaker order, and no automatic return to a completed round. Client reconnects receive current published room/performance state from database snapshots while workflow workers recover. Published state reflects durable milestones rather than every internal workflow substep.
 - **Durability and recovery:** Acknowledged votes and committed choices survive a worker restart. Keep completed turn audio for exact replay. Target Flink recovery within 60 seconds and finalized lake records within 60 seconds of performance completion under normal operation.
 - **Degradation:** Pause voting-result progression while Flink cannot finalize a round and resume automatically after recovery. Already available audio can continue playing. On speech-provider failure, retain the chosen line and retry automatically within bounded limits. Expose recovery/failure status without manual performance controls. Dashboard-free lake inspection may lag behind live playback.
 - **Security:** Director authentication, audience access through a room link, server-side provider keys, private encrypted S3 objects, and limits on uploads, text, room starts, and synthesis retries.

@@ -90,7 +90,7 @@ The final premiere uses the recorded audio from the individual turns. It does no
 Voting defaults:
 
 - Most votes wins.
-- Randomly resolve ties; randomly select a choice when there are no votes. Persist the selection and reason.
+- Randomly resolve ties; randomly select a choice when there are no votes. The application makes this selection when it commits the result, and persists the selection and its reason.
 - Anonymous audience sessions are sufficient for the demo. Reconnection reuses the same identity; strong prevention of multiple identities is deferred.
 - Late joiners see the current phase and participate in the next open round.
 - AI choice generation uses bounded retries and a simple valid fallback. Generation time does not consume the voting window.
@@ -107,9 +107,11 @@ Voting defaults:
 
 ## Flink and S3 responsibilities
 
-**Flink performs useful product work:** aggregate votes by performance and turn, deduplicate submissions, compute final tallies, and produce results for the application to commit. It also correlates turn lifecycle events to derive participation and latency metrics.
+**Flink performs useful product work:** aggregate votes by performance and turn, deduplicate submissions, and compute final per-choice counts for the application to act on. It also correlates turn lifecycle events to derive participation and latency metrics.
 
-The authoritative deadline comes from the server, not audience device clocks. Finalization must include all eligible accepted votes before committing a winner; delayed internal processing must not silently discard them. Once committed, a result cannot change during playback.
+Flink emits counts, not winners. The application applies the most-votes rule and performs any tie-break or no-vote selection itself, once, when it commits the result. This keeps the random choice at a single point that cannot be re-rolled by stream replay or recovery.
+
+The authoritative deadline comes from the server, not audience device clocks. Closing a round and determining which votes it contains happen together, so a vote is either accepted and included or rejected as late — never acknowledged and then dropped. Delayed internal processing must not silently discard an accepted vote. Once committed, a result cannot change during playback.
 
 Keep the replayable voting/event input durable so Flink can recover from checkpoints. Checkpointed processing does not imply exactly-once external speech generation or browser playback.
 
@@ -134,7 +136,7 @@ Choose the query tool during technical design. The product does not need an anal
 These are first-milestone acceptance targets, to validate against actual provider behavior during implementation.
 
 - **Workload:** One active room/performance and ten audience sessions; eight voting bursts of at most ten accepted votes each. No multi-region deployment requirement.
-- **Latency:** Vote acknowledgement p95 under 300 ms; winner committed within one second of window closure under normal operation; first audible output p95 under two seconds after submitting/flushing a tagged turn. Measure choice-generation and tag-enhancement time separately.
+- **Latency:** Vote acknowledgement p95 under 300 ms; winner committed within two to three seconds of window closure under normal operation; first audible output p95 under two seconds after submitting/flushing a tagged turn. The winner target reflects the hops between closure and commitment — durable publication, stream delivery, aggregation, and result hand-back — so **Counting votes…** is the expected normal-path display after a round closes, not only a degraded state. Measure choice-generation and tag-enhancement time separately; no target is set for either while the model remains configurable.
 - **Ordering and consistency:** One active turn and voting round per performance, one committed winner per round, strict speaker order, and no automatic return to a completed round. Client reconnects receive current published room/performance state from database snapshots while workflow workers recover. Published state reflects durable milestones rather than every internal workflow substep.
 - **Durability and recovery:** Acknowledged votes and committed choices survive a worker restart. Keep completed turn audio for exact replay. Target Flink recovery within 60 seconds and finalized lake records within 60 seconds of performance completion under normal operation.
 - **Degradation:** Pause voting-result progression while Flink cannot finalize a round and resume automatically after recovery. Already available audio can continue playing. On speech-provider failure, retain the chosen line and retry automatically within bounded limits. Expose recovery/failure status without manual performance controls. Dashboard-free lake inspection may lag behind live playback.

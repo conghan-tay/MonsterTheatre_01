@@ -18,21 +18,25 @@ Only explicit product-brief decisions or later user agreements are accepted. Pro
 
 **Status:** accepted — source: agreed product brief.
 
-## D002 — Flink computes results; the application commits them
+## D002 — Flink emits counts; the application selects and commits
 
-**Decision:** Flink performs deduplication, aggregation, and final tallies; the application commits one immutable selection.
+**Decision:** Flink performs deduplication and aggregation and emits **vote counts only**. The application performs any random tie-break or no-vote selection and commits one immutable winner.
 
 **Context / requirement:** Demonstrate meaningful stateful stream processing while keeping all acknowledged eligible votes and deterministic progression across retries/recovery.
 
-**Chosen approach:** Preserve durable replayable event input, include every accepted eligible vote before commitment, persist majority/tie/no-vote selection and reason, and never reopen a committed round for speech retries. Input transport and completeness proof remain unresolved.
+**Chosen approach:** Preserve durable replayable event input and include every accepted eligible vote before commitment.
 
-**Why it fits:** Meets the learning goal and separates computed voting data from committed performance state.
+Flink's output is the per-choice counts for a round, keyed by round and closure identity. It never selects a winner. The application applies the most-votes rule and, where the counts are tied or empty, performs the random selection — once, inside the winner-commit transaction, as a write that succeeds only if no result exists yet for that performance and turn. Re-delivered or replayed counts therefore return the already-persisted selection instead of producing a second roll. Committed rounds are never reopened for speech retries.
 
-**Alternatives considered:** Application-only aggregation could handle the demo workload but would omit the explicit Flink learning goal.
+**Round closure is a single transaction.** The application derives the accepted-vote ID set from the ledger inside the same transaction that flips the round's state to closed, and emits the closure event in that transaction. Vote admission reads the round state in its own transaction and rejects anything that observes a closed round. Every accepted vote therefore either commits before closure reads the ledger and is in the set, or is rejected — there is no window in which a vote is acknowledged but omitted. The closure payload's accepted-ID set is complete by construction, and Flink's gate reduces to waiting until it has seen that set.
 
-**Tradeoffs and consequences:** Additional processing/checkpoint operation; pause result progression if Flink cannot finalize. Exactly-once speech or browser playback is not promised by checkpoints.
+**Why it fits:** Meets the learning goal and separates computed voting data from committed performance state. Keeping randomness in the single commit transaction makes stream replay and activity retries safe without a distributed agreement protocol, and makes the completeness contract provable by construction rather than by argument.
 
-**Status:** accepted — responsibility split from product brief; mechanism pending later design.
+**Alternatives considered:** Flink selecting the winner, which re-rolls the random choice on checkpoint replay and would let an idempotent upsert overwrite a committed result. Seeding the random choice deterministically from the closure boundary ID was a workable alternative; keeping selection in the application was preferred as simpler. Application-only aggregation could handle the demo workload but would omit the explicit Flink learning goal.
+
+**Tradeoffs and consequences:** Additional processing/checkpoint operation; pause result progression if Flink cannot finalize. The number of hops between closure and commitment makes a sub-second commit unrealistic, so the latency target was relaxed to roughly two to three seconds with "Counting votes…" as the normal-path UI (see the product brief's non-functional requirements). Exactly-once speech or browser playback is not promised by checkpoints.
+
+**Status:** accepted — responsibility split from product brief; counts-only contract, application-side selection, and single-transaction closure accepted on 2026-10-04. Input transport and replay retention remain open.
 
 ## D003 — Exact recorded premiere and separate S3 media/lake content
 
@@ -233,3 +237,19 @@ Only explicit product-brief decisions or later user agreements are accepted. Pro
 **Tradeoffs and consequences:** Published state can reflect the last durable product milestone while internal execution progresses or recovers. SQL commitment is authoritative; Temporal carries the committed result and cannot reroll it. Explicit provider-attempt/usage/latency/error events still need durable inspection storage. Audio chunks remain in bounded delivery buffers and S3, not SQL/history. Fewer application SQL calls do not eliminate Temporal history or replay-log persistence. Detailed budgets, schema encoding, and projection/event flushing remain open implementation choices.
 
 **Status:** accepted — user selected hybrid snapshots and approved the documentation update on 2026-10-04.
+
+## D017 — Configurable dialogue-generation provider behind an adapter
+
+**Decision:** Treat the model used for choice generation and audio-tag enhancement as deployment configuration behind a narrow application-side adapter, not as a fixed architectural dependency.
+
+**Context / requirement:** Every turn makes two generation calls — three dialogue choices, then audio-tag enhancement of the winning line. These were named throughout the flows but had no component, no diagram presence, and no stated provider. The user wants to swap models without a code change.
+
+**Chosen approach:** Define one internal interface covering both call shapes. Select provider endpoint and model identifier from configuration/secret storage at runtime, so a model can be substituted per environment or per demo without redeploying application logic. Keep both prompts and their bounded retry/fallback behaviour inside the application. Record the provider and model identifier actually used on each attempt in the durable generation and synthesis events, so saved performances remain interpretable after a model is swapped.
+
+**Why it fits:** The calls are ordinary request/response text generation with no provider-specific feature dependency, so an adapter costs little and preserves the ability to compare models during tuning. Recording the model per attempt keeps the data lake honest across swaps.
+
+**Alternatives considered:** Hardcoding one provider/model, which makes comparison awkward and buries a swap in application code. An agent framework or separate Python service, already rejected in the system design as unjustified for two stateless calls.
+
+**Tradeoffs and consequences:** A configurable model means dialogue quality, latency, and token cost vary by configuration and are not fixed properties of the design; the bounded retry and valid-fallback rules must hold for any configured model. Prompt portability across providers is not guaranteed and is a tuning concern, not a design one. No specific latency target is set for either call at this stage.
+
+**Status:** accepted — explicit user answer on 2026-10-04 that the model should be config-selectable; provider shortlist and prompts remain open.

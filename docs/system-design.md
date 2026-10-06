@@ -18,7 +18,7 @@ The director can also act as the demo operator. Operator bucket access is separa
 
 ### Agreed scope and invariants
 
-- One active performance across the demo, up to ten audience sessions.
+- Up to ten audience sessions per performance. Rooms are independent: a run in one room never blocks a run in another, and directors do not block each other. Concurrency is bounded by a configured maximum, not by an invariant (D020).
 - Each room can host exactly one performance. After completion or failure, another performance requires a new room and audience link.
 - One complete setup request creates and publishes the room. There is no editable room draft, setup revision, standalone character resource, or separate publish/upload operation for the director. Any setup change requires a new room.
 - Scene and character context are fixed by the creation submission and are immutable when the room becomes ready/published. Start uses that already fixed setup.
@@ -61,6 +61,8 @@ Deferred: animation, image interpretation, variable turn counts, selectable voic
 These are validation targets, not verified provider or deployment guarantees.
 
 ### Decision-relevant capacity
+
+Every figure below is **per performance**. The configured concurrency maximum multiplies all of them — listeners, bandwidth, concurrent provider connections, and generation spend — so it is a capacity decision rather than a product one (D020). The proposed default of three is provisional and belongs to the audio deep dive, which owns the fan-out measurements that should set it.
 
 - At most 80 accepted votes per performance: eight rounds × ten audience sessions. Retries and rejected submissions add records but must not increase accepted vote totals. This workload does not justify stream-processing or read/write scaling infrastructure, which is why the earlier Flink and Kinesis components were removed (D018).
 - Roughly 200 structured events per completed run across votes, rounds, turns, synthesis attempts, and playback. This is small enough that the lake can be written as one object per performance and queried without precomputed metrics.
@@ -157,7 +159,7 @@ Start does not freeze or revise setup: the submitted context is already fixed, a
 
 ### Lifecycle rules that affect later interfaces
 
-1. Create-and-publish must complete room provisioning and both room-owned portrait writes before issuing the shareable link. Start requires that ready state, atomically claims the demo's single active-performance slot, and enforces at most one performance for the room. Concurrent or retried creates/starts cannot create extra rooms/runs for the same idempotency key.
+1. Create-and-publish must complete room provisioning and both room-owned portrait writes before issuing the shareable link. Start requires that ready state, admits the run only if the count of performances in non-terminal phases is below the configured maximum, and enforces at most one performance for the room. A Start refused for capacity leaves the room startable; only a successful Start consumes its one run. Concurrent or retried creates/starts cannot create extra rooms/runs for the same idempotency key.
 2. A published room can admit observers while a run is active. New membership during an open round does not create eligibility in that round; reconnecting an already eligible session restores its existing eligibility.
 3. A round opens only after three valid choices exist. Its eligibility set is fixed at opening, and its deadline is a durable workflow timer started at that point.
 4. A vote is durable once the workflow service accepts its signal, before any worker processes it. Whether it falls inside the round is decided by its position relative to the round's timer in workflow history, so a vote is counted or recorded as late — never acknowledged and then dropped, and never admitted after the timer has fired. Worker unavailability delays processing without changing membership.
@@ -186,7 +188,7 @@ Every operation requires verified director identity and ownership of the target 
 | --- | --- | --- |
 | `POST /api/v1/rooms` | One `multipart/form-data` request containing scene/character JSON and portraits A/B, plus an idempotency key → `201` with room ID, ready status, and shareable audience link | Require complete valid setup; authenticated director; finish provisioning before success; retries recover the same operation/result, not another room |
 | `GET /api/v1/rooms/{roomId}` | No body → director room snapshot including all static scene/character context | Snapshot includes room readiness, current performance phase/revision, legal Start action, and safe error status; no provider credentials |
-| `POST /api/v1/rooms/{roomId}/performance` | Idempotency key → `202` with performance ID and current phase | Ready/published, never-started room only; reject global active-run conflict; use already immutable context; same-key retry returns the existing run, different Start after creation returns `409` |
+| `POST /api/v1/rooms/{roomId}/performance` | Idempotency key → `202` with performance ID and current phase | Ready/published, never-started room only; `429` when concurrent performances are at the configured maximum, which is retryable and leaves the room startable; use already immutable context; same-key retry returns the existing run, different Start after creation returns `409` |
 
 There are no room-edit, separate publication, standalone character, or portrait-replacement APIs. The director submits once, then sees the shareable link and Start button. A form can be edited locally before submission; there is no server-side editable draft.
 
@@ -265,7 +267,7 @@ These sequences establish business ownership, ordering, and failure behavior wit
 4. In one PostgreSQL transaction, mark the Room `ready` (published), persist final portrait references and one audience-link token, and record the readiness event. No audience admission, Start, or successful creation response is permitted before this commit.
 5. The original create request returns `201` with room ID and shareable link after readiness. The director sees that link and Start. Delete staging objects afterward; staging cleanup failure does not revoke a ready room. HTTP response loss does not undo publication; the same-key retry returns the existing link.
 6. Enter theatre admits or restores a room-scoped audience session and returns current state. The browser activates audio locally. New sessions during an open round wait until the next round to vote.
-7. Start atomically claims the single active-run slot and creates the room's only Performance snapshot using already immutable setup. Acknowledge only after that state and recoverable workflow-start intent are durable. A retry returns the same result. Load Room context once for the workflow and carry it forward with the turn schedule.
+7. Start checks concurrent capacity and creates the room's only Performance snapshot using already immutable setup, in one transaction so two simultaneous Starts cannot both pass a check that only one should. Acknowledge only after that state and recoverable workflow-start intent are durable. A retry returns the same result. Load Room context once for the workflow and carry it forward with the turn schedule.
 
 ### Setup compensation and recovery
 
@@ -298,8 +300,8 @@ Each automatic stage requires recoverable intent and an identity that makes reco
 1. Verify eight completed selected recordings, then assemble them in speaker/turn order without regenerating speech. Persist complete audio, script/decisions, and a manifest linking setup, originals, recordings, and timing. Repeated preparation reuses ready inputs/outputs rather than creates another performance.
 2. Retry assembly/storage failures automatically and expose preparation status. Do not start countdown while any required recording/full playback is missing.
 3. Persist the server countdown/playback timeline and notify clients. Count down five seconds, then play complete audio uninterrupted. Clients resynchronize to current state rather than restarting the voting sequence.
-4. At the room timeline's premiere end, mark the performance completed, export its events to the lake, and release the demo-wide active-run slot. The room remains permanently used. Completion does not promise every browser heard every byte.
-5. If an essential stage exhausts its recovery budget, mark failed, invalidate pending progression, retain available artifacts, export the events accumulated so far, and release the active-run slot. A fresh attempt at the product journey requires a new room. Exact budgets/deadlines are still proposed design parameters.
+4. At the room timeline's premiere end, mark the performance completed and export its events to the lake. The room remains permanently used. Completion does not promise every browser heard every byte. Reaching a terminal phase is what frees concurrent capacity, since capacity is counted from phase rather than held as a claim.
+5. If an essential stage exhausts its recovery budget, mark failed, invalidate pending progression, retain available artifacts, and export the events accumulated so far. A performance whose last durable milestone is older than a configured staleness budget reaches the same terminal state through an automatic sweep, so a run that stops progressing without reporting failure cannot occupy capacity indefinitely. The sweep is automatic and exposes no control surface, consistent with D007. A fresh attempt at the product journey requires a new room. Exact budgets/deadlines are still proposed design parameters.
 
 ### Inspection, lake output, and retention
 
@@ -336,6 +338,8 @@ Keep one Go application responsible for business state, HTTP, live delivery, and
 
 Physical region, resource sizes, availability configuration, and estimated recurring cost remain open. Start with one active application task for the demo; this deliberately prioritizes simplicity over seamless stream failover. Durable state survives task replacement, but in-flight audio may be interrupted.
 
+That single task is also what the concurrency maximum is really bounding. The fan-out estimates below were sized for the eleven listeners of one performance; three concurrent runs triple both the delivery load on the task and the number of simultaneous provider connections. Measure that before raising the default, and treat the task's fan-out headroom — not a product rule — as the number that sets it.
+
 A vote signal is persisted by the Temporal service before the call returns and does not require a worker to be polling; a workflow query would, which is why the vote path signals without first checking round state. [Sending messages to workflows](https://docs.temporal.io/sending-messages). Athena reads Parquet using catalog metadata. [Athena data sources](https://docs.aws.amazon.com/athena/latest/ug/work-with-data-stores.html). Cognito can disable self-registration. [Cognito user creation policy](https://docs.aws.amazon.com/cognito/latest/developerguide/user-pool-settings-admin-create-user-policy.html).
 
 ```mermaid
@@ -355,7 +359,7 @@ flowchart LR
 
 ### Responsibility and transaction boundaries
 
-- **PostgreSQL is authoritative for published business state; Temporal is authoritative for in-round voting.** Enforce one room creation per director/idempotency key, one performance per room, one result commitment per round, and one active run through constraints plus a transactionally claimed demo guard row. One accepted vote per round/session is enforced by the workflow's voted-session set rather than by a constraint, and the ledger written at close carries a matching uniqueness constraint as a backstop. Setup is immutable; phase revisions protect runtime transitions. External calls run outside database locks.
+- **PostgreSQL is authoritative for published business state; Temporal is authoritative for in-round voting.** Enforce one room creation per director/idempotency key, one performance per room, and one result commitment per round through constraints. Concurrent-performance capacity is not an invariant and holds no lock: Start counts performances in non-terminal phases inside the transaction that creates the new one, so there is no claim to release and nothing to leak if a run never reaches a terminal state. One accepted vote per round/session is enforced by the workflow's voted-session set rather than by a constraint, and the ledger written at close carries a matching uniqueness constraint as a backstop. Setup is immutable; phase revisions protect runtime transitions. External calls run outside database locks.
 - **Atomic milestone state and events:** externally meaningful milestone updates commit their snapshot and event records together. A round costs two transactions — opening, and the close that persists its votes, rejections, counts, and winner. Workflow-local assignments, in-round votes, and audio chunks need no database transaction. Creation records recoverable intent to start setup workflow `room-setup/{creationId}` once staging is ready; Start records intent for the separate workflow `performance/{id}`. Recovery reuses existing workflow identities and never creates a second room or run. Room readiness and its link token commit atomically after portraits are ready.
 - **Temporal owns internal execution and voting; PostgreSQL owns published milestones.** Workflow code carries room context, selected dialogue history, in-round vote state, generation/tagging outcomes, ordered artifact references, timers, waits, and retry coordination. Activities perform database/provider/S3 I/O, reuse completed outcomes, and conditionally commit milestones or side-effect facts. Reconnect and published-state reads go to PostgreSQL directly, without a workflow query. Keep media bytes out of workflow history. This follows [Temporal's durable timer model](https://docs.temporal.io/develop/go/workflows/timers) and [event-history recovery](https://docs.temporal.io/workflow-execution/event).
 - **The winner commitment is the one point of randomness, and it is insert-once.** The commit activity writes the result only if none exists for that performance and turn, so an activity retry after a partially observed commit returns the persisted choice rather than selecting again. Randomness comes from a replay-safe side effect, never from a direct call in workflow code.

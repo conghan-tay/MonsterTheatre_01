@@ -4,7 +4,9 @@ Only explicit product-brief decisions or later user agreements are accepted. Pro
 
 ## D001 — First-milestone product scope
 
-**Decision:** A limited-access theatre with one active performance, ten audience sessions, two characters, and eight alternating voted turns.
+**Decision:** A limited-access theatre with ten audience sessions per performance, two characters, and eight alternating voted turns.
+
+**Amended 2026-10-06 ([D020](#d020--concurrent-performances-are-a-configurable-capacity-limit)):** this decision originally read "one active performance". That was scope framing — a statement that the demo need not handle many at once — but the system design hardened it into a deployment-wide mutex. Concurrency is now a configurable capacity limit rather than part of the product definition. The rest of this decision stands unchanged.
 
 **Context / requirement:** Deliver a small live demo with predictable ordering and manageable operational scope.
 
@@ -305,3 +307,25 @@ Athena and Glue remain the query surface, using partition projection rather than
 **Tradeoffs and consequences:** A run in progress is not queryable, which the brief already accepts. Export becomes a step that can fail and must be retried like any other activity; a run whose export never succeeds is complete but absent from the lake, so export failure needs to be visible to the operator. Schema versioning matters more without a schema registry in the pipeline, so each event carries its schema version as [D003](#d003--exact-recorded-premiere-and-separate-s3-medialake-content) requires.
 
 **Status:** accepted — follows from the Flink removal agreed on 2026-10-05. Event schema, partition layout, and the preservation procedure remain open.
+
+## D020 — Concurrent performances are a configurable capacity limit
+
+**Decision:** Remove the deployment-wide single-active-performance constraint. One performance per room ([D005](#d005--one-performance-per-room)) remains the only invariant. The number of performances running at once is a configured maximum, evaluated by counting performances in non-terminal phases, with a default of three.
+
+**Context / requirement:** [D001](#d001--first-milestone-product-scope) described "one active performance" as demo scope. The system design implemented it as an enforced global mutex: Start claimed a demo-wide slot held in a transactionally claimed guard row, released only when a run reached a terminal state. The user questioned whether one director's run should really block another's. It should not, and the deployment has several administrator-created director accounts.
+
+**Chosen approach:** Start counts performances currently in non-terminal phases and compares that count with the configured maximum. There is no slot to claim and none to release.
+
+Exceeding the limit returns `429`, matching the system design's existing definition of that code as bounded admission control, rather than `409`, which asserts that something about the requested resource conflicts. A Start rejected this way does **not** consume the room's one run: [D005](#d005--one-performance-per-room) spends a room on a *successful* Start only, and the room stays startable.
+
+A staleness sweep closes the remaining liveness gap. A performance whose last durable milestone is older than a configured budget is automatically transitioned to failed through the existing terminal-failure path, retaining partial artifacts and exporting its events. This is an automatic sweep, not a control surface, so it does not reintroduce what [D007](#d007--automatic-performance-after-the-initial-start) removed.
+
+**Why it fits:** Nothing about one room's run makes another room's run incorrect, so a global mutex had no business justification — it was protecting cost and audio fan-out capacity, which are quantities rather than the number one. Expressing that as a tunable limit keeps the protection and drops the false invariant.
+
+Counting from state is also materially safer than the guard row it replaces. A lock must be released by whoever holds it; a count is derived fresh on every admission check, so there is nothing to leak. Under the previous design a run stuck in a non-terminal phase — a lost worker, a wedged workflow, a failure path that never fired — would have held the deployment-wide slot permanently, failing every subsequent Start in every room with no manual override available, since [D007](#d007--automatic-performance-after-the-initial-start) removed those. The staleness sweep handles the residual case where a stuck run still occupies capacity.
+
+**Alternatives considered:** Keeping the global singleton and adding a reap rule, which fixes the liveness hole but leaves the unjustified cross-director coupling. A per-director limit of one, which matches intuition but adds a rule the workload does not need once a global cap exists. Removing all limits, which leaves concurrent provider spend and fan-out load unbounded.
+
+**Tradeoffs and consequences:** Concurrency multiplies listener fan-out, concurrent speech connections, and generation spend, so the default is a capacity judgement rather than a product choice. The single application task described in the system design was sized for the eleven listeners of one run; three concurrent performances triples that, and the default should be confirmed against the audio deep dive's fan-out measurements rather than assumed. The limit is also deployment-wide rather than per-director, so a busy deployment can still return `429` to a director whose own rooms are idle; this is acceptable at the invited-account scale and is visible as a retryable condition.
+
+**Status:** accepted — explicit user answers on 2026-10-06: replace the invariant with a configurable cap counted from state, no per-director cap, several invited director accounts. The default value remains open pending audio capacity work.

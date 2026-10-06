@@ -12,15 +12,15 @@ Randomness in dialogue and delivery is part of the experience. Turn order, votin
 
 ## Actors
 
-- **Director:** Submits complete room setup once, receives and shares its audience link, starts the performance, and inspects saved artifacts through the S3 console.
+- **Director:** Submits complete room setup once, receives and shares its audience link, starts the performance, and inspects saved artifacts through the S3 console. Several director accounts exist; each owns its own rooms and runs them independently of the others.
 - **Audience member:** Enters through the shared link, listens, and votes on dialogue choices.
 - **Demo operator:** Inspects workflow execution and recovery, and queries structured performance data. The director may also fill this role.
 
 ## First-milestone scope
 
-- Access is limited to the director and a small group of invited demo users.
+- Access is limited to a small set of administrator-created director accounts and the invited demo users they share links with.
 - The first working milestone is an AWS-hosted demo reachable by invited users through the shared link. Temporal Cloud manages the automatic workflow; Go workers run on AWS.
-- One active performance at a time, with up to ten audience members.
+- Up to ten audience members per performance. Rooms run independently: a performance in one room never blocks a performance in another, and different directors can run at the same time. The number of performances allowed to run concurrently is a configurable capacity limit set by provider and delivery cost, not a property of the product.
 - One performance per room. Another performance requires a new room and audience link, including after a failed run.
 - One setup submission creates and publishes the room with all scene context, both character contexts, and both portraits. The director then sees the shareable link and a Start button. Setup cannot be edited or revised; any change requires a new room.
 - Scene context and characters A/B belong to the Room resource. Characters have no independent resource lifecycle or management APIs.
@@ -137,7 +137,7 @@ Choose the query tool during technical design. The product does not need an anal
 
 These are first-milestone acceptance targets, to validate against actual provider behavior during implementation.
 
-- **Workload:** One active room/performance and ten audience sessions; eight voting bursts of at most ten accepted votes each. No multi-region deployment requirement.
+- **Workload:** Ten audience sessions per performance and eight voting bursts of at most ten accepted votes each. Up to three concurrent performances by default, as a configurable limit; every figure here is per performance and scales with it, including listener fan-out and concurrent provider connections. No multi-region deployment requirement.
 - **Latency:** Vote acknowledgement p95 under 300 ms; winner committed within one second of window closure under normal operation; first audible output p95 under two seconds after submitting/flushing a tagged turn. The workflow already holds the votes when the round closes, so committing is one activity and **Counting votes…** is a brief transition rather than an expected wait. Measure choice-generation and tag-enhancement time separately; no target is set for either while the model remains configurable.
 - **Ordering and consistency:** One active turn and voting round per performance, one committed winner per round, strict speaker order, and no automatic return to a completed round. Client reconnects receive current published room/performance state from database snapshots while workflow workers recover. Published state reflects durable milestones rather than every internal workflow substep.
 - **Durability and recovery:** Acknowledged votes and committed choices survive a worker restart; a vote is durable once the workflow service has accepted its signal, independently of whether a worker is currently available. Keep completed turn audio for exact replay. Target resumption of progression within 60 seconds of a worker restart, and finalized lake records within 60 seconds of performance completion under normal operation.

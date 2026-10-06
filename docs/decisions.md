@@ -20,6 +20,8 @@ Only explicit product-brief decisions or later user agreements are accepted. Pro
 
 ## D002 — Flink emits counts; the application selects and commits
 
+**Status:** superseded by [D018](#d018--workflow-owned-voting-by-temporal-signal) on 2026-10-05 — Flink was removed from the design entirely. The parts of this decision that survive are the counts-versus-selection split and the single-point randomness rule, both of which D018 carries forward with the workflow in Flink's place. The original text is retained below for the record.
+
 **Decision:** Flink performs deduplication and aggregation and emits **vote counts only**. The application performs any random tie-break or no-vote selection and commits one immutable winner.
 
 **Context / requirement:** Demonstrate meaningful stateful stream processing while keeping all acknowledged eligible votes and deterministic progression across retries/recovery.
@@ -36,7 +38,7 @@ Flink's output is the per-choice counts for a round, keyed by round and closure 
 
 **Tradeoffs and consequences:** Additional processing/checkpoint operation; pause result progression if Flink cannot finalize. The number of hops between closure and commitment makes a sub-second commit unrealistic, so the latency target was relaxed to roughly two to three seconds with "Counting votes…" as the normal-path UI (see the product brief's non-functional requirements). Exactly-once speech or browser playback is not promised by checkpoints.
 
-**Status:** accepted — responsibility split from product brief; counts-only contract, application-side selection, and single-transaction closure accepted on 2026-10-04. Input transport and replay retention remain open.
+**Status (original):** accepted — responsibility split from product brief; counts-only contract, application-side selection, and single-transaction closure accepted on 2026-10-04. Input transport and replay retention remain open.
 
 ## D003 — Exact recorded premiere and separate S3 media/lake content
 
@@ -44,7 +46,7 @@ Flink's output is the per-choice counts for a round, keyed by round and closure 
 
 **Context / requirement:** Replay what the audience actually heard and demonstrate historical queries without an in-app library.
 
-**Chosen approach:** Save portraits, turn/full audio, script/decisions, and a linking manifest. Write schema-versioned events and derived metrics to finalized Parquet lake files, initially partitioned by date. Seven-day retention has a manual preservation exception.
+**Chosen approach:** Save portraits, turn/full audio, script/decisions, and a linking manifest. Write schema-versioned events to Parquet lake files, initially partitioned by date. Seven-day retention has a manual preservation exception.
 
 **Why it fits:** Retains exact performance evidence and future animation inputs, and makes structured inspection independent of media transfer.
 
@@ -52,7 +54,7 @@ Flink's output is the per-choice counts for a round, keyed by round and closure 
 
 **Tradeoffs and consequences:** Assembly and storage must succeed before countdown; lake visibility lags live state; retention/preservation must cover referenced assets and records.
 
-**Status:** accepted — source: product brief; assembly, query, and retention mechanisms remain open.
+**Status:** accepted — source: product brief; assembly and query mechanisms remain open. The lake write mechanism and the retention/preservation procedure are settled by [D019](#d019--terminal-state-parquet-export-replaces-stream-processing); the derived-metrics layer named in the original approach was dropped there.
 
 ## D004 — Separate room, performance, round, and synthesis-attempt lifecycles
 
@@ -128,6 +130,8 @@ Flink's output is the per-choice counts for a round, keyed by round and closure 
 
 ## D010 — PostgreSQL outbox, Kinesis, and managed Flink baseline
 
+**Status:** superseded before acceptance, on 2026-10-05 — Flink and Kinesis were removed from the design (see [D018](#d018--workflow-owned-voting-by-temporal-signal) and [D019](#d019--terminal-state-parquet-export-replaces-stream-processing)). With no external stream consumer, the outbox and its relay were removed too: durable events are rows in PostgreSQL, exported to the lake in a batch at terminal state. PostgreSQL remains the business-state authority for everything other than in-round voting. The original text is retained below for the record.
+
 **Decision:** Propose PostgreSQL as business authority with durable event publication to Kinesis and a managed Flink job.
 
 **Context / requirement:** Acknowledged votes survive restart, Flink input is replayable, and committed winners cannot change after recovery.
@@ -143,6 +147,8 @@ Flink's output is the per-choice counts for a round, keyed by round and closure 
 **Status:** proposed.
 
 ## D011 — Java for the Flink job
+
+**Status:** superseded before acceptance, on 2026-10-05 — there is no Flink job, so there is no third language. The project is Go and TypeScript only, and the Java toolchain, connector-compatibility testing, and the Java-versus-PyFlink question are all moot. The original text is retained below for the record.
 
 **Decision:** Propose Java DataStream for Flink, keeping Go for APIs/workflows and TypeScript for Next.js.
 
@@ -212,9 +218,11 @@ Flink's output is the per-choice counts for a round, keyed by round and closure 
 
 **Context / requirement:** The first milestone has eight fixed turns, exactly one voting round per turn, and no independent turn/round/attempt editing. Reduce resource/API complexity without weakening vote and playback invariants.
 
-**Chosen approach:** Return an authorized nested view through GetPerformance. Identify turns within a performance by numbers 1–8, with voting fields and attempt summaries beneath each turn. Scope the voting command to performance/turn. Keep stable correlation and attempt identifiers in events/audio metadata. No separate Turn, VotingRound, AcceptedVote, or SynthesisAttempt CRUD/read APIs are needed. Keep accepted-vote truth in a separate uniqueness-enforced ledger. Store summaries/committed tallies in the shared Performance snapshot and enrich its authorized response with the caller's own receipt from the ledger; do not persist viewer-specific receipts or all voter records into that snapshot.
+**Chosen approach:** Return an authorized nested view through GetPerformance. Identify turns within a performance by numbers 1–8, with voting fields and attempt summaries beneath each turn. Scope the voting command to performance/turn. Keep stable correlation and attempt identifiers in events/audio metadata. No separate Turn, VotingRound, AcceptedVote, or SynthesisAttempt CRUD/read APIs are needed. Keep accepted votes in a separate ledger rather than inside the snapshot. Store summaries/committed tallies in the shared Performance snapshot and enrich its authorized response with the caller's own receipt from the ledger; do not persist viewer-specific receipts or all voter records into that snapshot.
 
-**Why it fits:** These concepts share ownership and are consumed as one performance. The ledger preserves durable acknowledgement, idempotent submissions, and Flink replay without rewriting a shared snapshot per vote.
+**Amended 2026-10-05 ([D018](#d018--workflow-owned-voting-by-temporal-signal)):** the ledger is no longer the authority that admits votes or enforces their uniqueness — the workflow is, and the ledger is the durable projection it writes at round close. The resource boundary described here is unchanged: accepted votes are still owned by the Performance, still stored outside its snapshot, and still surfaced only as the caller's own receipt.
+
+**Why it fits:** These concepts share ownership and are consumed as one performance. The ledger preserves durable per-vote records and idempotent submissions without rewriting a shared snapshot per vote.
 
 **Alternatives considered:** Independent resources/tables for every concept, or one mutable JSON document containing every vote. Resource ownership does not dictate one table for all underlying facts.
 
@@ -228,7 +236,9 @@ Flink's output is the per-choice counts for a round, keyed by round and closure 
 
 **Context / requirement:** Reduce repeated context reads and per-step database writes while preserving current published state during workflow-worker recovery, durable voting, and historical inspection.
 
-**Chosen approach:** Load immutable Room context once at startup and carry the schedule, selected dialogue history, generation/tagging results, timers, waits, retries, and audio references in recoverable workflow state. Persist milestone snapshots at Start, round opening/closure, winner commitment, playback anchors/turn completion, premiere readiness/timeline, and terminal outcome. Combine each applicable snapshot change and event/outbox publication intent in one transaction. Each accepted vote has its own durable ledger/event/outbox transaction without rewriting the snapshot. Read published state/own receipts and validate votes through PostgreSQL rather than querying/signaling Temporal for every client request.
+**Chosen approach:** Load immutable Room context once at startup and carry the schedule, selected dialogue history, generation/tagging results, timers, waits, retries, and audio references in recoverable workflow state. Persist milestone snapshots at Start, round opening/closure, winner commitment, playback anchors/turn completion, premiere readiness/timeline, and terminal outcome. Combine each applicable snapshot change and its durable events in one transaction. Read published state and own receipts through PostgreSQL rather than querying Temporal for every client request.
+
+**Amended 2026-10-05 ([D018](#d018--workflow-owned-voting-by-temporal-signal)):** two points in this approach changed. Votes are no longer validated through PostgreSQL and no longer get a transaction each — they signal the workflow, and one transaction per round close persists that round's accepted votes and rejections together. Everything else stands: Room context is still loaded once, milestones are still the persistence boundary, and published-state reads still go to PostgreSQL without a workflow query. The availability property this decision valued — that reads survive worker unavailability — still holds for reads, but no longer for voting.
 
 **Why it fits:** The user explicitly selected hybrid snapshots. Clients can read committed public state while workers recover; workflow orchestration need not re-read Room/history or persist every local assignment. [Temporal event history](https://docs.temporal.io/workflow-execution/event).
 
@@ -253,3 +263,45 @@ Flink's output is the per-choice counts for a round, keyed by round and closure 
 **Tradeoffs and consequences:** A configurable model means dialogue quality, latency, and token cost vary by configuration and are not fixed properties of the design; the bounded retry and valid-fallback rules must hold for any configured model. Prompt portability across providers is not guaranteed and is a tuning concern, not a design one. No specific latency target is set for either call at this stage.
 
 **Status:** accepted — explicit user answer on 2026-10-04 that the model should be config-selectable; provider shortlist and prompts remain open.
+
+## D018 — Workflow-owned voting by Temporal signal
+
+**Decision:** A vote is an HTTP request that signals the performance workflow. The workflow owns eligibility, choice validity, duplicate suppression, and the voting deadline, and counts the votes it received. The application still applies the most-votes rule and makes any tie-break or no-vote selection once, at commit. Apache Flink and Kinesis are removed from the design.
+
+**Context / requirement:** The user removed Flink as a learning goal and asked whether it was still necessary. It was not. At eight rounds of at most ten votes, deduplication is a uniqueness check and a tally is a grouped count over ten rows. The closure-in-one-transaction rule accepted the previous day had already reduced Flink's live-path role to ceremony: the closing transaction computed the complete accepted-vote set, handed it to Flink, and Flink waited to see that same set arrive before counting it.
+
+**Chosen approach:** The API authenticates the session credential and its room scope, then signals. It does not read round state from PostgreSQL first, and it does not query the workflow first.
+
+The workflow holds the round's published choices, its eligible session set, and the set of sessions that have already voted, all in working state it already carries under D016. It records each signal as accepted, duplicate, invalid, or late. At the deadline its durable timer fires and one activity writes that round's accepted votes, its rejections, the counts, the selection and its reason, and the result event in a single transaction — one database round trip per round rather than one per vote.
+
+Randomness stays where [D002](#d002--flink-emits-counts-the-application-selects-and-commits) put it: a tie or zero-vote round is resolved once, at commit, through a replay-safe side effect, and a recovered or repeated commit returns the persisted choice rather than selecting again.
+
+**Why it fits:** Signals are persisted by the Temporal service before the call returns, so a vote is durable without a database write and survives worker restart — which is what the non-functional requirement actually asked for. Signals and the round timer are events in one totally ordered history, so "did this arrive before the deadline" is answered by that order instead of by comparing clocks across two transactions; the admission/closure race disappears rather than being mitigated. Duplicate suppression also becomes stronger, since the workflow processes signals serially and the voted-session set needs no concurrency control at all.
+
+**Alternatives considered:** Keeping Flink for the learning objective, which the user removed. Reading the PostgreSQL round snapshot before signalling, which cannot be authoritative once the workflow owns round state and buys nothing once vote outcomes are asynchronous. Querying the workflow before signalling, which is strictly worse than not checking: query tasks are not persisted and are sync-matched only to a polling worker, failing with `FAILED_PRECONDITION` when none is available, so the check introduces a failure mode that a bare signal does not have — and it still cannot prevent a late vote, because the timer can fire between the query and the signal. Temporal Update instead of Signal, which would restore a synchronous validated receipt at the cost of a second round trip; the user judged the receipt unnecessary. [Sending messages to workflows](https://docs.temporal.io/sending-messages).
+
+**Tradeoffs and consequences:** Vote acceptance now depends on the workflow service being reachable, which [D016](#d016--temporal-working-state-with-postgresql-milestone-snapshots) deliberately avoided. This is accepted: the workflow drives all progression, so when it is unreachable the performance is stopped regardless. Published-state reads are unaffected and still work while workers recover.
+
+The vote endpoint returns `202 Accepted`. The only synchronous failures are authentication and signalling a run that has already finished; duplicate, late, invalid, and ineligible outcomes surface over the state channel instead. A client treats its own `202` as provisional and learns the authoritative outcome at round close. Malformed votes therefore reach workflow history, which is acceptable at an invite-only ten-person demo and produces the rejection records the demo questions need.
+
+Removing Flink and Kinesis also removes the outbox and its relay, the Flink result table, the Java toolchain ([D011](#d011--java-for-the-flink-job)), managed-Flink VPC networking, and checkpoint tuning. The winner-commit latency target returns to under one second, since the workflow already holds the votes when the round closes.
+
+**Status:** accepted — explicit user answers on 2026-10-05: remove Flink, vote by plain signal with no durable response, and elevate Temporal to the headline learning goal.
+
+## D019 — Terminal-state Parquet export replaces stream processing
+
+**Decision:** A performance's events are exported to the S3 lake by a workflow activity when the run reaches a terminal state, successful or failed, as one Parquet object per performance inside a date partition. There is no streaming sink and no derived-metrics layer.
+
+**Context / requirement:** [D003](#d003--exact-recorded-premiere-and-separate-s3-medialake-content) requires queryable structured data in S3 and the brief lists four example demo questions. The streaming file sink that previously produced it was removed with Flink, so the lake needs another write mechanism.
+
+**Chosen approach:** Events are rows in PostgreSQL, written in the same transaction as the milestone that produced them, so they are durable from the moment they occur. Export is a separate publication step: a single activity reads that performance's events and writes one Parquet object. It runs on the failure path as well as the success path, since failed runs retain their artifacts.
+
+Athena and Glue remain the query surface, using partition projection rather than a crawler. The lake stores raw events; all four demo questions are answered by query, provided rejected submissions are recorded as events and the synthesis event carries first-audio timestamp, speaker, and story beat.
+
+**Why it fits:** A single-object PUT is atomic, so "finalized" requires no checkpoint semantics and the sixty-second freshness target becomes trivially achievable and directly verifiable — the previous design could not promise it, because managed-runtime checkpoint intervals are not a freshness guarantee. One object per performance also makes seven-day expiry and manual preservation per-object operations, which resolves the mixed-retention problem that date-partitioned streaming output created.
+
+**Alternatives considered:** Incremental export during the run, which adds coordination for data nobody queries mid-performance. Kinesis Firehose with Glue-based Parquet conversion, which reintroduces a streaming service and a buffering delay to replace a single PUT. Precomputed metric tables, unnecessary when every question is answerable from roughly two hundred event rows.
+
+**Tradeoffs and consequences:** A run in progress is not queryable, which the brief already accepts. Export becomes a step that can fail and must be retried like any other activity; a run whose export never succeeds is complete but absent from the lake, so export failure needs to be visible to the operator. Schema versioning matters more without a schema registry in the pipeline, so each event carries its schema version as [D003](#d003--exact-recorded-premiere-and-separate-s3-medialake-content) requires.
+
+**Status:** accepted — follows from the Flink removal agreed on 2026-10-05. Event schema, partition layout, and the preservation procedure remain open.

@@ -6,7 +6,7 @@ Status: Agreed concept; requirements baseline for the first milestone.
 
 Monster Theatre is a small web experience in which an audience collaboratively chooses the dialogue for two characters. Each chosen line becomes expressive, streamed speech. After eight turns, a five-second countdown introduces an uninterrupted premiere of the performance the audience created.
 
-The project demonstrates ElevenLabs real-time dialogue and audio tags, stateful stream processing with Apache Flink, and a queryable data lake on Amazon S3. Uploaded character images establish visual identity today and preserve inputs for a future AI avatar animation milestone.
+The project demonstrates ElevenLabs real-time dialogue and audio tags, durable workflow execution with Temporal, and a queryable data lake on Amazon S3. Uploaded character images establish visual identity today and preserve inputs for a future AI avatar animation milestone.
 
 Randomness in dialogue and delivery is part of the experience. Turn order, voting eligibility, committed results, and playback progression must remain predictable.
 
@@ -14,7 +14,7 @@ Randomness in dialogue and delivery is part of the experience. Turn order, votin
 
 - **Director:** Submits complete room setup once, receives and shares its audience link, starts the performance, and inspects saved artifacts through the S3 console.
 - **Audience member:** Enters through the shared link, listens, and votes on dialogue choices.
-- **Demo operator:** Inspects Flink processing and recovery, and queries structured performance data. The director may also fill this role.
+- **Demo operator:** Inspects workflow execution and recovery, and queries structured performance data. The director may also fill this role.
 
 ## First-milestone scope
 
@@ -42,7 +42,7 @@ Randomness in dialogue and delivery is part of the experience. Turn order, votin
 4. The director clicks **Start**. The automatic performance begins using the room's already fixed character and scene settings.
 5. The AI generates three choices for the scheduled character and story beat, using the selected dialogue so far.
 6. Once the choices are ready, the server opens a ten-second voting window.
-7. Flink computes the result; the application commits one winner.
+7. The workflow closes the round, counts the votes it received, and commits one winner.
 8. The AI adds audio tags to the winning text without rewriting its words. The application sends it to ElevenLabs and plays audio as chunks arrive.
 9. When the turn finishes on the room playback timeline, the next turn begins with choice generation.
 10. After all eight turns, prepare the full playback, count down **5, 4, 3, 2, 1**, and play the uninterrupted performance.
@@ -105,22 +105,24 @@ Voting defaults:
 - **State:** Save the complete audio and a manifest linking the performance, character assets, ordered turns, and timing. Mark completion explicitly.
 - **Visible failures:** Show preparation or automatic-retry status if assembly/storage fails. Mark unrecoverable partial performances as failed/incomplete; never present missing audio as a successful full recording.
 
-## Flink and S3 responsibilities
+## Voting, analytics, and S3 responsibilities
 
-**Flink performs useful product work:** aggregate votes by performance and turn, deduplicate submissions, and compute final per-choice counts for the application to act on. It also correlates turn lifecycle events to derive participation and latency metrics.
+**The performance workflow owns the voting mechanics.** A vote is an HTTP request that signals the workflow. The workflow holds the round's published choices, its eligible sessions, and the set of sessions that have already voted, so it decides eligibility, validity, duplication, and lateness itself. It counts the votes it received, then commits one winner.
 
-Flink emits counts, not winners. The application applies the most-votes rule and performs any tie-break or no-vote selection itself, once, when it commits the result. This keeps the random choice at a single point that cannot be re-rolled by stream replay or recovery.
+The workflow emits counts; the application applies the most-votes rule and performs any tie-break or no-vote selection once, when it commits the result. This keeps the random choice at a single point that cannot be re-rolled by recovery or replay.
 
-The authoritative deadline comes from the server, not audience device clocks. Closing a round and determining which votes it contains happen together, so a vote is either accepted and included or rejected as late — never acknowledged and then dropped. Delayed internal processing must not silently discard an accepted vote. Once committed, a result cannot change during playback.
+The authoritative deadline comes from the server, not audience device clocks. The vote signal and the round's countdown are recorded in one ordered workflow history, so whether a vote arrived before the deadline is settled by that order rather than by comparing clocks. A vote is either counted or recorded as late — never acknowledged and then silently dropped. Once committed, a result cannot change during playback.
 
-Keep the replayable voting/event input durable so Flink can recover from checkpoints. Checkpointed processing does not imply exactly-once external speech generation or browser playback.
+Rejected submissions — duplicate, late, ineligible, or naming an unknown choice — are retained as inspection records alongside accepted votes, because the demo questions below ask about them.
 
 **S3 has two distinct purposes:**
 
 - **Media storage:** Original character images, individual turn recordings, complete performance audio, script/decision details, and a manifest with speaker order and timing.
-- **Data lake:** Structured vote, round, turn, synthesis, and playback events, plus derived metrics, in queryable Parquet files partitioned initially by date. Include schema versions, event IDs, and room/performance/turn IDs.
+- **Data lake:** Structured vote, round, turn, synthesis, and playback events in queryable Parquet files partitioned initially by date. Include schema versions, event IDs, and room/performance/turn IDs.
 
-Keep media objects separate from lake records; lake records reference media rather than embedding audio. Query only finalized lake files. Flink's streaming file sink finalizes files through successful checkpoints, so lake freshness differs from live room state.
+Keep media objects separate from lake records; lake records reference media rather than embedding audio. A performance's events are exported to the lake once the run reaches a terminal state, successful or failed, so lake contents trail live room state by design and a run in progress is not queryable. The events themselves are durable from the moment they occur; export is a separate publication step.
+
+The lake stores events rather than precomputed metrics. Participation, tie-break frequency, latency, and rejection counts are all derivable from the event records by query, so there is no second set of derived numbers to keep consistent with the first.
 
 Example demo questions:
 
@@ -136,14 +138,14 @@ Choose the query tool during technical design. The product does not need an anal
 These are first-milestone acceptance targets, to validate against actual provider behavior during implementation.
 
 - **Workload:** One active room/performance and ten audience sessions; eight voting bursts of at most ten accepted votes each. No multi-region deployment requirement.
-- **Latency:** Vote acknowledgement p95 under 300 ms; winner committed within two to three seconds of window closure under normal operation; first audible output p95 under two seconds after submitting/flushing a tagged turn. The winner target reflects the hops between closure and commitment — durable publication, stream delivery, aggregation, and result hand-back — so **Counting votes…** is the expected normal-path display after a round closes, not only a degraded state. Measure choice-generation and tag-enhancement time separately; no target is set for either while the model remains configurable.
+- **Latency:** Vote acknowledgement p95 under 300 ms; winner committed within one second of window closure under normal operation; first audible output p95 under two seconds after submitting/flushing a tagged turn. The workflow already holds the votes when the round closes, so committing is one activity and **Counting votes…** is a brief transition rather than an expected wait. Measure choice-generation and tag-enhancement time separately; no target is set for either while the model remains configurable.
 - **Ordering and consistency:** One active turn and voting round per performance, one committed winner per round, strict speaker order, and no automatic return to a completed round. Client reconnects receive current published room/performance state from database snapshots while workflow workers recover. Published state reflects durable milestones rather than every internal workflow substep.
-- **Durability and recovery:** Acknowledged votes and committed choices survive a worker restart. Keep completed turn audio for exact replay. Target Flink recovery within 60 seconds and finalized lake records within 60 seconds of performance completion under normal operation.
-- **Degradation:** Pause voting-result progression while Flink cannot finalize a round and resume automatically after recovery. Already available audio can continue playing. On speech-provider failure, retain the chosen line and retry automatically within bounded limits. Expose recovery/failure status without manual performance controls. Dashboard-free lake inspection may lag behind live playback.
+- **Durability and recovery:** Acknowledged votes and committed choices survive a worker restart; a vote is durable once the workflow service has accepted its signal, independently of whether a worker is currently available. Keep completed turn audio for exact replay. Target resumption of progression within 60 seconds of a worker restart, and finalized lake records within 60 seconds of performance completion under normal operation.
+- **Degradation:** A vote cannot be accepted while the workflow service is unreachable; this is an accepted consequence of the workflow owning voting, and it coincides with progression being stopped anyway. Already available audio can continue playing. On speech-provider failure, retain the chosen line and retry automatically within bounded limits. Expose recovery/failure status without manual performance controls. Lake inspection lags live playback and is unavailable until a run finishes.
 - **Security:** Director authentication, audience access through a room link, server-side provider keys, private encrypted S3 objects, and limits on uploads, text, room starts, and synthesis retries.
 - **Retention:** Use synthetic demo content; retain performance assets and event data for seven days by default, with a manual preservation option for selected demo runs. Expiration includes associated media and structured records.
 - **Environment:** Desktop browsers first. Activate the audio player during Enter theatre or director Start, retain a playback-blocked fallback, and do not depend on every browser finishing in lockstep.
-- **Cost and operation:** Track generation usage, first-audio latency, vote-processing lag, checkpoint failures, and synthesis failures. Session-duration and daily-generation caps are not required for this limited-access demo.
+- **Cost and operation:** Track generation usage, first-audio latency, vote-processing lag, workflow task failures and retries, and synthesis failures. Session-duration and daily-generation caps are not required for this limited-access demo.
 
 ## Learning and interview demonstration
 
@@ -151,12 +153,14 @@ These are first-milestone acceptance targets, to validate against actual provide
 | --- | --- |
 | ElevenLabs real-time dialogue | Two hardcoded voices, speaker turns, and playback of arriving audio chunks |
 | Expressive audio tags | Original winning text compared with its tagged synthesis input and audible delivery |
-| Apache Flink | Keyed voting state, deadline handling, deduplication, aggregation, checkpoints, and recovery |
+| Temporal durable execution | Workflow-owned voting state, durable timers for the voting window and countdown, signal handling, activity retries, and recovery from a killed worker |
 | S3 data lake | Structured Parquet data and historical queries, alongside separate media objects |
 | Future AI avatars | Preserved images, individual turn audio, speaker identities, and performance timeline |
 | Interview readiness | A short live performance, S3 artifact inspection, a lake query, and a controlled duplicate-vote or worker-restart demonstration |
 
-Flink is included deliberately as a learning objective. This demo workload could use simpler voting logic, but the project provides a concrete way to demonstrate stateful processing and discuss its operational tradeoffs.
+Durable execution is the headline engineering objective. The eight-turn structure gives it real work to do — timers, external waits, retries across provider calls, and resumption of a partially completed run — and killing a worker mid-performance makes recovery visible in the workflow history rather than something to assert.
+
+An earlier version of this design placed Apache Flink in the voting path as a stream-processing learning objective. It was removed: at eight rounds of at most ten votes, deduplication is a uniqueness check and a tally is a grouped count, so the streaming infrastructure processed a set it had just been handed and added a failure mode to the live path without doing work the workload required. Scoping it out is itself a reportable engineering decision, recorded in [the decisions log](decisions.md).
 
 ## Deferred scope and open design work
 
@@ -164,12 +168,12 @@ Deferred: variable turn counts, voice selection, microphone input, animation, au
 
 Future animation should begin as offline processing of saved assets, potentially with individual character shots. InfiniteTalk supports image-and-audio inputs, but arbitrary monster portraits and a combined two-character scene require separate validation. The MVP does not promise animation compatibility.
 
-Technical design will settle the durable event source, vote-finalization contract, client synchronization, exact providers/model IDs, concrete length limits, automatic-retry budgets and recovery deadlines, audio assembly, lake query tooling, and deployment setup. These choices do not change the product concept.
+Technical design will settle client synchronization, exact providers/model IDs, concrete length limits, automatic-retry budgets and recovery deadlines, audio assembly, the lake event schema and query tooling, and deployment setup. These choices do not change the product concept.
 
 ## Reference documentation
 
 - [ElevenLabs: Stream dialogue in real-time](https://elevenlabs.io/docs/eleven-api/guides/how-to/websockets/realtime-tdd) — multi-voice models, turns, buffering/flush, and keep-alives. The current guide supports multiple registered voices with `eleven_v4`; `eleven_v4_turbo` permits one per connection.
 - [ElevenLabs: Audio tags](https://elevenlabs.io/docs/help-center/product/core-capabilities/text-to-speech/how-do-audio-tags-work-with-eleven-v3-and-v4) — expressive delivery instructions.
-- [Apache Flink: Filesystem connector](https://nightlies.apache.org/flink/flink-docs-stable/docs/connectors/datastream/filesystem/) — Parquet output and checkpoint-based file finalization.
+- [Temporal: Sending messages to workflows](https://docs.temporal.io/sending-messages) — signals, queries, and updates. Signals are persisted by the service; query tasks are not, and require a polling worker.
 - [MDN: Autoplay guide](https://developer.mozilla.org/en-US/docs/Web/Media/Guides/Autoplay) — browser audio activation and playback-blocked handling.
 - [InfiniteTalk: Official repository](https://github.com/MeiGen-AI/InfiniteTalk) — future image/audio animation exploration.

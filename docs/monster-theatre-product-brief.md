@@ -101,7 +101,7 @@ Voting defaults:
 **The audience should be able to hear the full performance after the countdown, and the director should be able to replay and inspect the saved performance through S3 artifacts.**
 
 - **Trigger and outcome:** All turns finish and the assembled playback is ready; the room plays the complete performance. The director later uses the S3 console to locate/download its artifacts.
-- **Validation and authorization:** Require all completed turn recordings before the premiere countdown. S3 access is restricted to the operator; sharing a room does not grant bucket access.
+- **Validation and authorization:** Require all completed turn recordings before the premiere countdown. S3 access is restricted to the operator; sharing a room does not grant bucket access. Audience members hear the premiere through the same delivery the live turns used and never receive a storage URL, so they need no bucket access at all.
 - **State:** Save the complete audio and a manifest linking the performance, character assets, ordered turns, and timing. Mark completion explicitly.
 - **Visible failures:** Show preparation or automatic-retry status if assembly/storage fails. Mark unrecoverable partial performances as failed/incomplete; never present missing audio as a successful full recording.
 

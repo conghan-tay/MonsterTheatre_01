@@ -329,3 +329,23 @@ Counting from state is also materially safer than the guard row it replaces. A l
 **Tradeoffs and consequences:** Concurrency multiplies listener fan-out, concurrent speech connections, and generation spend, so the default is a capacity judgement rather than a product choice. The single application task described in the system design was sized for the eleven listeners of one run; three concurrent performances triples that, and the default should be confirmed against the audio deep dive's fan-out measurements rather than assumed. The limit is also deployment-wide rather than per-director, so a busy deployment can still return `429` to a director whose own rooms are idle; this is acceptable at the invited-account scale and is visible as a retryable condition.
 
 **Status:** accepted — explicit user answers on 2026-10-06: replace the invariant with a configurable cap counted from state, no per-director cap, several invited director accounts. The default value remains open pending audio capacity work.
+
+## D021 — Premiere plays over the room WebSocket on the server timeline
+
+**Decision:** The assembled premiere recording is delivered as ordered audio chunks over the same same-origin WebSocket that carries live turn audio, positioned by the server's room timeline. Audience sessions receive no object URL for playback.
+
+**Context / requirement:** [D012](#d012--pcm-streaming-and-recorded-wav-assembly) settles what the premiere *is* — one recording assembled from the eight completed turn recordings, without regenerating speech. It did not settle how that recording reaches listeners. The system design said only "an authorized media-delivery mechanism" while also proposing short-lived per-object URLs for media, which implied a downloaded file played by a second, separate player.
+
+**Chosen approach:** Reuse the existing connection, sequence identification, and snapshot-resync rules. The server drives position, so the five-second countdown leads into a premiere that every listener hears at the same moment. A client connecting or reconnecting during the premiere resumes at the timeline's current offset rather than restarting the performance.
+
+Short-lived per-object authorized URLs remain, narrowed to what they were always for: portraits, and operator inspection or download of media, script, and manifest.
+
+**Why it fits:** One player, one buffering model, and one notion of position in the browser, reusing everything already built for turn playback instead of adding a parallel path with its own failure modes. It also makes the countdown mean something: under the URL approach the countdown was synchronised but the thing it counted down to was not, since each browser would begin whenever its own buffer filled. Resume-at-offset is a direct consequence and is better than the alternative, where a late joiner would start a finished performance from the beginning.
+
+A secondary benefit is that the security rule tightens rather than being qualified: no audience session receives an S3 URL at any point, so "a room link never grants bucket access" holds without exception.
+
+**Alternatives considered:** A presigned URL to the assembled object played in a standard audio element. Simpler and it offloads bandwidth from the container, but it needs a second player, gives up synchronised start, restarts rather than resumes on reconnect, and hands audience sessions an object URL. The brief's tolerance for browsers not finishing in lockstep would have permitted it; synchronised delivery was preferred because the premiere is the moment the product is built around.
+
+**Tradeoffs and consequences:** Each performance now sends its audio to every listener twice — once live, once at the premiere — so container egress roughly doubles and multiplies again by the concurrency maximum in [D020](#d020--concurrent-performances-are-a-configurable-capacity-limit). Server-driven delivery is also more exposed to application task replacement than a downloaded object would be: a task restart mid-premiere interrupts playback until clients reconnect and resume, where a browser playing a local file would have continued. The system design already accepts interrupted in-flight audio on the single-task deployment, so this is consistent rather than new, but it is a real cost of the choice.
+
+**Status:** accepted — explicit user answer on 2026-10-06. Buffering depth and the anchor behaviour for a resuming client remain part of the audio deep dive.

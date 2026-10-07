@@ -175,7 +175,7 @@ What to notice:
 
 These are also listed in [the review](review.md).
 
-1. **Slot release.** With no release on disconnect, extra tabs or devices can fill a room.
-2. **Share-link expiry.** When the link stops admitting new sessions.
-3. **Director.** Whether the director listens through their login only, or also holds an audience session and can vote.
-4. **Multiple tabs with one cookie.** Two tabs in the same browser share one session. Proposed: allow both connections, since they are one voter either way.
+Decided on 2026-10-07 (D028): slots are never released, and the director votes through their own login without holding an audience session, so they do not use one of the ten slots.
+
+1. **Share-link expiry.** When the link stops admitting new sessions.
+2. **Multiple tabs with one cookie.** Two tabs in the same browser share one session. Proposed: allow both connections, since they are one voter either way.

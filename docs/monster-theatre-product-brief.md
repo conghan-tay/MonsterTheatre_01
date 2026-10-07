@@ -12,7 +12,7 @@ Randomness in dialogue and delivery is part of the experience. Turn order, one v
 
 ## Actors
 
-- **Director:** Submits complete room setup once, receives and shares its audience link, and starts the performance. Several director accounts exist; each owns its own rooms and runs them independently of the others.
+- **Director:** Submits complete room setup once, receives and shares its audience link, starts the performance, and can vote alongside the audience. Several director accounts exist; each owns its own rooms and runs them independently of the others.
 - **Audience member:** Enters through the shared link, votes on dialogue choices, and hears the premiere.
 - **Demo operator:** Inspects workflow execution and recovery in Temporal, and saved files in S3. The director may also fill this role.
 

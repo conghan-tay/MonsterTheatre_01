@@ -6,12 +6,12 @@ Scope: high-level issues in [the product brief](monster-theatre-product-brief.md
 
 ## Open items
 
-### To confirm with you
+### Confirmed with you
 
-1. **Late joiners can vote in an open round.** The workflow no longer keeps a list of eligible sessions, so anyone in the room can vote while a round is open, including someone who joined mid-round. The earlier design made them wait for the next round. This is simpler; confirm it is acceptable (recorded as proposed in D024).
-2. **Director authentication.** Cognito is still the proposal. For a local prototype a single configured director login would be quicker; decide when to introduce Cognito.
-3. **Can the director vote?** Not stated anywhere. Simplest answer: no, unless they also open the audience link.
-4. **Audience slots never release.** Ten sessions per room, and closing a tab does not free a slot. A few extra tabs or devices can fill a room. Options: accept it, raise the cap, or expire sessions that have not been connected for some time.
+1. **Late joiners can vote in an open round.** Decided 2026-10-07: yes. Anyone in the room can vote while a round is open, including someone who joined mid-round (D024).
+2. **Director authentication.** Decided 2026-10-07: a simple built-in login for now, with Cognito as a possible later swap (D029).
+3. **Can the director vote?** Decided 2026-10-07: yes. The director votes through their own connection as one extra voter (D028).
+4. **Audience slots never release.** Decided 2026-10-07: accepted. Ten sessions per room, and closing a tab does not free a slot; a room filled by extra tabs or devices needs a new room (D028).
 
 ### To verify with a spike
 
@@ -42,7 +42,7 @@ Scope: high-level issues in [the product brief](monster-theatre-product-brief.md
 | B2 Staleness sweep underspecified | Gone with the sweep; a remnant is item 10 |
 | B3 No way to publish retry status | Requirement dropped; see item 11 |
 | B4 Director replay undefined | Resolved. Reopening the room link replays the premiere |
-| B5 Audience slots never release | Still open as item 4 |
+| B5 Audience slots never release | Accepted (D028) |
 | B6 Retention covered only S3 | Reduced to item 13 |
 | B7 Two deadlines | Reduced to item 7 |
 | B8 First-audio latency measured at an undefined point | Gone with live audio |
@@ -53,6 +53,5 @@ Scope: high-level issues in [the product brief](monster-theatre-product-brief.md
 
 ## Suggested order
 
-1. Answer items 1 to 4.
-2. Run the two spikes (items 5 and 6) early; both are small.
-3. Settle items 7 to 13 as each part is built.
+1. Run the two spikes (items 5 and 6) early; both are small.
+2. Settle items 7 to 13 as each part is built.

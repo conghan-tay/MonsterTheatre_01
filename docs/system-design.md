@@ -17,7 +17,8 @@ Source of truth: [Product brief](monster-theatre-product-brief.md). Significant 
 - Room setup is immutable once created (D013).
 - After Start everything is automatic; there are no Stop or retry controls (D007).
 - Eight alternating turns, A first, B last.
-- One vote per audience session per turn; the first vote counts.
+- One vote per voter per turn; the first vote counts. Voters are the audience sessions (up to ten) and the director, who votes through their own connection under their director ID (D028).
+- Audience slots are never released; closing a tab does not free one (D028).
 - One winner per turn, chosen once and never changed.
 - No audio is played before the premiere (D022).
 - S3 is private. Browsers get portraits and audio through the server.
@@ -35,7 +36,7 @@ Source of truth: [Product brief](monster-theatre-product-brief.md). Significant 
 | S3 | Portraits and the eight turn recordings |
 | Language model | Choice generation and audio-tag enhancement, behind a configurable adapter (D017) |
 | ElevenLabs | Text to speech for each winning line |
-| Cognito (proposed) | Director login; administrator-created accounts only |
+| Director login | Built into the Go server: administrator-created accounts with hashed passwords, a login form, and a session cookie (D029). Handlers receive a verified director ID from one piece of middleware, so the mechanism can be swapped later |
 
 ```mermaid
 flowchart LR
@@ -64,6 +65,8 @@ For prototyping, everything runs locally: the Temporal dev server, Redis, and Po
 
 | Table | Holds | Written when |
 | --- | --- | --- |
+| `directors` | Director ID, username, password hash. Rows are added by an administrator; there is no signup | By hand |
+| `director_sessions` | Session ID, director, credential hash, expiry. Same pattern as audience sessions | At login |
 | `rooms` | Owner (director ID), scene topic/description/genre, character A and B (name, brief, voice, portrait key), hash of the share-link token | Once, at creation |
 | `audience_sessions` | Session ID, room, credential hash, timestamps. See [Audience session](audience-session.md) | When someone enters; `last_seen_at` on reconnect |
 | `performances` | Performance ID, room (unique, so one per room), status (`running`, `completed`, `failed`), and on completion the final script and the eight audio keys | A row at Start; one update at the end |
@@ -125,6 +128,7 @@ A possible later improvement: since nothing is played until the premiere, taggin
 
 | Operation | Who | Behaviour |
 | --- | --- | --- |
+| `POST /api/v1/director/login` | Anyone | Username and password; on success sets the director session cookie. `POST /api/v1/director/logout` clears it |
 | `POST /api/v1/rooms` | Director | One multipart request with scene/character JSON and two portraits. Validate, upload portraits to S3 under a new room ID, insert the room row, return the room ID and share link. On failure the director resubmits (D025) |
 | `GET /api/v1/rooms/{roomId}` | Director or audience session of that room | Scene, characters, and the room's performance ID and status if started |
 | `POST /api/v1/rooms/{roomId}/performance` | Director | Insert the performance row, then start the workflow. A repeated Start returns the existing performance |
@@ -153,7 +157,7 @@ Browser to server:
 
 | Message | Contents |
 | --- | --- |
-| `vote` | Turn number and choice ID. The session comes from the connection, never from the message |
+| `vote` | Turn number and choice ID. The voter (audience session or director) comes from the connection, never from the message |
 
 ## 6. Flows
 

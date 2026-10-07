@@ -420,9 +420,9 @@ A secondary benefit is that the security rule tightens rather than being qualifi
 
 **Alternatives considered:** PostgreSQL milestone snapshots ([D016](#d016--temporal-working-state-with-postgresql-milestone-snapshots)), which keep reads available while a worker is down at the cost of a second copy of state. PostgreSQL LISTEN/NOTIFY in place of Redis, which avoids one component; Redis Streams was the user's stated preference. Having the server poll the workflow, which needs no broker but adds delay and load.
 
-**Tradeoffs and consequences:** A newly connecting browser cannot load state while no worker is available. An activity retry can publish an update twice; the revision rule makes that harmless. Redis is one more component to run. One detail not yet confirmed by the user: because the workflow no longer needs a list of eligible sessions, anyone who joins while a round is open can vote in it, where the earlier design made them wait for the next round. Supersedes [D016](#d016--temporal-working-state-with-postgresql-milestone-snapshots); amends [D015](#d015--one-performance-resource-with-nested-components) and [D018](#d018--workflow-owned-voting-by-temporal-signal).
+**Tradeoffs and consequences:** A newly connecting browser cannot load state while no worker is available. An activity retry can publish an update twice; the revision rule makes that harmless. Redis is one more component to run. Because the workflow no longer needs a list of eligible sessions, anyone who joins while a round is open can vote in it, where the earlier design made them wait for the next round; the user confirmed this on 2026-10-07. Supersedes [D016](#d016--temporal-working-state-with-postgresql-milestone-snapshots); amends [D015](#d015--one-performance-resource-with-nested-components) and [D018](#d018--workflow-owned-voting-by-temporal-signal).
 
-**Status:** accepted — explicit user request and plan approval on 2026-10-07; the late-joiner voting detail is proposed.
+**Status:** accepted — explicit user request and plan approval on 2026-10-07, including the late-joiner voting detail.
 
 ## D025 — Room creation is one plain request
 
@@ -471,3 +471,35 @@ A secondary benefit is that the security rule tightens rather than being qualifi
 **Tradeoffs and consequences:** Concurrent provider spend is unbounded in principle. A run ended by the timeout cannot mark its own row failed, so the server must treat a closed workflow with a `running` row as failed. Supersedes [D020](#d020--concurrent-performances-are-a-configurable-capacity-limit).
 
 **Status:** accepted — plan approval on 2026-10-07.
+
+## D028 — The director votes; audience slots are never released
+
+**Decision:** The director can vote in every round. Audience slots, once taken, stay taken for the life of the room.
+
+**Context / requirement:** Both were left open by the earlier design and raised in [the review](review.md).
+
+**Chosen approach:** The director votes over their own WebSocket connection and is identified to the workflow by their director ID, so they are one voter, do not need an audience session, and do not use one of the ten audience slots. A round therefore has at most eleven votes. An audience session is never freed on disconnect or by a timer.
+
+**Why it fits:** A director demonstrating alone can drive a whole performance. Never releasing slots keeps the rule that a reconnecting browser is always the same voter, with no cleanup logic.
+
+**Alternatives considered:** Requiring the director to open the audience link to vote. Expiring sessions that have not connected for some time, or raising the cap.
+
+**Tradeoffs and consequences:** Extra tabs, devices, or cleared cookies can fill a room before the intended audience arrives; the remedy is a new room.
+
+**Status:** accepted — explicit user answers on 2026-10-07.
+
+## D029 — Simple built-in director login for now
+
+**Decision:** Directors log in with a username and password checked by the Go server, which sets a session cookie. Cognito is not used in the prototype.
+
+**Context / requirement:** Only a handful of administrator-created directors exist, and the priority is a design that is quick to prototype and run locally.
+
+**Chosen approach:** A `directors` table with hashed passwords (a slow password hash such as bcrypt or argon2), rows added by hand, no signup. Login creates a director session using the same random-secret cookie pattern as audience sessions. One piece of middleware turns the cookie into a verified director ID; no handler knows how the director was authenticated.
+
+**Why it fits:** It works offline with nothing else running, tests can create a director and log in directly, and it reuses a mechanism the project already needs.
+
+**Alternatives considered:** A Cognito user pool, which provides password reset, multi-factor, and managed credential storage, but needs a redirect login flow, token verification, and a real AWS user pool even for local runs and tests.
+
+**Tradeoffs and consequences:** The project owns password hashing and the login endpoint, and there is no self-service password reset or multi-factor. Because authentication sits behind one middleware, moving to Cognito later replaces that middleware and the login page only.
+
+**Status:** accepted — explicit user answer on 2026-10-07.

@@ -8,6 +8,8 @@ Only explicit product-brief decisions or later user agreements are accepted. Pro
 
 **Amended 2026-10-06 ([D020](#d020--concurrent-performances-are-a-configurable-capacity-limit)):** this decision originally read "one active performance". That was scope framing — a statement that the demo need not handle many at once — but the system design hardened it into a deployment-wide mutex. Concurrency is now a configurable capacity limit rather than part of the product definition. The rest of this decision stands unchanged.
 
+**Amended 2026-10-07:** the capacity limit was removed as well ([D027](#d027--no-concurrency-cap-or-staleness-sweep)), and turn audio is no longer streamed; the audience hears the performance only at the premiere ([D022](#d022--premiere-is-the-only-audio-playback)).
+
 **Context / requirement:** Deliver a small live demo with predictable ordering and manageable operational scope.
 
 **Chosen approach:** Keep the three core journeys and deferred features defined in [the product brief](monster-theatre-product-brief.md). Use static uploaded portraits and fixed voices; introduce A first and let B deliver the closing EXPLAIN + PUNCHLINE.
@@ -43,6 +45,8 @@ Flink's output is the per-choice counts for a round, keyed by round and closure 
 **Status (original):** accepted — responsibility split from product brief; counts-only contract, application-side selection, and single-transaction closure accepted on 2026-10-04. Input transport and replay retention remain open.
 
 ## D003 — Exact recorded premiere and separate S3 media/lake content
+
+**Amended 2026-10-07:** the lake half of this decision is superseded by [D023](#d023--no-data-lake-or-analytics-in-the-first-milestone); there is no Parquet, Athena, or structured event data in this milestone. The media half stands in reduced form under [D022](#d022--premiere-is-the-only-audio-playback): the premiere reuses the saved turn recordings, played in order, with no assembled file or manifest. The original text is retained below for the record.
 
 **Decision:** Reuse completed turn recordings for the premiere; keep media and queryable structured data separate in private S3 storage.
 
@@ -116,6 +120,8 @@ Flink's output is the per-choice counts for a round, keyed by round and closure 
 
 ## D009 — Temporal Cloud with Go workflows
 
+**Amended 2026-10-07:** still accepted. The references below to a room setup workflow and to milestone snapshots no longer apply ([D025](#d025--room-creation-is-one-plain-request), [D024](#d024--redis-streams-for-live-updates-and-workflow-query-on-connect)). There is one workflow, per performance, and the worker runs as its own process ([D026](#d026--server-and-worker-run-as-separate-processes)).
+
 **Decision:** Use Temporal Cloud to orchestrate the automatic performance, with Go workers on AWS.
 
 **Context / requirement:** Eight repeated generation/vote/speech stages, external result waits, playback timers, retries, and restart recovery must proceed without director intervention.
@@ -168,6 +174,8 @@ Flink's output is the per-choice counts for a round, keyed by round and closure 
 
 ## D012 — PCM streaming and recorded WAV assembly
 
+**Status:** superseded before acceptance, on 2026-10-07, by [D022](#d022--premiere-is-the-only-audio-playback). Nothing is streamed live and nothing is assembled, so the PCM format, the custom browser player, and WAV assembly are not needed. The original text is retained below for the record.
+
 **Decision:** Propose PCM for live audio and turn recordings, with a WAV premiere assembled from completed elected attempts.
 
 **Context / requirement:** Stream arriving chunks, identify exact turns, and replay the actual recordings without regenerating speech.
@@ -183,6 +191,8 @@ Flink's output is the per-choice counts for a round, keyed by round and closure 
 **Status:** proposed.
 
 ## D013 — Room owns immutable scene and character context
+
+**Amended 2026-10-07:** still accepted. There is no separate publication step any more; the room is immutable from the moment it is created ([D025](#d025--room-creation-is-one-plain-request)).
 
 **Decision:** Characters A/B and scene context are components of Room, not independent character resources.
 
@@ -200,6 +210,8 @@ Flink's output is the per-choice counts for a round, keyed by round and closure 
 
 ## D014 — Single create-and-publish request with Temporal setup compensation
 
+**Status:** superseded on 2026-10-07 by [D025](#d025--room-creation-is-one-plain-request). The single-request experience for the director stands; the Temporal setup workflow, staging, and compensation were removed. The original text is retained below for the record.
+
 **Decision:** One complete request creates and publishes immutable Room setup and returns its shareable link; the director then has Start.
 
 **Context / requirement:** The director wants a single simple setup submission containing scene context, both characters, and both portraits, with no revision/edit stage. PostgreSQL and S3 writes can fail independently.
@@ -215,6 +227,8 @@ Flink's output is the per-choice counts for a round, keyed by round and closure 
 **Status:** accepted — user approved the discussed setup flow and requested the documentation update on 2026-10-04.
 
 ## D015 — One Performance resource with nested components
+
+**Amended 2026-10-07 ([D024](#d024--redis-streams-for-live-updates-and-workflow-query-on-connect)):** Performance is still the single resource for a run, with turns nested inside it. What changed is where it lives: in workflow state while running, and as one final script document on the performance row when finished. The PostgreSQL snapshot, the vote ledger, and synthesis-attempt summaries described below no longer exist.
 
 **Decision:** Performance is the root resource for turns, their voting state, and synthesis-attempt summaries; accepted votes are durable records owned by the performance.
 
@@ -234,6 +248,8 @@ Flink's output is the per-choice counts for a round, keyed by round and closure 
 
 ## D016 — Temporal working state with PostgreSQL milestone snapshots
 
+**Status:** superseded on 2026-10-07 by [D024](#d024--redis-streams-for-live-updates-and-workflow-query-on-connect). The workflow is now the only holder of running state; PostgreSQL receives a row at Start and the final result at the end. The alternative this decision rejected, workflow-first live reads, is what was chosen, accepting that reads need an available worker. The original text is retained below for the record.
+
 **Decision:** Use the hybrid model: Temporal owns internal execution/context; PostgreSQL stores published performance milestones, accepted votes, and immutable commitments.
 
 **Context / requirement:** Reduce repeated context reads and per-step database writes while preserving current published state during workflow-worker recovery, durable voting, and historical inspection.
@@ -252,6 +268,8 @@ Flink's output is the per-choice counts for a round, keyed by round and closure 
 
 ## D017 — Configurable dialogue-generation provider behind an adapter
 
+**Amended 2026-10-07:** still accepted. With no event log or lake ([D023](#d023--no-data-lake-or-analytics-in-the-first-milestone)), the model used is recorded per turn in the final script on the performance row.
+
 **Decision:** Treat the model used for choice generation and audio-tag enhancement as deployment configuration behind a narrow application-side adapter, not as a fixed architectural dependency.
 
 **Context / requirement:** Every turn makes two generation calls — three dialogue choices, then audio-tag enhancement of the winning line. These were named throughout the flows but had no component, no diagram presence, and no stated provider. The user wants to swap models without a code change.
@@ -267,6 +285,8 @@ Flink's output is the per-choice counts for a round, keyed by round and closure 
 **Status:** accepted — explicit user answer on 2026-10-04 that the model should be config-selectable; provider shortlist and prompts remain open.
 
 ## D018 — Workflow-owned voting by Temporal signal
+
+**Amended 2026-10-07 ([D024](#d024--redis-streams-for-live-updates-and-workflow-query-on-connect)):** the core stands: a vote signals the workflow, and the workflow owns duplicates and the deadline. Four details changed. The vote travels over the browser's WebSocket instead of an HTTP `202` endpoint. The workflow picks the winner itself, using Temporal's replay-safe random source for ties, so there is no separate commit activity. Nothing is written to PostgreSQL per round, and rejected votes are ignored, not recorded. A browser reconnecting mid-round can now see its own vote, because the snapshot comes from a workflow query.
 
 **Decision:** A vote is an HTTP request that signals the performance workflow. The workflow owns eligibility, choice validity, duplicate suppression, and the voting deadline, and counts the votes it received. The application still applies the most-votes rule and makes any tie-break or no-vote selection once, at commit. Apache Flink and Kinesis are removed from the design.
 
@@ -292,6 +312,8 @@ Removing Flink and Kinesis also removes the outbox and its relay, the Flink resu
 
 ## D019 — Terminal-state Parquet export replaces stream processing
 
+**Status:** superseded on 2026-10-07 by [D023](#d023--no-data-lake-or-analytics-in-the-first-milestone). There is no lake export. The original text is retained below for the record.
+
 **Decision:** A performance's events are exported to the S3 lake by a workflow activity when the run reaches a terminal state, successful or failed, as one Parquet object per performance inside a date partition. There is no streaming sink and no derived-metrics layer.
 
 **Context / requirement:** [D003](#d003--exact-recorded-premiere-and-separate-s3-medialake-content) requires queryable structured data in S3 and the brief lists four example demo questions. The streaming file sink that previously produced it was removed with Flink, so the lake needs another write mechanism.
@@ -309,6 +331,8 @@ Athena and Glue remain the query surface, using partition projection rather than
 **Status:** accepted — follows from the Flink removal agreed on 2026-10-05. Event schema, partition layout, and the preservation procedure remain open.
 
 ## D020 — Concurrent performances are a configurable capacity limit
+
+**Status:** superseded on 2026-10-07 by [D027](#d027--no-concurrency-cap-or-staleness-sweep). Rooms remain independent, which was the point of this decision; the configurable cap and the staleness sweep were removed. The original text is retained below for the record.
 
 **Decision:** Remove the deployment-wide single-active-performance constraint. One performance per room ([D005](#d005--one-performance-per-room)) remains the only invariant. The number of performances running at once is a configured maximum, evaluated by counting performances in non-terminal phases, with a default of three.
 
@@ -332,6 +356,8 @@ Counting from state is also materially safer than the guard row it replaces. A l
 
 ## D021 — Premiere plays over the room WebSocket on the server timeline
 
+**Status:** superseded on 2026-10-07 by [D022](#d022--premiere-is-the-only-audio-playback). The premiere is now eight clips played by the browser's own audio element, fetched through the server. The rule that no browser receives a storage URL stands. The original text is retained below for the record.
+
 **Decision:** The assembled premiere recording is delivered as ordered audio chunks over the same same-origin WebSocket that carries live turn audio, positioned by the server's room timeline. Audience sessions receive no object URL for playback.
 
 **Context / requirement:** [D012](#d012--pcm-streaming-and-recorded-wav-assembly) settles what the premiere *is* — one recording assembled from the eight completed turn recordings, without regenerating speech. It did not settle how that recording reaches listeners. The system design said only "an authorized media-delivery mechanism" while also proposing short-lived per-object URLs for media, which implied a downloaded file played by a second, separate player.
@@ -349,3 +375,99 @@ A secondary benefit is that the security rule tightens rather than being qualifi
 **Tradeoffs and consequences:** Each performance now sends its audio to every listener twice — once live, once at the premiere — so container egress roughly doubles and multiplies again by the concurrency maximum in [D020](#d020--concurrent-performances-are-a-configurable-capacity-limit). Server-driven delivery is also more exposed to application task replacement than a downloaded object would be: a task restart mid-premiere interrupts playback until clients reconnect and resume, where a browser playing a local file would have continued. The system design already accepts interrupted in-flight audio on the single-task deployment, so this is consistent rather than new, but it is a real cost of the choice.
 
 **Status:** accepted — explicit user answer on 2026-10-06. Chunked delivery here assumes the PCM format in [D012](#d012--pcm-streaming-and-recorded-wav-assembly), which is still proposed. Buffering depth and the anchor behaviour for a resuming client remain part of the audio deep dive.
+
+## D022 — Premiere is the only audio playback
+
+**Decision:** No audio is played during the turns. Each winning line is turned into speech and saved to S3 as it is chosen, and the audience first hears the performance at the premiere, as the eight recordings played in order by the browser.
+
+**Context / requirement:** The user found the design too complex to comprehend and prototype quickly, and removed the requirement to play each line after its vote. Live audio was the largest source of complexity: a realtime provider socket, PCM fan-out over WebSockets, a custom browser player, a room playback timeline, and interrupted-attempt handling.
+
+**Chosen approach:** Text to speech is an ordinary request/response activity per turn that writes one audio file to S3. After turn eight the workflow publishes a start time five seconds ahead and the ordered clip list. Each browser counts down and plays the clips back to back with a standard audio element, fetching them through the server and highlighting the speaking portrait per clip. A browser arriving later plays from the beginning.
+
+**Why it fits:** It removes every realtime audio concern while keeping the vote-then-hear payoff, and it makes the premiere a genuine reveal. It also dissolves the process-topology problem in the earlier design, because no audio has to travel from a worker to a browser.
+
+**Alternatives considered:** Keeping live per-turn streaming, removed by the user. Assembling one recording on the server, which adds an activity and a format question for no benefit to a prototype; it can be added later.
+
+**Tradeoffs and consequences:** The audience reads each winning line but does not hear it until the end. The ElevenLabs real-time streaming learning goal is dropped; audio tags and two voices remain. There is no single assembled recording in S3, and premiere playback is aligned only by a shared start time. Supersedes [D012](#d012--pcm-streaming-and-recorded-wav-assembly) and [D021](#d021--premiere-plays-over-the-room-websocket-on-the-server-timeline), and the media half of [D003](#d003--exact-recorded-premiere-and-separate-s3-medialake-content) in part.
+
+**Status:** accepted — explicit user request and plan approval on 2026-10-07. The exact ElevenLabs model and output format remain to be confirmed.
+
+## D023 — No data lake or analytics in the first milestone
+
+**Decision:** Remove the S3 data lake, Parquet export, Athena, Glue, and the structured event log. S3 is used for object storage only.
+
+**Context / requirement:** The user judged analytics not a priority for the prototype.
+
+**Chosen approach:** Keep one final script document per performance on its PostgreSQL row, holding choices, vote counts, winners, how each was decided, and original and tagged text. Nothing else is recorded about a run.
+
+**Why it fits:** The lake existed to answer four demo questions. Without that goal, the event schema, export step, retention design, and query tooling have no purpose.
+
+**Alternatives considered:** Keeping an events table without the export, rejected as machinery with no consumer.
+
+**Tradeoffs and consequences:** No per-vote history, rejection counts, or latency data after a run. The S3 data lake learning goal is dropped. Supersedes [D019](#d019--terminal-state-parquet-export-replaces-stream-processing) and the lake half of [D003](#d003--exact-recorded-premiere-and-separate-s3-medialake-content).
+
+**Status:** accepted — explicit user request and plan approval on 2026-10-07.
+
+## D024 — Redis Streams for live updates and workflow query on connect
+
+**Decision:** The workflow publishes each state change to a Redis stream. The server reads the stream and forwards updates to every browser in the room over that browser's WebSocket. When a browser connects, the server gets the current state by querying the workflow. PostgreSQL holds no running state.
+
+**Context / requirement:** The user's original sketch, restored: the workflow is the one place performance state lives, and the server is a forwarder.
+
+**Chosen approach:** Publishing is a small activity, since workflow code cannot perform I/O. The workflow keeps a revision number, increased before every publish and included in both published updates and query results. On connect the server registers the connection, queries the workflow, sends that snapshot, then forwards only updates with a higher revision. Votes travel up the same WebSocket and the server signals the workflow. Finished performances are read from the performance row, because workflow history expires and a query needs a worker.
+
+**Why it fits:** One authority for running state, no snapshot schema to keep in step with the workflow, and a connection model that is the same for first connect and reconnect.
+
+**Alternatives considered:** PostgreSQL milestone snapshots ([D016](#d016--temporal-working-state-with-postgresql-milestone-snapshots)), which keep reads available while a worker is down at the cost of a second copy of state. PostgreSQL LISTEN/NOTIFY in place of Redis, which avoids one component; Redis Streams was the user's stated preference. Having the server poll the workflow, which needs no broker but adds delay and load.
+
+**Tradeoffs and consequences:** A newly connecting browser cannot load state while no worker is available. An activity retry can publish an update twice; the revision rule makes that harmless. Redis is one more component to run. One detail not yet confirmed by the user: because the workflow no longer needs a list of eligible sessions, anyone who joins while a round is open can vote in it, where the earlier design made them wait for the next round. Supersedes [D016](#d016--temporal-working-state-with-postgresql-milestone-snapshots); amends [D015](#d015--one-performance-resource-with-nested-components) and [D018](#d018--workflow-owned-voting-by-temporal-signal).
+
+**Status:** accepted — explicit user request and plan approval on 2026-10-07; the late-joiner voting detail is proposed.
+
+## D025 — Room creation is one plain request
+
+**Decision:** Creating a room is a single synchronous request: validate, upload both portraits to S3 under a new room ID, insert the room row, return the share link. There is no setup workflow.
+
+**Context / requirement:** [D014](#d014--single-create-and-publish-request-with-temporal-setup-compensation) wrapped two small uploads and one row in a Temporal workflow with staging, copying, and compensation. That is disproportionate for a prototype.
+
+**Chosen approach:** The room row is inserted last, so a room exists only if its portraits do. If the request fails partway, the director resubmits and gets a new room.
+
+**Why it fits:** The director's experience is unchanged, and the only cost of a partial failure is two orphaned images that the seven-day lifecycle rule removes.
+
+**Alternatives considered:** Keeping the setup workflow as a second Temporal showcase; the performance workflow already demonstrates durable execution.
+
+**Tradeoffs and consequences:** A retried submission after a lost response creates a second room. Acceptable at this scale. Supersedes [D014](#d014--single-create-and-publish-request-with-temporal-setup-compensation).
+
+**Status:** accepted — plan approval on 2026-10-07.
+
+## D026 — Server and worker run as separate processes
+
+**Decision:** The Go server (HTTP, WebSockets) and the Go Temporal worker are two processes built from one codebase.
+
+**Context / requirement:** The headline demonstration is killing the worker mid-performance. In the earlier single-process design that would also have dropped every browser connection.
+
+**Chosen approach:** The two never call each other. The server reaches the workflow through Temporal (start, signal, query); the workflow reaches the server through Redis ([D024](#d024--redis-streams-for-live-updates-and-workflow-query-on-connect)).
+
+**Why it fits:** Browsers stay connected through a worker restart and simply see updates pause and resume. The split is cheap now that no audio flows from worker to browser ([D022](#d022--premiere-is-the-only-audio-playback)).
+
+**Alternatives considered:** One process, which is simpler to run but makes the recovery demonstration misleading.
+
+**Tradeoffs and consequences:** Two things to start locally and two services to deploy.
+
+**Status:** accepted — plan approval on 2026-10-07.
+
+## D027 — No concurrency cap or staleness sweep
+
+**Decision:** Remove the configurable limit on concurrent performances and the automatic sweep that failed stale runs. One performance per room ([D005](#d005--one-performance-per-room)) remains.
+
+**Context / requirement:** [D020](#d020--concurrent-performances-are-a-configurable-capacity-limit) bounded provider spend and audio fan-out. There is no fan-out any more, director accounts are administrator-created, and the sweep had no defined owner.
+
+**Chosen approach:** Start checks only that the room has no performance yet. A workflow run timeout bounds a run that hangs.
+
+**Why it fits:** Less to build, and nothing left for the cap to protect at invited-account scale.
+
+**Alternatives considered:** Keeping a soft cap as a count at Start; easy to add back if cost becomes a concern.
+
+**Tradeoffs and consequences:** Concurrent provider spend is unbounded in principle. A run ended by the timeout cannot mark its own row failed, so the server must treat a closed workflow with a `running` row as failed. Supersedes [D020](#d020--concurrent-performances-are-a-configurable-capacity-limit).
+
+**Status:** accepted — plan approval on 2026-10-07.

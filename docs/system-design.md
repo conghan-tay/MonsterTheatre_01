@@ -1,6 +1,6 @@
 # Monster Theatre — System Design
 
-Status: Design in progress. Requirements, room-owned characters, immutable create-and-publish, Temporal setup compensation, one Performance resource with nested components and hybrid milestone snapshots, one performance per room, automatic progression without Stop controls, an AWS-hosted milestone, Temporal Cloud with Go workflows, workflow-owned voting by signal with application-side selection, terminal-state Parquet export in place of stream processing, and a configurable dialogue-generation model behind an adapter are agreed with the user. Remaining interfaces, business data flows, and the high-level architecture below are a design draft. Deep dives and final design sign-off remain outstanding.
+Status: Design in progress. Requirements, room-owned characters, immutable create-and-publish, Temporal setup compensation, one Performance resource with nested components and hybrid milestone snapshots, one performance per room, concurrent performances as a configurable capacity limit, premiere playback over the room WebSocket, automatic progression without Stop controls, an AWS-hosted milestone, Temporal Cloud with Go workflows, workflow-owned voting by signal with application-side selection, terminal-state Parquet export in place of stream processing, and a configurable dialogue-generation model behind an adapter are agreed with the user. Remaining interfaces, business data flows, and the high-level architecture below are a design draft. Deep dives and final design sign-off remain outstanding.
 
 Source of truth: [Product brief](monster-theatre-product-brief.md). Significant choices are recorded in [Decisions](decisions.md).
 
@@ -72,11 +72,11 @@ Every figure below is **per performance**. The configured concurrency maximum mu
 
 ## 2. Core resources and durable records
 
-The resource boundaries for Room and Performance are agreed. This table also names durable inspection/admission records; naming a record does not require an independent CRUD resource or table for every concept. Detailed schemas and remaining transport choices come later.
+The resource boundaries for Room and Performance are agreed. This table also names durable inspection records; naming a record does not require an independent CRUD resource or table for every concept. Detailed schemas and remaining transport choices come later.
 
 | Entity | Stable identity / owner | Responsibility and relationships | Lifecycle | Authority |
 | --- | --- | --- | --- | --- |
-| Director identity | Authenticated director ID | Owns rooms and is authorized for complete setup submission and Start. Authentication mechanism remains open. | Managed by the chosen authentication mechanism | Authentication establishes identity; application enforces resource ownership |
+| Director identity | Authenticated director ID | Owns rooms and is authorized for complete setup submission and Start. A Cognito user pool is the proposed mechanism (section 5). | Managed by the chosen authentication mechanism | Authentication establishes identity; application enforces resource ownership |
 | Room | Room ID; director ID | Shareable theatre owning immutable scene context, character components A/B and portrait references, audience memberships, and zero or one performance reference | Internal provisioning → ready/published or provisioning failed; no setup edits and no second run | Application for context/state; S3 for portrait bytes |
 | Audience session | Session ID; scoped room membership | Anonymous voting identity restored on reconnect. Presence and connection state are distinct from identity. | Joined → disconnected/reconnected; session expiry to be specified | Application |
 | Performance | Performance ID; room ID and director ID | One automatic run owning eight nested turns, their voting fields, synthesis-attempt summaries, current published phase, room playback timeline, and artifact references | Running → preparing premiere → countdown → premiering → completed; unrecoverable error from any nonterminal phase → failed | PostgreSQL for published business milestones; Temporal for internal execution |
@@ -101,7 +101,7 @@ Performance
 
 Turn number identifies a component within its performance. Each turn has exactly one voting round, so the round is a group of fields within the turn rather than an independently managed resource. Attempts likewise belong to their turn. Keep stable scoped turn/round/attempt identifiers for event correlation, idempotency, and audio delivery; those identifiers do not imply separate REST resources.
 
-Persist one bounded Performance snapshot containing its nested turn data and committed tallies. Enrich the authorized response with the viewer's receipt from the separate ledger, which enforces uniqueness by performance/turn/session. Do not persist a viewer-specific receipt into the shared snapshot, rewrite it for each accepted vote, or expose other audience members' receipts/identities.
+Persist one bounded Performance snapshot containing its nested turn data and committed tallies. Enrich the authorized response with the viewer's receipt from the separate ledger. The workflow enforces one vote per performance/turn/session; the ledger carries a matching uniqueness constraint only as a backstop. Do not persist a viewer-specific receipt into the shared snapshot, rewrite it for each accepted vote, or expose other audience members' receipts/identities.
 
 Detailed provider-attempt events and audio artifacts remain durable even when only summaries are nested in the snapshot. Temporal activity retry metadata supports execution recovery; explicit synthesis events still provide provider usage, first-audio latency, failure details, and partial-artifact inspection. Each synthesis event also carries its speaker/voice and story beat, so first-audio latency can be grouped by either without joining back to turn state. This does not require an independent attempt resource or one SQL row per attempt.
 
@@ -120,7 +120,7 @@ Detailed provider-attempt events and audio artifacts remain durable even when on
 
 Temporal working state is recovered from recorded input, activity outcomes, and replay-safe decisions; it is not an ordinary process-memory cache. SQL remains authoritative for externally published state and committed choices, and workflow state carries those persisted outcomes forward. [Temporal event history](https://docs.temporal.io/workflow-execution/event).
 
-Use these persistence boundaries: Start/single-active-run claim; round opening; round close, which carries that round's votes, rejections, counts, and committed winner in one transaction; playback anchors and completed turn recording; premiere readiness/timeline; completion or terminal failure; lake export. At each, update the snapshot where applicable and append its durable events in the same transaction. Provider attempt facts still need durable inspection events around side effects, but not separate Turn/Round/Attempt CRUD writes.
+Use these persistence boundaries: Start, with its capacity check; round opening; round close, which carries that round's votes, rejections, counts, and committed winner in one transaction; playback anchors and completed turn recording; premiere readiness/timeline; completion or terminal failure; lake export. At each, update the snapshot where applicable and append its durable events in the same transaction. Provider attempt facts still need durable inspection events around side effects, but not separate Turn/Round/Attempt CRUD writes.
 
 Votes do not touch the database while a round is open. They signal the workflow, which holds the published choices, the eligible session set, and the set of sessions that have voted, and which decides eligibility, validity, duplication, and lateness from that state. Reconnect and published-state reads still use the latest snapshot and do not require a live workflow worker. Published snapshots describe meaningful product phases; they need not expose every private generation/tagging/retry substep. The live state and room timeline can reflect the last durable milestone while workers recover; recovery must never invent newer state or roll back a committed result.
 
@@ -178,7 +178,7 @@ Every core capability now maps to identified entities with logical ownership. Pr
 
 ## 3. Proposed actor interfaces
 
-Use resource-oriented HTTP commands/queries as the proposed baseline. This defines behavior before choosing services or realtime transports. `/api/v1` is a proposed route prefix, not an existing implementation.
+Use resource-oriented HTTP commands/queries as the proposed baseline. This section defines behavior; the proposed services and realtime transport are in section 5. `/api/v1` is a proposed route prefix, not an existing implementation.
 
 ### Director commands and queries
 
@@ -222,7 +222,7 @@ Disconnection alone does not release identity or an audience slot; otherwise rec
 
 ### Live state and audio contracts
 
-Define these as logical interfaces for now; the realtime and audio transports are selected after data flows are traced.
+These are logical interfaces; the proposed realtime and audio transport is described in section 5.
 
 - **Subscribe to room state:** verified room audience or owning director receives revisioned phase updates. Updates include performance/turn IDs, speaker, open-round choices, server deadline, own voting eligibility/receipt, committed selection/tally, preparation/error status, and room timeline anchors as relevant. Tallies are revealed after commitment in this draft.
 - **Reconnect/resynchronize:** receive a current snapshot and newer updates without a gap. Missing historical messages must not force clients back into an earlier phase. Sequence/revision values distinguish stale updates from current state; clients recover through a snapshot when needed.
@@ -235,7 +235,7 @@ The director subscribes to the same authoritative room progression. Browser-loca
 
 ### Visible failures and proposed validation bounds
 
-Use structured failures with a stable code, human-readable message, retryability, and current revision/phase when useful. Baseline HTTP outcomes: `401` absent/invalid credentials, `403` unauthorized role, `404` inaccessible resource, `409` conflicting state/idempotency or closed round, `413` oversize upload, `422` invalid fields/media, and `429` bounded admission/control/retry limits.
+Use structured failures with a stable code, human-readable message, retryability, and current revision/phase when useful. Baseline HTTP outcomes: `401` absent/invalid credentials, `403` unauthorized role, `404` inaccessible resource, `409` conflicting state/idempotency or a vote for a run that has already finished, `413` oversize upload, `422` invalid fields/media, and `429` bounded admission/control/retry limits.
 
 Proposed starting limits, subject to audio/provider validation:
 
@@ -257,7 +257,7 @@ The user removed Stop controls and requested automatic flow. Keep the initial St
 
 ## 4. Business data flows
 
-These sequences establish business ownership, ordering, and failure behavior without selecting internal components or durable transports.
+These sequences establish business ownership, ordering, and failure behavior. They name the stores and workflow engine already agreed (PostgreSQL, S3, Temporal); the remaining components are proposed in section 5.
 
 ### Room setup and admission
 
@@ -344,8 +344,9 @@ A vote signal is persisted by the Temporal service before the call returns and d
 
 ```mermaid
 flowchart LR
-    Browser[Director / audience browser] -->|HTTPS UI and commands| Ingress[ALB + Next.js]
-    Ingress -->|API / live connection| Go[Go application on ECS]
+    Browser[Director / audience browser] -->|HTTPS| Ingress[ALB]
+    Ingress -->|UI| Web[Next.js on ECS]
+    Ingress -->|API / live connection, routed directly| Go[Go application on ECS]
     Go -->|Vote signals| Temporal[Temporal Cloud]
     Go <-->|Workflow tasks / activity results| Temporal
     Go <-->|Milestone transactions / snapshot reads| DB[(RDS PostgreSQL)]
@@ -403,7 +404,7 @@ Resolved since the first draft: the vote receipt and completeness contract, whic
 
 ## 6. Remaining design stages
 
-1. **Deep dives:** resolve the three ranked issues above and their measurable acceptance checks; settle provider/region/cost choices that affect the design.
+1. **Deep dives:** resolve the two ranked issues above and their measurable acceptance checks; settle provider/region/cost choices that affect the design.
 2. **Design sign-off:** review the complete requirements trace and significant proposals with the user; update accepted decisions, then create the implementation plan.
 
 No dependency versions or implementation plan have been selected at this stage.

@@ -83,7 +83,7 @@ The final premiere uses the recorded audio from the individual turns. It does no
 **An audience member should be able to choose one of three dialogue lines during each voting round and hear the winning line as expressive streamed audio.**
 
 - **Trigger and outcome:** A voting round opens after valid choices are ready; eligible votes produce one committed winner, followed by tagged synthesis and playback.
-- **Validation and authorization:** One vote per audience session per turn. Server receipt time determines eligibility. Reject invalid choices and votes received after the deadline. Retried submissions must not add votes.
+- **Validation and authorization:** One vote per audience session per turn. Order of arrival at the server, as recorded in workflow history, determines eligibility. Reject invalid choices and votes received after the deadline. Retried submissions must not add votes.
 - **State:** Performance owns turn choices, voting state, committed winners, and synthesis-attempt summaries. Save accepted votes in a separate durable ledger and retain original/tagged text, attempt events, and audio artifacts for inspection. Temporal carries execution context; database milestone snapshots expose published performance state. The winner becomes immutable before synthesis starts.
 - **Visible failures:** Reject late votes clearly. Show **Counting votes…** if processing is behind. Preserve the winner on synthesis failure and retry automatically within bounded limits without reopening voting. Show recovery status; if recovery is exhausted, retain partial artifacts and mark the run failed.
 

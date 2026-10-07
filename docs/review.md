@@ -27,6 +27,9 @@ Scope: high-level issues in [the product brief](monster-theatre-product-brief.md
 11. **Recovery status.** The brief no longer requires a visible "recovering" state. Connected browsers just see updates pause. If you want a message, the server can show one when no worker answers a query.
 12. **Waiting between rounds.** After each vote come tagging, speech, and the next generation, with nothing to listen to. The page should show the winning line and a "preparing the next line" state. Running tagging and speech in the background during the next round is a later improvement noted in the system design.
 13. **Database cleanup.** S3 objects expire after seven days; nothing removes old PostgreSQL rows. Not urgent for a demo.
+14. **Audio pass-through or buffer.** Whether the server pipes the S3 body straight to the response or loads the clip first. Suggested: pipe it through.
+15. **Clip URLs.** Whether the `premiere` clip list carries URLs or the browser builds them from the performance ID and turn number. Suggested: the browser builds them.
+16. **Audio caching.** Whether clip responses are cacheable for replays. Suggested: private caching, since a recording never changes once saved.
 
 ## What happened to the earlier findings
 
@@ -54,4 +57,4 @@ Scope: high-level issues in [the product brief](monster-theatre-product-brief.md
 ## Suggested order
 
 1. Run the two spikes (items 5 and 6) early; both are small.
-2. Settle items 7 to 13 as each part is built.
+2. Settle items 7 to 16 as each part is built.

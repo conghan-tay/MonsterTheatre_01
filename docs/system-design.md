@@ -147,7 +147,7 @@ A possible later improvement: since nothing is played until the premiere, taggin
 | `POST /api/v1/rooms/{roomId}/performance` | Director | Insert the performance row, then start the workflow. A repeated Start returns the existing performance |
 | `POST /api/v1/audience-sessions` | Anyone with the share link | Create or restore a session and set its cookie. Up to ten per room |
 | `GET /api/v1/rooms/{roomId}/portraits/{slot}` | Director or audience session | Portrait bytes, read from S3 by the server |
-| `GET /api/v1/performances/{id}/turns/{n}/audio` | Director or audience session | Turn recording, read from S3 by the server. Available once the performance is completed |
+| `GET /api/v1/performances/{id}/turns/{n}/audio` | Director or audience session | Turn recording as `audio/mpeg`, read from S3 by the server. Supports range requests. Available once the performance is completed |
 
 Start is safe to retry: the unique room constraint stops a second row, and starting a workflow whose ID already exists is treated as success.
 
@@ -228,6 +228,11 @@ A browser that reconnects during a round gets its own vote back in the snapshot,
 4. A browser that connects after the start time gets the completed snapshot and plays from the beginning.
 
 Playback is not synchronised beyond the shared start time, which the brief accepts.
+
+Two delivery rules keep the premiere continuous and working across browsers:
+
+- **Preloading.** On receiving the `premiere` update, the browser starts fetching all eight clips during the five-second countdown, so each clip is ready before the previous one ends. If a clip is still loading when its turn comes, playback waits for it; nothing is skipped.
+- **Range requests.** The audio endpoint answers partial-content requests: it honours the `Range` header, replies `206` with `Accept-Ranges: bytes`, and passes the range through to S3. Safari's audio element expects this.
 
 ### Worker restart
 

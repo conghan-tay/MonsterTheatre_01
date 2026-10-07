@@ -96,11 +96,12 @@ One workflow per performance, with ID `performance/{performanceId}`.
 flowchart TD
     Start([Start]) --> Fetch[Activity: fetch scene and character context]
     Fetch --> Loop{"Turns remaining?"}
-    Loop -->|Yes| Gen[Activity: generate three choices]
-    Gen --> Open[Publish: voting open, choices, deadline]
+    Loop -->|Yes| Turn[Publish: generating, turn number and speaker]
+    Turn --> Gen[Activity: generate three choices]
+    Gen --> Open[Publish: voting, choices and deadline]
     Open --> Wait[Timer 10 s, collect vote signals]
     Wait --> Pick[Pick winner in workflow]
-    Pick --> Won[Publish: winner]
+    Pick --> Won[Publish: preparing_line, winner and counts]
     Won --> Tag[Activity: enhance winning line with audio tags]
     Tag --> Speak[Activity: text to speech, save audio to S3]
     Speak --> Loop
@@ -118,7 +119,19 @@ Notes on each part:
 - **Failure.** If the workflow cannot continue, it runs one last activity to mark the performance row `failed` and publishes a `failed` update. A workflow run timeout bounds a run that hangs.
 - **Query handler.** The workflow answers a `state` query with its current turn, phase, choices, deadline, votes, winners so far, and revision.
 
-Phases published to browsers: `generating`, `voting`, `preparing_line`, `premiere`, `failed`.
+### What is published, and when
+
+Every publish moves the performance into a new phase and increases the revision by one. These are the only publish points:
+
+| When | Phase in the update | What the update carries | What the browser shows |
+| --- | --- | --- | --- |
+| A turn begins | `generating` | Turn number, speaker, story beat | "Writing the next lines…" |
+| Three choices are ready | `voting` | The choices and the deadline | The three choices and a countdown |
+| The timer has fired and the winner is picked | `preparing_line` | The winner, vote counts, and how it was decided | The winning line while it is tagged and voiced |
+| All eight turns are saved | `premiere` | Start time five seconds ahead and the ordered clip list | Countdown, then playback |
+| The run cannot continue | `failed` | A short reason | A failure message |
+
+A normal run publishes three updates per turn and one for the premiere: revisions 1 to 25. Tagging, text to speech, and saving to the database publish nothing of their own; the browser stays in `preparing_line` until the next turn's `generating` arrives (or `premiere` after turn eight).
 
 A possible later improvement: since nothing is played until the premiere, tagging and speech for a turn could run in the background while the next turn's voting proceeds, shortening the wait between rounds. Start with the simple sequential loop.
 

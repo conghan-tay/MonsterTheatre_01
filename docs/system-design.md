@@ -1,6 +1,6 @@
 # Monster Theatre — System Design
 
-Status: Simplified design, agreed with the user on 2026-10-07 and 2026-10-08 (D022–D033). It replaces the earlier draft built around PostgreSQL milestone snapshots, live audio streaming, and an S3 data lake. It passed the design-readiness checklist on 2026-10-08; the remaining build-time points are in [the review](review.md).
+Status: Simplified design, agreed with the user on 2026-10-07 and 2026-10-08 (D022–D034). It replaces the earlier draft built around PostgreSQL milestone snapshots, live audio streaming, and an S3 data lake. It passed the design-readiness checklist on 2026-10-08; the remaining build-time points are in [the review](review.md).
 
 Source of truth: [Product brief](monster-theatre-product-brief.md). Significant choices are recorded in [Decisions](decisions.md).
 
@@ -86,7 +86,7 @@ For prototyping, everything runs locally: the Temporal dev server, Redis, and Po
 | --- | --- | --- |
 | `directors` | Director ID, username, password hash. Rows are added by an administrator; there is no signup | By hand |
 | `director_sessions` | Session ID, director, credential hash, expiry. Same pattern as audience sessions | At login |
-| `rooms` | Owner (director ID), scene topic/description/genre, character A and B (name, brief, voice, portrait key), hash of the share-link token, and `audience_count` | Once, at creation; `audience_count` goes up by one per new audience session |
+| `rooms` | Owner (director ID), scene topic/description/genre, character A and B (name, brief, voice ID, portrait key), and `audience_count`. Nothing about the share link is stored (D034) | Once, at creation; `audience_count` goes up by one per new audience session |
 | `audience_sessions` | Session ID, room, credential hash, timestamps. See [Audience session](audience-session.md) | When someone enters; `last_seen_at` on reconnect |
 | `performances` | Performance ID, room (unique, so one per room), status (`running`, `completed`, `failed`), and on completion the final script and the eight audio keys | A row at Start; one update at the end |
 
@@ -192,7 +192,8 @@ A possible later improvement: since nothing is played until the premiere, taggin
 | --- | --- | --- |
 | `POST /api/v1/director/login` | Anyone | Username and password as JSON; on success sets the director session cookie. Wrong password and unknown username get the same `401`. `POST /api/v1/director/logout` deletes the session and clears the cookie |
 | `GET /api/v1/director/me` | Director | The logged-in director's ID and username; `401` without a live session. The web pages use it to know whether someone is logged in |
-| `POST /api/v1/rooms` | Director | One multipart request with scene/character JSON and two portraits. Validate, upload portraits to S3 under a new room ID, insert the room row, return the room ID and share link. On failure the director resubmits (D025) |
+| `POST /api/v1/rooms` | Director | One multipart request with scene/character JSON and two portraits. Validate, upload portraits to S3 under a new room ID, insert the room row, return the room ID and share link. Invalid input gets `422` naming each field; an oversize portrait gets `413`. On failure the director resubmits (D025) |
+| `GET /api/v1/rooms` | Director | The director's own rooms, newest first, so a director who closed the tab can find a room again |
 | `GET /api/v1/rooms/{roomId}` | Director or audience session of that room | Scene, characters, and the room's performance ID and status if started |
 | `POST /api/v1/rooms/{roomId}/performance` | Director | Insert the performance row, then start the workflow. A repeated Start returns the existing performance |
 | `POST /api/v1/audience-sessions` | Anyone with the share link | Create or restore a session and set its cookie. Up to ten per room |
@@ -308,7 +309,8 @@ Two delivery rules keep the premiere continuous and working across browsers:
 ## 7. Security
 
 - **Sessions.** Audience and director sessions use the same scheme (D030): a random secret in an `HttpOnly`, `Secure`, `SameSite=Lax` cookie, with only its hash stored. Sessions expire after seven days.
-- **Share link.** Valid for the life of the room. It grants an audience session for that room and nothing else.
+- **Share link.** `{PUBLIC_BASE_URL}/join/{roomId}/{token}`, where the token is an HMAC-SHA256 of the room ID under `SHARE_LINK_SECRET` (D034). Nothing is stored: the link is rebuilt whenever the director's page needs it and checked by recomputing. It is valid for the life of the room and grants an audience session for that room and nothing else. The server refuses to start without the secret, and changing the secret invalidates every existing link.
+- **Portraits.** The type is detected from the file's own bytes, not from what the uploader claims; animated images and anything over 4096 by 4096 pixels are refused. Portraits are served with `nosniff`.
 - **Ownership.** Every director operation checks that the room belongs to the logged-in director.
 - **WebSocket.** The handshake is authenticated by cookie, so the server also checks the `Origin` header and refuses connections from other sites.
 - **Login.** Passwords are stored with argon2id. Five failed attempts for a username within 15 minutes lock that username until the 15 minutes have passed, and the lock applies even to the correct password. The count is held in server memory. Accepted cost: someone who knows a director's username can lock that director out for 15 minutes.

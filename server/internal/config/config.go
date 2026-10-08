@@ -16,6 +16,17 @@ type Config struct {
 	// CookieSecure marks session cookies Secure (HTTPS only). It is on unless
 	// COOKIE_SECURE is explicitly "false" or "0", which local HTTP needs.
 	CookieSecure bool
+	// ShareLinkSecret is the key share links are derived from. It has no
+	// default: the server refuses to start without one (docs/decisions.md, D034).
+	ShareLinkSecret string
+	// PublicBaseURL is where the web pages are served; share links start with it.
+	PublicBaseURL string
+	// ObjectStoreDir is where the filesystem object store keeps portraits and audio.
+	ObjectStoreDir string
+	// VoiceIDA and VoiceIDB are the two fixed voices, recorded on each room
+	// when it is created.
+	VoiceIDA string
+	VoiceIDB string
 }
 
 // Load reads the configuration from the environment.
@@ -29,6 +40,11 @@ func Load() Config {
 		TemporalTaskQueue: env("TEMPORAL_TASK_QUEUE", "performance"),
 		LogLevel:          env("LOG_LEVEL", "info"),
 		CookieSecure:      envBool("COOKIE_SECURE", true),
+		ShareLinkSecret:   os.Getenv("SHARE_LINK_SECRET"),
+		PublicBaseURL:     env("PUBLIC_BASE_URL", "http://localhost:3000"),
+		ObjectStoreDir:    env("OBJECT_STORE_DIR", ".data/objects"),
+		VoiceIDA:          env("VOICE_ID_A", "voice-a-placeholder"),
+		VoiceIDB:          env("VOICE_ID_B", "voice-b-placeholder"),
 	}
 }
 

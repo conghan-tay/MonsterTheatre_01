@@ -55,6 +55,23 @@ curl -b cookies.txt localhost:8080/api/v1/director/me
 
 Five failed logins for a username within 15 minutes lock that username until the 15 minutes have passed. The count is held in the server's memory, so restarting the server clears it.
 
+## Creating a room
+
+Logged in as a director, submit the scene, both characters, and two portraits (JPEG, PNG, or WebP, up to 5 MiB each) in one request:
+
+```sh
+curl -b cookies.txt \
+  -F 'room={"scene":{"topic":"Two monsters argue about a biscuit","genre":"comedy"},
+            "characterA":{"name":"Grumble","brief":"A tired swamp monster."},
+            "characterB":{"name":"Fizz","brief":"An excitable imp."}};type=application/json' \
+  -F portraitA=@grumble.png -F portraitB=@fizz.png \
+  localhost:8080/api/v1/rooms
+```
+
+The response carries the room ID and the share link for the audience. `GET /api/v1/rooms` lists your rooms, and `GET /api/v1/rooms/{roomId}` shows one, including its share link.
+
+Share links are derived from `SHARE_LINK_SECRET`, not stored. `make dev` keeps a local secret in `.data/share-link-secret`; deleting that file invalidates every link made with it. `make server` on its own needs the variable set.
+
 ## End-to-end tests
 
 ```sh

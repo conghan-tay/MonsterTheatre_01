@@ -29,6 +29,7 @@ The log below is kept in full, including entries that were later replaced. These
 | D031 | WebSocket and Redis Streams kept as departures from the defaults |
 | D032 | Aurora DSQL on AWS, plain PostgreSQL locally |
 | D033 | Votes carry the server's receipt time; lateness is decided by that stamp |
+| D034 | Share links are derived from a server secret, not stored |
 
 Superseded or withdrawn: D002, D004, D006, D010, D011, D012, D014, D016, D019, D020, D021, and the data-lake half of D003.
 
@@ -536,6 +537,8 @@ A secondary benefit is that the security rule tightens rather than being qualifi
 
 ## D030 — Session cookies for audience and director
 
+**Amended 2026-10-08 ([D034](#d034--share-links-are-derived-from-a-server-secret)):** still accepted for session cookies. The share-link part changed: no token or hash is stored for a room's link; it is derived from a server secret.
+
 **Decision:** Audience members and directors are both identified by a session cookie holding a random secret. The database stores only a hash of it.
 
 **Context / requirement:** The scheme was written up in [Audience session](audience-session.md) as a proposal, and [D029](#d029--simple-built-in-director-login-for-now) then built the director login on it. The design-readiness check on 2026-10-08 found it had never been accepted.
@@ -625,3 +628,19 @@ This algorithm was run through the spike's three scenarios and was correct in ev
 **Tradeoffs and consequences:** Lateness now compares two clocks, the server's and Temporal's, which D018 set out to avoid. Both are synchronised to network time, so the exposure is a few milliseconds of skew at the edge of a ten-second window; a vote that close to the deadline could go either way. A vote stamped just before the deadline can still miss the round if it reaches the workflow after the round closes, which only happens within the network delay of one request. The vote signal gains one field.
 
 **Status:** accepted — explicit user answer on 2026-10-08, after reviewing the step 2 spike.
+
+## D034 — Share links are derived from a server secret
+
+**Decision:** A room's share-link token is an HMAC-SHA256 of the room ID under a server secret. Nothing about the link is stored. The link is `{PUBLIC_BASE_URL}/join/{roomId}/{token}`.
+
+**Context / requirement:** [D030](#d030--session-cookies-for-audience-and-director) stored only a hash of the link's token, like a session secret. Building room creation showed the flaw: the director's room page must show the link again after a reload, and a hash cannot be turned back into the link. The director would have had one chance to copy it.
+
+**Chosen approach:** The server rebuilds the link whenever the director reads their room, and checks a presented link by recomputing the token and comparing in constant time. The secret, `SHARE_LINK_SECRET`, must be at least 32 characters and has no default: the server refuses to start without it, because a default in code would let anyone who can read the repository forge links. Local development generates one on first run and keeps it in a git-ignored file; the test stack uses a fresh one per run; AWS will hold it in Secrets Manager.
+
+**Why it fits:** The link can always be shown again, and a leaked database contains nothing that opens a room.
+
+**Alternatives considered:** Storing the token itself on the room row: simplest, but a database leak would expose every room's link. Showing the link once, as D030 implied: a lost link would make the room unusable.
+
+**Tradeoffs and consequences:** One more secret to configure and protect. Changing it invalidates every existing link at once, and there is no way to revoke a single room's link. Anyone holding the secret can forge a link to any room whose ID they know. The `rooms` table has no share-link column, and joining presents the room ID together with the token.
+
+**Status:** accepted — explicit user choice on 2026-10-08.

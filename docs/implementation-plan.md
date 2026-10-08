@@ -24,23 +24,24 @@ web/e2e (Playwright)  ──browser──▶  Next.js ──▶ the same stack
 | --- | --- |
 | Fast runs | `VOTE_WINDOW` and `PREMIERE_COUNTDOWN` are configuration. Tests use 2 seconds and 1 second; production uses 10 and 5 |
 | No paid calls | `LLM_PROVIDER=fake` and `TTS_PROVIDER=fake` select in-process fakes on the worker. The fake model returns scripted choices; the fake speech returns a tiny valid MP3 generated in code |
-| Forced failures | The fakes read a failure script (for example "speech fails 3 times on turn 2") from an environment variable set by the test harness |
+| Forced failures | The fakes read a per-room script (for example "speech fails for the first 3 attempts on turn 2") from `<roomId>.json` in a directory named by `FAKE_SCRIPT_DIR`. Scripts are per room so one worker can serve many tests at once; failures are decided from the attempt number, so they behave the same after a worker restart |
 | No S3 emulator | Storage sits behind an `ObjectStore` interface with two implementations: local filesystem (tests and local development) and S3 (AWS). One separate smoke test exercises the S3 implementation against a real development bucket |
 | Killing the worker | The harness starts the server and worker as child processes, so a test can stop and restart the worker mid-run |
 | Clean state | Each test creates its own director and room; nothing is shared between tests, so no table truncation is needed |
+| Isolation from `make dev` | The harness uses its own database (`monstertheatre_e2e`), Redis database 1, its own in-memory Temporal dev server, and free ports, so it can run while the dev stack is up |
 
 ### Fixtures
 
-- `NewDirector(t)`: inserts a director with a known password and returns credentials.
+- `NewDirector(t)`: returns credentials for a director unique to the test. From step 4 it also creates the account, through the add-director command.
 - `SampleRoom()`: a valid scene, two characters, and two tiny PNG portraits generated in code.
-- `ScriptedChoices(...)` and `FailureScript(...)`: configure the fakes.
+- `ScriptedChoices(...)` and `FailureScript(...)`: write the room's script for the fakes. Added at step 9, when rooms and the workflow exist.
 - `StartStack(t)`: starts or reuses the containers, runs migrations, and launches the server and worker processes.
 
 Note: `.gitignore` excludes `*.mp3` and `*.wav`, so audio fixtures are generated in code and never committed.
 
 ### Client
 
-`tests/e2e/client` wraps everything a browser does, so tests read as user actions:
+`tests/e2e/client` wraps everything a browser does, so tests read as user actions. Each method is added in the step whose test first needs it:
 
 - `DirectorClient`: `Login`, `CreateRoom`, `Start`, `GetRoom`, `Connect`.
 - `AudienceClient`: `Enter(shareLink)`, `Connect`, `Vote(turn, choice)`, `FetchPortrait`, `FetchAudio`.
@@ -146,7 +147,7 @@ server/            Go module
   cmd/worker/      Temporal worker process
   internal/        auth, rooms, sessions, theater, workflow, activities, providers, objectstore, db
   migrations/      SQL migrations
-tests/e2e/         Go E2E suite, client, fixtures, fakes' scripts
+tests/e2e/         Go E2E suite as its own module: harness, client, fixtures
 web/               Next.js app and its Playwright tests
 infra/             CDK app
 docker-compose.yml PostgreSQL and Redis
@@ -181,6 +182,8 @@ Makefile           dev, test, e2e, migrate
 - The spike code is deleted.
 
 ### Step 3 — E2E infrastructure
+
+**Done 2026-10-08.** `make e2e` is red until step 4: the login test fails with `404`, as intended. The harness's own checks pass.
 
 **What to build**
 - `StartStack`, which launches the server and worker as child processes against the local containers.

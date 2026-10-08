@@ -30,6 +30,7 @@ Other targets:
 | --- | --- |
 | `make test` | Runs the Go unit tests |
 | `make e2e` | Runs the end-to-end tests against their own isolated stack |
+| `make test-verbose` / `make e2e-verbose` | The same, listing every test with its result and ending with a count of tests run, passed, failed, and skipped |
 | `make infra` / `make infra-down` | Starts or removes only PostgreSQL and Redis |
 | `make migrate` | Applies migrations |
 | `make director USERNAME=alice` | Creates a director account (prompts for the password) |
@@ -69,6 +70,18 @@ curl -b cookies.txt \
 ```
 
 The response carries the room ID and the share link for the audience. `GET /api/v1/rooms` lists your rooms, and `GET /api/v1/rooms/{roomId}` shows one, including its share link.
+
+## Joining as audience
+
+The share link is `{PUBLIC_BASE_URL}/join/{roomId}/{token}`. Until the web pages exist, join by posting those two values:
+
+```sh
+curl -i -c audience.txt -H 'Content-Type: application/json' \
+  -d '{"roomId":"ROOM_ID","token":"TOKEN"}' localhost:8080/api/v1/audience-sessions
+curl -b audience.txt localhost:8080/api/v1/rooms/ROOM_ID
+```
+
+A room admits ten audience sessions and never frees a slot; the eleventh gets `409`. Posting again with the same cookie returns the same session with `"restored": true`.
 
 Share links are derived from `SHARE_LINK_SECRET`, not stored. `make dev` keeps a local secret in `.data/share-link-secret`; deleting that file invalidates every link made with it. `make server` on its own needs the variable set.
 

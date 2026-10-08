@@ -57,7 +57,9 @@ type RoomView struct {
 	Scene      Scene         `json:"scene"`
 	CharacterA CharacterView `json:"characterA"`
 	CharacterB CharacterView `json:"characterB"`
-	ShareLink  string        `json:"shareLink"`
+	// ShareLink and AudienceCount are present only in the director's view.
+	ShareLink     string `json:"shareLink"`
+	AudienceCount int    `json:"audienceCount"`
 }
 
 // RoomSummary is one entry in the director's room list.
@@ -113,9 +115,10 @@ func (d *DirectorClient) CreateRoom(ctx context.Context, in RoomInput) (*Respons
 	return d.do(req)
 }
 
-// GetRoom reads one room.
-func (d *DirectorClient) GetRoom(ctx context.Context, roomID string) (*Response, error) {
-	return d.Get(ctx, "/api/v1/rooms/"+roomID)
+// GetRoom reads one room, as whoever this browser is: its director or a
+// member of its audience.
+func (c *Client) GetRoom(ctx context.Context, roomID string) (*Response, error) {
+	return c.Get(ctx, "/api/v1/rooms/"+roomID)
 }
 
 // ListRooms reads the director's own rooms.
@@ -124,6 +127,6 @@ func (d *DirectorClient) ListRooms(ctx context.Context) (*Response, error) {
 }
 
 // FetchPortrait reads a character's portrait; slot is "a" or "b".
-func (d *DirectorClient) FetchPortrait(ctx context.Context, roomID, slot string) (*Response, error) {
-	return d.Get(ctx, "/api/v1/rooms/"+roomID+"/portraits/"+slot)
+func (c *Client) FetchPortrait(ctx context.Context, roomID, slot string) (*Response, error) {
+	return c.Get(ctx, "/api/v1/rooms/"+roomID+"/portraits/"+slot)
 }

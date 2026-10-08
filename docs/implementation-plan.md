@@ -225,6 +225,8 @@ Makefile           dev, test, e2e, migrate
 
 ### Step 6 — Audience sessions
 
+**Done 2026-10-08.** Added beyond the list below: `audienceCount` in the director's room view. The simultaneous-joins test sends fifteen browsers at once and expects exactly ten admitted.
+
 **What to build**
 - Migration for `audience_sessions`.
 - `POST /api/v1/audience-sessions`: create or restore, the per-room cookie, and the ten-session cap enforced by a conditional update of `rooms.audience_count` in the same transaction as the insert.

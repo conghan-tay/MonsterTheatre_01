@@ -194,9 +194,9 @@ A possible later improvement: since nothing is played until the premiere, taggin
 | `GET /api/v1/director/me` | Director | The logged-in director's ID and username; `401` without a live session. The web pages use it to know whether someone is logged in |
 | `POST /api/v1/rooms` | Director | One multipart request with scene/character JSON and two portraits. Validate, upload portraits to S3 under a new room ID, insert the room row, return the room ID and share link. Invalid input gets `422` naming each field; an oversize portrait gets `413`. On failure the director resubmits (D025) |
 | `GET /api/v1/rooms` | Director | The director's own rooms, newest first, so a director who closed the tab can find a room again |
-| `GET /api/v1/rooms/{roomId}` | Director or audience session of that room | Scene, characters, and the room's performance ID and status if started |
+| `GET /api/v1/rooms/{roomId}` | Director or audience session of that room | Scene and characters. The director's view adds the share link and `audienceCount`; the audience's view has neither. `401` with no credentials, `403` for a director who does not own the room |
 | `POST /api/v1/rooms/{roomId}/performance` | Director | Insert the performance row, then start the workflow. A repeated Start returns the existing performance |
-| `POST /api/v1/audience-sessions` | Anyone with the share link | Create or restore a session and set its cookie. Up to ten per room |
+| `POST /api/v1/audience-sessions` | Anyone with the share link | Takes the link's room ID and token. `201` and a cookie for a new session; `200` with `restored: true` for a browser that already has one; `403` for any invalid link; `409` when the room has ten. See [Audience session](audience-session.md) |
 | `GET /api/v1/rooms/{roomId}/portraits/{slot}` | Director or audience session | Portrait bytes, read from S3 by the server |
 | `GET /api/v1/performances/{id}/turns/{n}/audio` | Director or audience session | Turn recording as `audio/mpeg`, read from S3 by the server. Supports range requests. Available once the performance is completed |
 | `GET /api/v1/rooms/{roomId}/ws` | Director or audience session of that room | Upgrades to the WebSocket described below |

@@ -27,12 +27,27 @@ const (
 	maxCreateBodyBytes = 2*MaxPortraitBytes + 1<<20
 )
 
-// Service serves the room endpoints. Every route is behind
-// auth.RequireDirector.
+// DirectorResolver finds the director logged in on a request, if any.
+// *auth.Service implements it.
+type DirectorResolver interface {
+	Director(r *http.Request) (auth.Identity, bool, error)
+}
+
+// MemberResolver reports whether a request carries a live audience session
+// for a room. *audience.Service implements it.
+type MemberResolver interface {
+	IsMember(r *http.Request, roomID string) (bool, error)
+}
+
+// Service serves the room endpoints. Create and List are behind
+// auth.RequireDirector. Get and Portrait admit the room's director or a
+// member of its audience, and check that themselves.
 type Service struct {
-	Store   Store
-	Objects objectstore.Store
-	Links   ShareLinks
+	Store     Store
+	Directors DirectorResolver
+	Audience  MemberResolver
+	Objects   objectstore.Store
+	Links     ShareLinks
 	// VoiceA and VoiceB are recorded on each new room.
 	VoiceA string
 	VoiceB string
@@ -46,13 +61,21 @@ type characterView struct {
 	PortraitURL string `json:"portraitUrl"`
 }
 
-type roomView struct {
+// AudienceRoomView is what an audience member sees of a room: the setup, and
+// nothing that would let them hand out access or see who else is there.
+type AudienceRoomView struct {
 	RoomID     string        `json:"roomId"`
 	Scene      Scene         `json:"scene"`
 	CharacterA characterView `json:"characterA"`
 	CharacterB characterView `json:"characterB"`
-	ShareLink  string        `json:"shareLink"`
-	CreatedAt  time.Time     `json:"createdAt"`
+}
+
+// directorRoomView is what the room's director sees.
+type directorRoomView struct {
+	AudienceRoomView
+	ShareLink     string    `json:"shareLink"`
+	AudienceCount int       `json:"audienceCount"`
+	CreatedAt     time.Time `json:"createdAt"`
 }
 
 type summaryView struct {
@@ -61,15 +84,23 @@ type summaryView struct {
 	CreatedAt time.Time `json:"createdAt"`
 }
 
-func (s *Service) view(r Room) roomView {
+// AudienceView builds the audience's view of a room.
+func AudienceView(r Room) AudienceRoomView {
 	portrait := func(slot string) string { return "/api/v1/rooms/" + r.ID + "/portraits/" + slot }
-	return roomView{
+	return AudienceRoomView{
 		RoomID:     r.ID,
 		Scene:      r.Scene,
 		CharacterA: characterView{Name: r.CharacterA.Name, Brief: r.CharacterA.Brief, PortraitURL: portrait("a")},
 		CharacterB: characterView{Name: r.CharacterB.Name, Brief: r.CharacterB.Brief, PortraitURL: portrait("b")},
-		ShareLink:  s.Links.URL(r.ID),
-		CreatedAt:  r.CreatedAt,
+	}
+}
+
+func (s *Service) directorView(r Room) directorRoomView {
+	return directorRoomView{
+		AudienceRoomView: AudienceView(r),
+		ShareLink:        s.Links.URL(r.ID),
+		AudienceCount:    r.AudienceCount,
+		CreatedAt:        r.CreatedAt,
 	}
 }
 
@@ -147,16 +178,20 @@ func (s *Service) Create(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, "insert room", err)
 		return
 	}
-	httpapi.WriteJSON(w, http.StatusCreated, s.view(room))
+	httpapi.WriteJSON(w, http.StatusCreated, s.directorView(room))
 }
 
 // Get handles GET /api/v1/rooms/{roomId}.
 func (s *Service) Get(w http.ResponseWriter, r *http.Request) {
-	room, ok := s.ownedRoom(w, r)
+	room, asDirector, ok := s.readableRoom(w, r)
 	if !ok {
 		return
 	}
-	httpapi.WriteJSON(w, http.StatusOK, s.view(room))
+	if asDirector {
+		httpapi.WriteJSON(w, http.StatusOK, s.directorView(room))
+		return
+	}
+	httpapi.WriteJSON(w, http.StatusOK, AudienceView(room))
 }
 
 // List handles GET /api/v1/rooms: the director's own rooms, newest first.
@@ -176,7 +211,7 @@ func (s *Service) List(w http.ResponseWriter, r *http.Request) {
 
 // Portrait handles GET /api/v1/rooms/{roomId}/portraits/{slot}.
 func (s *Service) Portrait(w http.ResponseWriter, r *http.Request) {
-	room, ok := s.ownedRoom(w, r)
+	room, _, ok := s.readableRoom(w, r)
 	if !ok {
 		return
 	}
@@ -212,29 +247,57 @@ func (s *Service) Portrait(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.Copy(w, obj.Body)
 }
 
-// ownedRoom loads the room named in the path and checks the logged-in
-// director owns it. It writes the error response itself when it returns false.
-func (s *Service) ownedRoom(w http.ResponseWriter, r *http.Request) (Room, bool) {
-	director, _ := auth.DirectorFrom(r.Context())
-	id := r.PathValue("roomId")
-	if _, err := uuid.Parse(id); err != nil {
-		httpapi.WriteError(w, http.StatusNotFound, "not_found", "No such room.")
-		return Room{}, false
+// readableRoom loads the room named in the path for someone allowed to read
+// it: its director (asDirector true) or a member of its audience. It writes
+// the error response itself when ok is false.
+//
+// Someone with no credentials at all gets 401 whatever the room ID is, so the
+// endpoint does not reveal which rooms exist. A logged-in director asking for
+// another director's room gets 403.
+func (s *Service) readableRoom(w http.ResponseWriter, r *http.Request) (room Room, asDirector, ok bool) {
+	director, isDirector, err := s.Directors.Director(r)
+	if err != nil {
+		s.internalError(w, "look up director", err)
+		return Room{}, false, false
 	}
-	room, err := s.Store.Get(r.Context(), id)
+
+	id := r.PathValue("roomId")
+	validID := uuid.Validate(id) == nil
+	isMember := false
+	if validID {
+		if isMember, err = s.Audience.IsMember(r, id); err != nil {
+			s.internalError(w, "look up audience session", err)
+			return Room{}, false, false
+		}
+	}
+	if !isDirector && !isMember {
+		httpapi.WriteError(w, http.StatusUnauthorized, "not_logged_in", "Log in or enter the theatre to continue.")
+		return Room{}, false, false
+	}
+	if !validID {
+		httpapi.WriteError(w, http.StatusNotFound, "not_found", "No such room.")
+		return Room{}, false, false
+	}
+
+	room, err = s.Store.Get(r.Context(), id)
 	if errors.Is(err, ErrNotFound) {
 		httpapi.WriteError(w, http.StatusNotFound, "not_found", "No such room.")
-		return Room{}, false
+		return Room{}, false, false
 	}
 	if err != nil {
 		s.internalError(w, "load room", err)
-		return Room{}, false
+		return Room{}, false, false
 	}
-	if room.DirectorID != director.DirectorID {
+
+	switch {
+	case isDirector && room.DirectorID == director.DirectorID:
+		return room, true, true
+	case isMember:
+		return room, false, true
+	default:
 		httpapi.WriteError(w, http.StatusForbidden, "not_your_room", "This room belongs to another director.")
-		return Room{}, false
+		return Room{}, false, false
 	}
-	return room, true
 }
 
 func (s *Service) internalError(w http.ResponseWriter, what string, err error) {

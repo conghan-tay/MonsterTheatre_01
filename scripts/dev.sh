@@ -11,6 +11,10 @@ if [ -f .env ]; then
   set +a
 fi
 
+# The dev stack serves plain HTTP, and browsers do not send Secure cookies
+# over HTTP, so login would not stick. Deployed environments leave this unset.
+export COOKIE_SECURE="${COOKIE_SECURE:-false}"
+
 pids=()
 cleanup() {
   trap - INT TERM EXIT

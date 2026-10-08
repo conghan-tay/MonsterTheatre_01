@@ -64,6 +64,15 @@ func (c *Client) Cookie(name string) (*http.Cookie, bool) {
 	return nil, false
 }
 
+// SetCookie puts a cookie in this client's jar, as if the server had set it.
+func (c *Client) SetCookie(name, value string) {
+	u, err := url.Parse(c.BaseURL)
+	if err != nil {
+		panic(err)
+	}
+	c.HTTP.Jar.SetCookies(u, []*http.Cookie{{Name: name, Value: value, Path: "/"}})
+}
+
 // Get sends a GET request.
 func (c *Client) Get(ctx context.Context, path string) (*Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+path, nil)

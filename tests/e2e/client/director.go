@@ -23,3 +23,13 @@ func (d *DirectorClient) Login(ctx context.Context, username, password string) (
 		"password": password,
 	})
 }
+
+// Me asks the server who this browser is logged in as.
+func (d *DirectorClient) Me(ctx context.Context) (*Response, error) {
+	return d.Get(ctx, "/api/v1/director/me")
+}
+
+// Logout ends the session.
+func (d *DirectorClient) Logout(ctx context.Context) (*Response, error) {
+	return d.PostJSON(ctx, "/api/v1/director/logout", struct{}{})
+}

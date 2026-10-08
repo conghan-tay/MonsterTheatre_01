@@ -1,4 +1,4 @@
-.PHONY: dev infra infra-down migrate server worker test e2e
+.PHONY: dev infra infra-down migrate server worker director test e2e
 
 # Start everything; Ctrl-C stops everything.
 dev:
@@ -19,6 +19,11 @@ server:
 
 worker:
 	cd server && go run ./cmd/worker
+
+# Create a director account: make director USERNAME=alice
+# Prompts for the password, or reads it from DIRECTOR_PASSWORD.
+director:
+	cd server && go run ./cmd/adddirector -username "$(USERNAME)"
 
 test:
 	cd server && go test ./...

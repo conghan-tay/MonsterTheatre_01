@@ -16,7 +16,9 @@ Scope: high-level issues in [the product brief](monster-theatre-product-brief.md
 ### To verify with a spike
 
 5. **Vote and timer ordering after a worker outage.** Temporal records signals and the timer in one ordered history. But when a worker returns after an outage, a vote before the deadline, the timer firing, and a vote after it may all reach the workflow code at once, and the Go SDK may not show their relative order. Test: stop the worker across a deadline, send votes on either side, restart, and check which were counted. This comes from knowledge of the Go SDK and is not verified. The stakes are lower than before, since a miscounted late vote only affects one round.
-6. **ElevenLabs model and output format.** Confirm which model supports audio tags on the plain text-to-speech endpoint with the two chosen voices, and that MP3 output plays back to back in a browser without awkward gaps.
+### Closed
+
+6. **ElevenLabs model and output format.** Closed 2026-10-08. The user confirmed that the [Text to Dialogue convert endpoint](https://elevenlabs.io/docs/api-reference/text-to-dialogue/convert) with `eleven_v4_turbo` supports audio tags with the two chosen voices. Short gaps between MP3 clips at the premiere are accepted and need no check.
 
 ### Small design points to settle while building
 
@@ -50,11 +52,11 @@ Scope: high-level issues in [the product brief](monster-theatre-product-brief.md
 | B7 Two deadlines | Reduced to item 7 |
 | B8 First-audio latency measured at an undefined point | Gone with live audio |
 | B9 Contradictory in-round vote feedback | Resolved. The snapshot includes the browser's own vote |
-| B10 Smaller gaps | Gone or resolved, except PCM, which is replaced by item 6 |
+| B10 Smaller gaps | Gone or resolved. The audio format question is closed (item 6) |
 | Setup workflow weight | Resolved. Room creation is one plain request (D025) |
 | Pacing between rounds | Still open as item 12 |
 
 ## Suggested order
 
-1. Run the two spikes (items 5 and 6) early; both are small.
+1. Run the spike in item 5 early; it is small.
 2. Settle items 7 to 16 as each part is built.

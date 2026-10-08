@@ -35,7 +35,7 @@ Source of truth: [Product brief](monster-theatre-product-brief.md). Significant 
 | PostgreSQL | Rooms, audience sessions, and one row per performance |
 | S3 | Portraits and the eight turn recordings |
 | Language model | Choice generation and audio-tag enhancement, behind a configurable adapter (D017) |
-| ElevenLabs | Text to speech for each winning line |
+| ElevenLabs | Speech for each winning line: one request per turn to the Text to Dialogue convert endpoint with `eleven_v4_turbo`, the speaker's voice, and the tagged text |
 | Director login | Built into the Go server: administrator-created accounts with hashed passwords, a login form, and a session cookie (D029). Handlers receive a verified director ID from one piece of middleware, so the mechanism can be swapped later |
 
 ```mermaid

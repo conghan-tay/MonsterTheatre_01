@@ -390,7 +390,7 @@ A secondary benefit is that the security rule tightens rather than being qualifi
 
 **Tradeoffs and consequences:** The audience reads each winning line but does not hear it until the end. The ElevenLabs real-time streaming learning goal is dropped; audio tags and two voices remain. There is no single assembled recording in S3, and premiere playback is aligned only by a shared start time. Supersedes [D012](#d012--pcm-streaming-and-recorded-wav-assembly) and [D021](#d021--premiere-plays-over-the-room-websocket-on-the-server-timeline), and the media half of [D003](#d003--exact-recorded-premiere-and-separate-s3-medialake-content) in part.
 
-**Status:** accepted — explicit user request and plan approval on 2026-10-07. The exact ElevenLabs model and output format remain to be confirmed.
+**Status:** accepted — explicit user request and plan approval on 2026-10-07. Model confirmed by the user on 2026-10-08: the Text to Dialogue convert endpoint with `eleven_v4_turbo` supports audio tags with the chosen voices. MP3 clips played in sequence are accepted, including any short gaps between them.
 
 ## D023 — No data lake or analytics in the first milestone
 

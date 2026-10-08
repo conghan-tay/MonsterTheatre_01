@@ -1,6 +1,6 @@
 # Monster Theatre — Product Brief
 
-Status: Agreed concept; requirements baseline for the first milestone. Simplified on 2026-10-07: audio plays only at the premiere, and the data lake and analytics were removed from this milestone (see [the decisions log](decisions.md), D022–D027).
+Status: Agreed concept; requirements baseline for the first milestone. Simplified on 2026-10-07: audio plays only at the premiere, and the data lake and analytics were removed from this milestone (see [the decisions log](decisions.md), D022–D031).
 
 ## Product concept
 
@@ -115,6 +115,7 @@ These are first-milestone targets, to validate during implementation.
 - **Degradation:** While the worker is down, the performance pauses and a newly connecting browser cannot load the current state until it returns. Already-connected browsers stay connected and resume when updates do.
 - **Security:** Director authentication, audience access through a room link, server-side provider keys, private encrypted S3 objects, and limits on uploads and text.
 - **Retention:** Use synthetic demo content; expire stored media after seven days by default.
+- **Operation:** Failures and retries are visible to the operator through application logs and the Temporal UI.
 - **Environment:** Desktop browsers first. Activate audio during Enter theatre or director Start, and keep a playback-blocked fallback.
 
 ## Learning and interview demonstration

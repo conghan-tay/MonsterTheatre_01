@@ -2,6 +2,34 @@
 
 Only explicit product-brief decisions or later user agreements are accepted. Proposed choices remain visible until resolved.
 
+## Decisions in force
+
+The log below is kept in full, including entries that were later replaced. These are the ones that describe the current design:
+
+| Decision | In one line |
+| --- | --- |
+| D001 | Ten audience sessions, two characters, eight voted turns (amended) |
+| D005 | One performance per room |
+| D007 | Fully automatic after Start; no Stop or retry controls |
+| D008 | First milestone is hosted on AWS |
+| D009 | Temporal Cloud with Go workflows (amended) |
+| D013 | Room owns immutable scene and character context |
+| D015 | Performance is one resource with turns nested inside it (amended) |
+| D017 | Language model is configurable behind an adapter |
+| D018 | Votes are Temporal signals; the workflow owns duplicates and the deadline (amended) |
+| D022 | Audio plays only at the premiere, as eight clips |
+| D023 | No data lake or analytics |
+| D024 | Redis Streams for live updates; workflow query on connect; no database snapshots |
+| D025 | Room creation is one plain request |
+| D026 | Server and worker are separate processes |
+| D027 | No concurrency cap or staleness sweep |
+| D028 | The director votes; audience slots are never released |
+| D029 | Simple built-in director login |
+| D030 | Session cookies for audience and director |
+| D031 | WebSocket and Redis Streams kept as departures from the defaults |
+
+Superseded or withdrawn: D002, D004, D006, D010, D011, D012, D014, D016, D019, D020, D021, and the data-lake half of D003.
+
 ## D001 — First-milestone product scope
 
 **Decision:** A limited-access theatre with ten audience sessions per performance, two characters, and eight alternating voted turns.
@@ -503,3 +531,49 @@ A secondary benefit is that the security rule tightens rather than being qualifi
 **Tradeoffs and consequences:** The project owns password hashing and the login endpoint, and there is no self-service password reset or multi-factor. Because authentication sits behind one middleware, moving to Cognito later replaces that middleware and the login page only.
 
 **Status:** accepted — explicit user answer on 2026-10-07.
+
+## D030 — Session cookies for audience and director
+
+**Decision:** Audience members and directors are both identified by a session cookie holding a random secret. The database stores only a hash of it.
+
+**Context / requirement:** The scheme was written up in [Audience session](audience-session.md) as a proposal, and [D029](#d029--simple-built-in-director-login-for-now) then built the director login on it. The design-readiness check on 2026-10-08 found it had never been accepted.
+
+**Chosen approach:** 32 random bytes in an `HttpOnly`, `Secure`, `SameSite=Lax` cookie; SHA-256 of the secret stored on the session row. Audience cookies are named per room so one browser can attend several. Sessions expire after seven days. The share link stays valid for the life of the room. The server checks the `Origin` header on the WebSocket handshake, since that handshake is authenticated by cookie.
+
+**Why it fits:** Browsers send cookies automatically on a same-origin WebSocket handshake but cannot attach custom headers to one, so a cookie serves HTTP and WebSocket alike. Storing only a hash means a database leak does not expose usable credentials.
+
+**Alternatives considered:** A token held in page JavaScript, which is readable by any script on the page and cannot be sent on the WebSocket handshake without putting it in the URL.
+
+**Tradeoffs and consequences:** A cleared cookie, private window, or second device is a new audience member and takes a new slot ([D028](#d028--the-director-votes-audience-slots-are-never-released)). The media expires after the same seven days, so an expired session loses access to nothing that still exists.
+
+**Status:** accepted — approved with the design-readiness plan on 2026-10-08.
+
+## D031 — WebSocket and Redis Streams kept as departures from the defaults
+
+**Decision:** Keep one WebSocket per browser for updates and votes, and Redis Streams between worker and server, although the project's reference defaults point elsewhere for both.
+
+**Context / requirement:** The design-readiness check on 2026-10-08 found two departures that had not been recorded in the required form.
+
+**Chosen approach:**
+
+Realtime transport:
+
+- **Preferred default:** Server-Sent Events for updates, with votes as ordinary HTTP requests. The realtime pattern prefers this when client writes are occasional, and a browser sends at most eight votes per run.
+- **Proposed alternative:** One WebSocket carrying updates down and votes up.
+- **Reason to switch:** It matches the user's original sketch and is the transport the user wants to build and learn. One connection carries everything a room needs.
+- **Tradeoff:** The browser must implement reconnection itself, where Server-Sent Events reconnect automatically, and a vote has no built-in request/response, so the server sends an explicit `vote_received`.
+
+Worker-to-server transport:
+
+- **Preferred default:** No Redis without a concrete need. PostgreSQL LISTEN/NOTIFY could carry the updates using a store the project already has.
+- **Proposed alternative:** Redis Streams.
+- **Reason to switch:** The user chose it explicitly ([D024](#d024--redis-streams-for-live-updates-and-workflow-query-on-connect)). A stream lets the server resume from its last-read position after a brief disconnect from Redis.
+- **Tradeoff:** One more component to run locally and on AWS.
+
+**Why it fits:** Both choices work at this scale and neither affects correctness, because snapshots come from the workflow and the revision rule tolerates duplicates and gaps.
+
+**Alternatives considered:** The two defaults above. Either can be adopted later without touching the workflow: the transport sits entirely in the publish activity and the server's forwarding code.
+
+**Tradeoffs and consequences:** As listed per transport.
+
+**Status:** accepted — approved with the design-readiness plan on 2026-10-08.

@@ -1,6 +1,6 @@
 # Monster Theatre — System Design
 
-Status: Simplified design, agreed with the user on 2026-10-07 (D022–D027). It replaces the earlier draft built around PostgreSQL milestone snapshots, live audio streaming, and an S3 data lake. Open items are listed in [the review](review.md).
+Status: Simplified design, agreed with the user on 2026-10-07 and 2026-10-08 (D022–D031). It replaces the earlier draft built around PostgreSQL milestone snapshots, live audio streaming, and an S3 data lake. It passed the design-readiness checklist on 2026-10-08; the remaining build-time points are in [the review](review.md).
 
 Source of truth: [Product brief](monster-theatre-product-brief.md). Significant choices are recorded in [Decisions](decisions.md).
 
@@ -22,6 +22,25 @@ Source of truth: [Product brief](monster-theatre-product-brief.md). Significant 
 - One winner per turn, chosen once and never changed.
 - No audio is played before the premiere (D022).
 - S3 is private. Browsers get portraits and audio through the server.
+
+### Requirements and how the design meets them
+
+| Target from the brief | How the design meets it |
+| --- | --- |
+| Vote acknowledged within 300 ms (p95) | The server replies `vote_received` as soon as Temporal accepts the signal: one network call, no database write |
+| Winner shown within one second of the window closing | The workflow already holds the votes when the timer fires; it picks the winner in memory and publishes once |
+| One active round, one winner, strict order | A single workflow per performance runs the turns in a loop; nothing else can advance a turn |
+| Votes and winners survive a worker restart | Signals and workflow state are stored by Temporal, not by the worker |
+| Progression resumes within 60 seconds of a worker restart | Holds when the worker was between activities or waiting on the timer. If it died mid-activity, Temporal waits for that activity's timeout first; see the retry table in section 4 |
+| Reconnecting client receives current state | Snapshot from a workflow query, then updates by revision (section 6). Accepted limit: no snapshot while no worker is running |
+| Director authentication, link-only audience access, private storage, input limits | Section 7 |
+| Media expires after seven days | S3 lifecycle rule. Database rows are not cleaned up in the prototype |
+| Failures and retries visible to the operator | Section 8 |
+| Desktop browsers, audio unlocked on Enter theatre | Frontend behaviour; the click that joins the room also unlocks audio for the premiere |
+
+### Capacity
+
+One performance involves at most 11 WebSocket connections, 25 published updates, 88 vote signals, 16 language-model calls, 8 speech calls, and 8 audio files of a few hundred kilobytes each, with only a handful of performances at once. One server instance and one worker instance are enough, the connection map can live in server memory, and no scaling machinery is needed.
 
 ## 2. Components
 
@@ -98,8 +117,9 @@ flowchart TD
     Fetch --> Loop{"Turns remaining?"}
     Loop -->|Yes| Turn[Publish: generating, turn number and speaker]
     Turn --> Gen[Activity: generate three choices]
-    Gen --> Open[Publish: voting, choices and deadline]
-    Open --> Wait[Timer 10 s, collect vote signals]
+    Gen --> Timer[Start the 10 s timer]
+    Timer --> Open[Publish: voting, choices and deadline]
+    Open --> Wait[Collect vote signals until the timer fires]
     Wait --> Pick[Pick winner in workflow]
     Pick --> Won[Publish: preparing_line, winner and counts]
     Won --> Tag[Activity: enhance winning line with audio tags]
@@ -113,10 +133,12 @@ flowchart TD
 Notes on each part:
 
 - **Publishing is an activity.** Workflow code must be deterministic and cannot talk to Redis itself, so every "Publish" box is a small activity that appends one message to the stream. Before each publish the workflow increases its revision number and includes it in the message.
-- **Collecting votes.** A vote arrives as a signal carrying session ID, turn number, and choice ID. The workflow records the first vote from each session for the current turn and ignores repeats, unknown choices, wrong turn numbers, and anything after the timer fires.
+- **Timer before publish.** The workflow starts the 10-second timer first and then publishes the deadline, so the deadline browsers show is the one the timer enforces.
+- **Collecting votes.** A vote arrives as a signal carrying a voter ID (an audience session ID or the director's ID), turn number, and choice ID. The workflow records the first vote from each voter for the current turn and ignores repeats, unknown choices, wrong turn numbers, and anything after the timer fires.
 - **Picking the winner.** Done in workflow code: most votes wins; a tie or an empty round is settled with Temporal's replay-safe random source, so a replay after a crash reaches the same answer.
 - **Fallbacks.** Choice generation retries, then falls back to simple valid lines. Tag enhancement retries, then falls back to the untagged line. Text to speech retries; if it still fails the run fails.
 - **Failure.** If the workflow cannot continue, it runs one last activity to mark the performance row `failed` and publishes a `failed` update. A workflow run timeout bounds a run that hangs.
+- **A failed publish does not stop the run.** Publishing retries briefly and then the workflow carries on. A browser that receives an update whose revision skips a number knows it missed one and asks for a fresh snapshot.
 - **Query handler.** The workflow answers a `state` query with its current turn, phase, choices, deadline, votes, winners so far, and revision.
 
 ### What is published, and when
@@ -133,6 +155,21 @@ Every publish moves the performance into a new phase and increases the revision 
 
 A normal run publishes three updates per turn and one for the premiere: revisions 1 to 25. Tagging, text to speech, and saving to the database publish nothing of their own; the browser stays in `preparing_line` until the next turn's `generating` arrives (or `premiere` after turn eight).
 
+### Retries and timeouts
+
+Proposed starting values, to tune while building:
+
+| Activity | Timeout per attempt | Attempts | Then |
+| --- | --- | --- | --- |
+| Generate choices | 30 s | 3 | Fallback lines |
+| Enhance tags | 20 s | 2 | Untagged line |
+| Text to speech | 60 s | 3 | Run fails |
+| Publish update | 5 s | 3 | Continue without it |
+| Database read or write | 10 s | Until the run timeout | — |
+| Whole workflow run | 30 min | — | Run ends |
+
+If a worker dies in the middle of an activity, Temporal waits for that activity's timeout before trying it again on another worker. Worst-case resumption is therefore the longest timeout above, not the worker's restart time.
+
 A possible later improvement: since nothing is played until the premiere, tagging and speech for a turn could run in the background while the next turn's voting proceeds, shortening the wait between rounds. Start with the simple sequential loop.
 
 ## 5. Interfaces
@@ -148,8 +185,11 @@ A possible later improvement: since nothing is played until the premiere, taggin
 | `POST /api/v1/audience-sessions` | Anyone with the share link | Create or restore a session and set its cookie. Up to ten per room |
 | `GET /api/v1/rooms/{roomId}/portraits/{slot}` | Director or audience session | Portrait bytes, read from S3 by the server |
 | `GET /api/v1/performances/{id}/turns/{n}/audio` | Director or audience session | Turn recording as `audio/mpeg`, read from S3 by the server. Supports range requests. Available once the performance is completed |
+| `GET /api/v1/rooms/{roomId}/ws` | Director or audience session of that room | Upgrades to the WebSocket described below |
 
 Start is safe to retry: the unique room constraint stops a second row, and starting a workflow whose ID already exists is treated as success.
+
+Error outcomes: `401` not logged in or no session; `403` not your room; `404` unknown room or performance; `409` room already has ten sessions, or a conflicting Start; `413` upload too large; `422` invalid fields or image; `429` too many login attempts.
 
 Validation bounds (unchanged): portraits JPEG, PNG, or WebP up to 5 MiB; names up to 80 characters; briefs up to 400; scene topic up to 200; description up to 1000; genre up to 80; generated lines up to 300.
 
@@ -171,6 +211,7 @@ Browser to server:
 | Message | Contents |
 | --- | --- |
 | `vote` | Turn number and choice ID. The voter (audience session or director) comes from the connection, never from the message |
+| `resync` | Asks for a fresh `snapshot`. Sent when the browser sees a gap in revision numbers |
 
 ## 6. Flows
 
@@ -209,13 +250,21 @@ sequenceDiagram
 
 The browser replaces its state with each `snapshot` and applies an `update` only if its revision is higher than what it already has. That one rule covers first connection, reconnection, and duplicate delivery.
 
+If the performance row says `running` but the query fails, the server asks Temporal about the workflow and acts on the answer:
+
+| Temporal says | Meaning | Server does |
+| --- | --- | --- |
+| Workflow not found | Start wrote the row but never started the workflow | Starts it with the same ID, which is safe to repeat |
+| Workflow closed | The run ended without updating its row, for example by timeout | Marks the row `failed` and sends that snapshot |
+| Workflow running | No worker is available to answer | Tells the browser the performance is recovering; the browser retries |
+
 The server keeps an in-memory map of room to open connections. It reads each update from Redis once and writes it to every connection for that room. The server reads the stream from "now" at startup; history is not needed because snapshots come from the workflow.
 
 ### Voting
 
 1. The browser sends `vote` on its WebSocket.
-2. The server signals the workflow with the session ID, turn, and choice, then replies `vote_received`.
-3. The workflow keeps the vote if it is that session's first for the current turn and the timer has not fired.
+2. The server signals the workflow with the voter ID, turn, and choice, then replies `vote_received`.
+3. The workflow keeps the vote if it is that voter's first for the current turn and the timer has not fired.
 4. When the timer fires, the workflow picks the winner and publishes it. Every browser receives the winner and the counts.
 
 A browser that reconnects during a round gets its own vote back in the snapshot, because the workflow state includes who voted and the server sends each browser only its own entry.
@@ -241,7 +290,24 @@ Two delivery rules keep the premiere continuous and working across browsers:
 - Browsers stay connected to the server throughout and see updates pause, then continue.
 - A browser that connects while the worker is down cannot get a snapshot, because a query needs a worker. The server tells it the performance is recovering and the browser retries.
 
-## 7. Limits accepted for the prototype
+## 7. Security
+
+- **Sessions.** Audience and director sessions use the same scheme (D030): a random secret in an `HttpOnly`, `Secure`, `SameSite=Lax` cookie, with only its hash stored. Sessions expire after seven days.
+- **Share link.** Valid for the life of the room. It grants an audience session for that room and nothing else.
+- **Ownership.** Every director operation checks that the room belongs to the logged-in director.
+- **WebSocket.** The handshake is authenticated by cookie, so the server also checks the `Origin` header and refuses connections from other sites.
+- **Login.** Passwords are stored with a slow hash, and repeated failed attempts are throttled.
+- **Secrets.** Language-model and ElevenLabs keys are held only by the worker; the Temporal credentials by server and worker. Nothing is sent to browsers.
+- **Storage.** The S3 bucket is private and encrypted. Browsers reach portraits and audio only through the server's authorised endpoints.
+- **Input limits.** The validation bounds in section 5 apply to every upload and text field.
+
+## 8. Observability
+
+- Server and worker write structured logs that carry the room ID and performance ID on every line.
+- The Temporal UI is the timeline of a run: each activity, retry, signal, timer, and failure is visible there, and it is where the worker-restart demonstration is shown.
+- There is no metrics system in the prototype.
+
+## 9. Limits accepted for the prototype
 
 - No state reads for new connections while the worker is down.
 - No history of individual votes after a run; only counts are kept in the final script.
@@ -250,6 +316,6 @@ Two delivery rules keep the premiere continuous and working across browsers:
 - A room creation that fails halfway can leave orphaned portraits in S3 until the lifecycle rule removes them.
 - An activity may publish the same update twice after a retry; the revision rule makes that harmless.
 
-## 8. Next step
+## 10. Next step
 
-Resolve the open items in [the review](review.md), then write the implementation plan.
+Write the implementation plan. Its first build step should be the vote and timer ordering spike (item 5 in [the review](review.md)).

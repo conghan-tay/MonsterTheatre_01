@@ -1,6 +1,6 @@
 # Audience Session — Schema and Connection Flow
 
-Status: updated 2026-10-07 for the simplified design. Behaviour marked **agreed** comes from [the system design](system-design.md). Everything marked **proposed** fills a gap the design leaves open (credential form, expiry, table shape) and is not yet a decision.
+Status: updated 2026-10-07 for the simplified design. The session scheme described here was accepted on 2026-10-08 as D030 in [the decisions log](decisions.md). Exact column types remain an implementation detail.
 
 ## The idea in one paragraph
 
@@ -13,16 +13,16 @@ Two things are kept separate throughout:
 
 ## Schema
 
-### Table: `audience_sessions` (proposed shape)
+### Table: `audience_sessions`
 
 | Column | Type | Purpose |
 | --- | --- | --- |
-| `id` | `uuid`, primary key | The session ID. This is the identity sent with each vote signal. Safe to log. |
-| `room_id` | `uuid`, foreign key to `rooms` | The one room this session is scoped to (agreed). |
+| `id` | `uuid`, primary key | The session ID. This is the voter ID sent with each vote signal. Safe to log. |
+| `room_id` | `uuid`, foreign key to `rooms` | The one room this session is scoped to. |
 | `credential_hash` | `bytea`, unique | SHA-256 of the secret in the cookie. The cookie holds the secret itself; the database holds only the hash, so a database leak does not leak usable credentials. |
 | `created_at` | `timestamptz` | When the session was admitted. |
 | `last_seen_at` | `timestamptz` | Updated on connect and reconnect. For inspection and any future slot cleanup. |
-| `expires_at` | `timestamptz` | When the credential stops working. Proposed: seven days, matching media retention. |
+| `expires_at` | `timestamptz` | When the credential stops working: seven days after creation, matching media retention. |
 
 Related field on the room:
 
@@ -32,11 +32,11 @@ Related field on the room:
 
 Rules:
 
-- **Ten sessions per room (agreed).** Enforced when a session is created: lock the room row, count its sessions, insert only if fewer than ten. Locking the room row matters; without it two simultaneous joins can both see nine and both insert.
-- **A disconnect never deletes or frees a session (agreed).** Otherwise reconnecting could create a second voter.
+- **Ten sessions per room.** Enforced when a session is created: lock the room row, count its sessions, insert only if fewer than ten. Locking the room row matters; without it two simultaneous joins can both see nine and both insert.
+- **A disconnect never deletes or frees a session.** Otherwise reconnecting could create a second voter.
 - **Connection state is not a column.** Whether a session is currently connected lives in the server's in-memory connection map only.
 
-### The credential (proposed)
+### The credential
 
 - 32 random bytes from a cryptographic source, base64url-encoded.
 - Delivered as a cookie named per room, for example `mt_session_<roomId>`, so one browser can attend more than one room.
@@ -171,11 +171,12 @@ What to notice:
 - **A vote sent just before a drop is not lost.** Once the server has signalled it, the workflow holds it, and the next snapshot shows it.
 - **If the worker is down,** the query in Case A cannot be answered. The server tells the browser the performance is recovering, and the browser retries.
 
-## Open questions
+## Settled questions
 
-These are also listed in [the review](review.md).
+- **Slot release (D028).** Slots are never released.
+- **Director (D028).** The director votes through their own login without holding an audience session, so they do not use one of the ten slots.
+- **Share-link expiry (D030).** The link stays valid for the life of the room.
 
-Decided on 2026-10-07 (D028): slots are never released, and the director votes through their own login without holding an audience session, so they do not use one of the ten slots.
+## Open question
 
-1. **Share-link expiry.** When the link stops admitting new sessions.
-2. **Multiple tabs with one cookie.** Two tabs in the same browser share one session. Proposed: allow both connections, since they are one voter either way.
+**Multiple tabs with one cookie.** Two tabs in the same browser share one session. Suggested: allow both connections, since they are one voter either way.

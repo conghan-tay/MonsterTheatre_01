@@ -30,6 +30,7 @@ Other targets:
 | --- | --- |
 | `make test` | Runs the Go unit tests |
 | `make e2e` | Runs the end-to-end tests against their own isolated stack |
+| `make test-verbose` / `make e2e-verbose` | The same, listing every test with its result and ending with a count of tests run, passed, failed, and skipped |
 | `make infra` / `make infra-down` | Starts or removes only PostgreSQL and Redis |
 | `make migrate` | Applies migrations |
 | `make director USERNAME=alice` | Creates a director account (prompts for the password) |

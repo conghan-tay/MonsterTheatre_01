@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Starts the whole local stack: PostgreSQL and Redis (containers), the Temporal
-# dev server, the server, and the worker. Ctrl-C stops all of it.
+# dev server, the server, the worker, and the web app. Ctrl-C stops all of it.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -67,5 +67,13 @@ pids+=($!)
 ./bin/worker &
 pids+=($!)
 
-echo "ready: http://localhost:8080/healthz"
+# The web app proxies /api/* to the server, so the browser sees one origin.
+if [ ! -d web/node_modules ]; then
+  echo "installing web packages (first run only)..."
+  (cd web && npm install)
+fi
+(cd web && API_ORIGIN="http://localhost:8080" exec ./node_modules/.bin/next dev --port 3000) &
+pids+=($!)
+
+echo "ready: http://localhost:3000 (API health: http://localhost:8080/healthz)"
 wait

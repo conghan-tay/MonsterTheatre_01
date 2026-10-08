@@ -76,6 +76,8 @@ flowchart LR
 
 The server and the worker never talk to each other directly. The server reaches the workflow through Temporal (start, signal, query), and the workflow reaches the server through Redis.
 
+The browser sees one origin. On AWS the load balancer routes `/api/*` and the WebSocket to the Go server and everything else to Next.js. Locally the Next.js app does that routing itself, proxying `/api/*` to the Go server, so cookies need no cross-origin handling in either place. Pages fetch from the API in the browser; Next.js does no data fetching of its own.
+
 For prototyping, everything runs locally: the Temporal dev server, Redis, and PostgreSQL in containers, with a real S3 bucket or a local stand-in. On AWS the three application processes run as containers on ECS Fargate, and the database is Aurora DSQL.
 
 ## 3. Stored data

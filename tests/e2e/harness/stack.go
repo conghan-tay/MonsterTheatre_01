@@ -56,7 +56,26 @@ type Stack struct {
 
 // Start brings the whole stack up. On failure it tears down whatever it
 // started and returns an error that includes the relevant log tails.
-func Start(ctx context.Context) (stack *Stack, err error) {
+func Start(ctx context.Context) (*Stack, error) {
+	return StartWith(ctx, Options{})
+}
+
+// Options adjusts how the stack starts. The zero value is what the Go tests use.
+type Options struct {
+	// ServerPort fixes the server's port. Zero picks a free one. The browser
+	// tests fix it, because the web app must know where to proxy before the
+	// stack is up.
+	ServerPort int
+	// PublicBaseURL is where the stack is told the web pages live. Empty
+	// means PublicBaseURL.
+	PublicBaseURL string
+}
+
+// StartWith is Start with options.
+func StartWith(ctx context.Context, opts Options) (stack *Stack, err error) {
+	if opts.PublicBaseURL == "" {
+		opts.PublicBaseURL = PublicBaseURL
+	}
 	repoRoot, err := findRepoRoot()
 	if err != nil {
 		return nil, err
@@ -114,9 +133,11 @@ func Start(ctx context.Context) (stack *Stack, err error) {
 	}
 	shareLinkSecret := hex.EncodeToString(secretBytes)
 
-	serverPort, err := freePort()
-	if err != nil {
-		return nil, err
+	serverPort := opts.ServerPort
+	if serverPort == 0 {
+		if serverPort, err = freePort(); err != nil {
+			return nil, err
+		}
 	}
 	s.BaseURL = fmt.Sprintf("http://127.0.0.1:%d", serverPort)
 	s.env = childEnv(map[string]string{
@@ -131,7 +152,7 @@ func Start(ctx context.Context) (stack *Stack, err error) {
 		"COOKIE_SECURE": "false",
 		// A fresh secret per run; share links from one run are useless in the next.
 		"SHARE_LINK_SECRET": shareLinkSecret,
-		"PUBLIC_BASE_URL":   PublicBaseURL,
+		"PUBLIC_BASE_URL":   opts.PublicBaseURL,
 		// Settings below are read by later steps; they are set from the
 		// start so the test stack never reaches a paid provider.
 		"LLM_PROVIDER":       "fake",

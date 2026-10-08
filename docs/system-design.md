@@ -318,4 +318,4 @@ Two delivery rules keep the premiere continuous and working across browsers:
 
 ## 10. Next step
 
-Write the implementation plan. Its first build step should be the vote and timer ordering spike (item 5 in [the review](review.md)).
+Follow [the implementation plan](implementation-plan.md). Its second step, straight after project setup, is the vote and timer ordering spike (item 5 in [the review](review.md)).

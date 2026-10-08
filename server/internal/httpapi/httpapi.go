@@ -20,6 +20,9 @@ type errorBody struct {
 type errorDetail struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
+	// Fields maps a field name such as "characterA.name" to what is wrong
+	// with it. Present only on validation errors.
+	Fields map[string]string `json:"fields,omitempty"`
 }
 
 // WriteJSON writes v as a JSON response.
@@ -32,6 +35,11 @@ func WriteJSON(w http.ResponseWriter, status int, v any) {
 // WriteError writes an error response in the shared shape.
 func WriteError(w http.ResponseWriter, status int, code, message string) {
 	WriteJSON(w, status, errorBody{Error: errorDetail{Code: code, Message: message}})
+}
+
+// WriteValidationError writes a 422 that names each invalid field.
+func WriteValidationError(w http.ResponseWriter, code, message string, fields map[string]string) {
+	WriteJSON(w, http.StatusUnprocessableEntity, errorBody{Error: errorDetail{Code: code, Message: message, Fields: fields}})
 }
 
 // ErrNotJSON means the request did not declare a JSON body.

@@ -20,6 +20,8 @@ import (
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/db"
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/health"
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/logging"
+	"github.com/conghan-tay/MonsterTheatre_01/server/internal/objectstore"
+	"github.com/conghan-tay/MonsterTheatre_01/server/internal/rooms"
 )
 
 func main() {
@@ -35,6 +37,16 @@ func main() {
 func run(cfg config.Config, logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// Checked first, so a missing secret stops the server before it listens.
+	shareLinks, err := rooms.NewShareLinks(cfg.ShareLinkSecret, cfg.PublicBaseURL)
+	if err != nil {
+		return err
+	}
+	objects, err := objectstore.NewFS(cfg.ObjectStoreDir)
+	if err != nil {
+		return err
+	}
 
 	pool, err := db.Open(ctx, cfg.DatabaseURL)
 	if err != nil {
@@ -84,6 +96,21 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	mux.HandleFunc("POST /api/v1/director/logout", directors.Logout)
 	// Every director route from here on is wrapped in RequireDirector.
 	mux.Handle("GET /api/v1/director/me", directors.RequireDirector(http.HandlerFunc(directors.Me)))
+
+	roomService := &rooms.Service{
+		Store:   &rooms.PGStore{Pool: pool},
+		Objects: objects,
+		Links:   shareLinks,
+		VoiceA:  cfg.VoiceIDA,
+		VoiceB:  cfg.VoiceIDB,
+		Logger:  logger,
+		Now:     time.Now,
+	}
+	director := func(h http.HandlerFunc) http.Handler { return directors.RequireDirector(h) }
+	mux.Handle("POST /api/v1/rooms", director(roomService.Create))
+	mux.Handle("GET /api/v1/rooms", director(roomService.List))
+	mux.Handle("GET /api/v1/rooms/{roomId}", director(roomService.Get))
+	mux.Handle("GET /api/v1/rooms/{roomId}/portraits/{slot}", director(roomService.Portrait))
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,

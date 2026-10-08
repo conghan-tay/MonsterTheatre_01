@@ -212,6 +212,8 @@ Makefile           dev, test, e2e, migrate
 
 ### Step 5 — Create a room
 
+**Done 2026-10-08.** Added beyond the list below: `GET /api/v1/rooms` (the director's room list). Share links are derived from a server secret, not stored (D034).
+
 **What to build**
 - Migration for `rooms`.
 - `POST /api/v1/rooms` with multipart parsing, validation bounds, portrait upload to the object store, and share-link token generation.

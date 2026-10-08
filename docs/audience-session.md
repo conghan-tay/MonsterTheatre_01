@@ -24,11 +24,11 @@ Two things are kept separate throughout:
 | `last_seen_at` | `timestamptz` | Updated on connect and reconnect. For inspection and any future slot cleanup. |
 | `expires_at` | `timestamptz` | When the credential stops working: seven days after creation, matching media retention. |
 
-Related field on the room:
+Related field on the room. The share link itself is not stored; its token is derived from the room ID and a server secret (D034):
 
 | Column | Type | Purpose |
 | --- | --- | --- |
-| `rooms.audience_link_token_hash` | `bytea`, unique | Hash of the opaque token carried in the share link. Written when the room is created. |
+| `rooms.audience_count` | `integer` | How many audience sessions the room has admitted; capped at ten. |
 
 Rules:
 
@@ -77,8 +77,9 @@ sequenceDiagram
     S-->>B: Page with Enter theatre button
     A->>B: Click Enter theatre
     Note over B: The click also unlocks audio for the premiere later
-    B->>S: POST /audience-sessions with link token, no cookie
-    S->>DB: Look up room by token hash
+    B->>S: POST /audience-sessions with room ID and link token, no cookie
+    Note over S: Recompute the token from the room ID and the server secret, compare
+    S->>DB: Load room by ID
     DB-->>S: Room found
     S->>DB: Add one to room audience_count if below ten, insert session with credential hash
     DB-->>S: Session created, 4 of 10 used
@@ -148,7 +149,7 @@ sequenceDiagram
     S-->>B: update messages from revision 21
 
     Note over B,S: Case B - the page is reloaded or the link is opened again
-    B->>S: POST /audience-sessions with link token and existing cookie
+    B->>S: POST /audience-sessions with room ID, link token, and existing cookie
     S->>DB: Look up session by credential hash
     DB-->>S: Session exists for this room
     Note over S: No insert, so no extra slot is used
@@ -157,7 +158,7 @@ sequenceDiagram
     S-->>B: snapshot, then updates
 
     Note over B,S: Case C - the cookie is missing or expired
-    B->>S: POST /audience-sessions with link token, no cookie
+    B->>S: POST /audience-sessions with room ID and link token, no cookie
     Note over S: Treated as a brand new person. Uses a new slot if one is free
     S-->>B: 201 with a new session, or 409 if the room already has ten
 ```

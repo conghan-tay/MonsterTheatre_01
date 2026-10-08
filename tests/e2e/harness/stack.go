@@ -8,6 +8,8 @@ package harness
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
@@ -27,6 +29,10 @@ const (
 	e2eRedisURL      = "redis://localhost:6379/1"
 
 	startTimeout = 60 * time.Second
+
+	// PublicBaseURL is where the test stack is told the web pages live. Share
+	// links start with it.
+	PublicBaseURL = "http://theatre.test"
 )
 
 // Stack is the running system under test.
@@ -102,6 +108,12 @@ func Start(ctx context.Context) (stack *Stack, err error) {
 		return nil, err
 	}
 
+	secretBytes := make([]byte, 32)
+	if _, err := rand.Read(secretBytes); err != nil {
+		return nil, err
+	}
+	shareLinkSecret := hex.EncodeToString(secretBytes)
+
 	serverPort, err := freePort()
 	if err != nil {
 		return nil, err
@@ -117,6 +129,9 @@ func Start(ctx context.Context) (stack *Stack, err error) {
 		"LOG_LEVEL":           "debug",
 		// The test stack runs over plain HTTP, so cookies must not be Secure.
 		"COOKIE_SECURE": "false",
+		// A fresh secret per run; share links from one run are useless in the next.
+		"SHARE_LINK_SECRET": shareLinkSecret,
+		"PUBLIC_BASE_URL":   PublicBaseURL,
 		// Settings below are read by later steps; they are set from the
 		// start so the test stack never reaches a paid provider.
 		"LLM_PROVIDER":       "fake",

@@ -33,3 +33,4 @@ dist/
 # Local development
 .temporal/
 bin/
+.data/

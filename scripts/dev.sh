@@ -15,6 +15,19 @@ fi
 # over HTTP, so login would not stick. Deployed environments leave this unset.
 export COOKIE_SECURE="${COOKIE_SECURE:-false}"
 
+# Local data lives under .data/ (git-ignored): uploaded portraits, and the
+# secret share links are derived from. The secret is created once and kept,
+# so links survive restarts; deleting the file invalidates every local link.
+mkdir -p .data
+export OBJECT_STORE_DIR="${OBJECT_STORE_DIR:-$PWD/.data/objects}"
+if [ -z "${SHARE_LINK_SECRET:-}" ]; then
+  if [ ! -f .data/share-link-secret ]; then
+    (umask 077 && openssl rand -hex 32 > .data/share-link-secret)
+  fi
+  SHARE_LINK_SECRET="$(cat .data/share-link-secret)"
+  export SHARE_LINK_SECRET
+fi
+
 pids=()
 cleanup() {
   trap - INT TERM EXIT

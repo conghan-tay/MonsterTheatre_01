@@ -50,12 +50,12 @@ func (s *PGStore) Get(ctx context.Context, id string) (Room, error) {
 		SELECT id, director_id, scene_topic, scene_description, scene_genre,
 		       character_a_name, character_a_brief, character_a_voice_id, character_a_portrait_key,
 		       character_b_name, character_b_brief, character_b_voice_id, character_b_portrait_key,
-		       created_at
+		       audience_count, created_at
 		  FROM rooms WHERE id = $1`, id).Scan(
 		&r.ID, &r.DirectorID, &r.Scene.Topic, &r.Scene.Description, &r.Scene.Genre,
 		&r.CharacterA.Name, &r.CharacterA.Brief, &r.CharacterA.VoiceID, &r.CharacterA.PortraitKey,
 		&r.CharacterB.Name, &r.CharacterB.Brief, &r.CharacterB.VoiceID, &r.CharacterB.PortraitKey,
-		&r.CreatedAt)
+		&r.AudienceCount, &r.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return r, ErrNotFound
 	}

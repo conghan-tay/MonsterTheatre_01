@@ -96,7 +96,9 @@ type Room struct {
 	Scene      Scene
 	CharacterA Character
 	CharacterB Character
-	CreatedAt  time.Time
+	// AudienceCount is how many audience sessions the room has admitted.
+	AudienceCount int
+	CreatedAt     time.Time
 }
 
 // Summary is one entry in a director's room list.

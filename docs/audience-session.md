@@ -43,7 +43,15 @@ Rules:
 - Cookie flags: `HttpOnly` (page scripts cannot read it), `Secure` (HTTPS only), `SameSite=Lax`, with `Max-Age` matching `expires_at`.
 - A cookie is preferred to a token held in JavaScript because browsers cannot attach custom headers to a WebSocket handshake, but they do send cookies automatically on a same-origin one.
 
-### API response for `POST /api/v1/audience-sessions`
+### `POST /api/v1/audience-sessions`
+
+Request, with the two values taken from the share link `.../join/{roomId}/{token}`:
+
+```json
+{ "roomId": "3b9d7e10-...", "token": "q0Z...43 characters" }
+```
+
+Response:
 
 ```json
 {
@@ -51,15 +59,24 @@ Rules:
   "roomId": "3b9d7e10-...",
   "restored": false,
   "room": {
-    "scene": {},
-    "characters": {},
-    "performanceId": "f2a4c6d8-...",
-    "performanceStatus": "running"
+    "roomId": "3b9d7e10-...",
+    "scene": { "topic": "...", "description": "...", "genre": "..." },
+    "characterA": { "name": "...", "brief": "...", "portraitUrl": "/api/v1/rooms/3b9d7e10-.../portraits/a" },
+    "characterB": { "name": "...", "brief": "...", "portraitUrl": "/api/v1/rooms/3b9d7e10-.../portraits/b" }
   }
 }
 ```
 
-`restored` is `true` when an existing cookie was recognised. The response carries only what PostgreSQL knows: the room and whether a performance exists. Live performance state arrives as the first message on the WebSocket.
+| Status | Meaning |
+| --- | --- |
+| `201` | A new session was created and its cookie set |
+| `200` | The browser already held a live session for this room; `restored` is `true` and no slot was used |
+| `403 invalid_share_link` | Anything wrong with the link: wrong token, a token for another room, a malformed or unknown room ID. One answer for all, so it reveals nothing about which rooms exist |
+| `409 room_full` | The room has already admitted ten sessions |
+
+The response carries only what PostgreSQL knows: the room's setup. It has no share link and no audience count. Live performance state arrives as the first message on the WebSocket.
+
+An expired session is not restored: the browser is treated as new and takes a slot if one is free.
 
 ## Flow 1: first connection
 

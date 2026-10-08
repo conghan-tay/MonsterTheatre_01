@@ -15,6 +15,7 @@ import (
 	"go.temporal.io/sdk/client"
 	temporallog "go.temporal.io/sdk/log"
 
+	"github.com/conghan-tay/MonsterTheatre_01/server/internal/audience"
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/auth"
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/config"
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/db"
@@ -97,20 +98,35 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	// Every director route from here on is wrapped in RequireDirector.
 	mux.Handle("GET /api/v1/director/me", directors.RequireDirector(http.HandlerFunc(directors.Me)))
 
+	roomStore := &rooms.PGStore{Pool: pool}
+	audienceService := &audience.Service{
+		Store:        &audience.PGStore{Pool: pool},
+		Rooms:        roomStore,
+		Links:        shareLinks,
+		Logger:       logger,
+		Now:          time.Now,
+		CookieSecure: cfg.CookieSecure,
+	}
 	roomService := &rooms.Service{
-		Store:   &rooms.PGStore{Pool: pool},
-		Objects: objects,
-		Links:   shareLinks,
-		VoiceA:  cfg.VoiceIDA,
-		VoiceB:  cfg.VoiceIDB,
-		Logger:  logger,
-		Now:     time.Now,
+		Store:     roomStore,
+		Directors: directors,
+		Audience:  audienceService,
+		Objects:   objects,
+		Links:     shareLinks,
+		VoiceA:    cfg.VoiceIDA,
+		VoiceB:    cfg.VoiceIDB,
+		Logger:    logger,
+		Now:       time.Now,
 	}
 	director := func(h http.HandlerFunc) http.Handler { return directors.RequireDirector(h) }
 	mux.Handle("POST /api/v1/rooms", director(roomService.Create))
 	mux.Handle("GET /api/v1/rooms", director(roomService.List))
-	mux.Handle("GET /api/v1/rooms/{roomId}", director(roomService.Get))
-	mux.Handle("GET /api/v1/rooms/{roomId}/portraits/{slot}", director(roomService.Portrait))
+	// These two admit the room's director or a member of its audience, and
+	// decide that themselves.
+	mux.HandleFunc("GET /api/v1/rooms/{roomId}", roomService.Get)
+	mux.HandleFunc("GET /api/v1/rooms/{roomId}/portraits/{slot}", roomService.Portrait)
+	// Open to anyone holding a valid share link.
+	mux.HandleFunc("POST /api/v1/audience-sessions", audienceService.Join)
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,

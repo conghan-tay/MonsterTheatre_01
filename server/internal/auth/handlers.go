@@ -136,23 +136,38 @@ func (s *Service) Me(w http.ResponseWriter, r *http.Request) {
 // route is wrapped in it; handlers never look at the cookie themselves.
 func (s *Service) RequireDirector(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		cookie, err := r.Cookie(SessionCookie)
-		if err != nil || cookie.Value == "" {
-			s.unauthenticated(w)
-			return
-		}
-		session, err := s.Store.SessionByHash(r.Context(), HashToken(cookie.Value))
-		if errors.Is(err, ErrNotFound) || (err == nil && !s.Now().Before(session.ExpiresAt)) {
-			s.unauthenticated(w)
-			return
-		}
+		identity, ok, err := s.Director(r)
 		if err != nil {
 			s.internalError(w, "look up session", err)
 			return
 		}
-		identity := Identity{DirectorID: session.DirectorID, Username: session.Username}
+		if !ok {
+			s.unauthenticated(w)
+			return
+		}
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), identityKey{}, identity)))
 	})
+}
+
+// Director returns the director logged in on this request, if any. It is for
+// routes that also admit someone else, such as a room its audience may read;
+// director-only routes use RequireDirector.
+func (s *Service) Director(r *http.Request) (Identity, bool, error) {
+	cookie, err := r.Cookie(SessionCookie)
+	if err != nil || cookie.Value == "" {
+		return Identity{}, false, nil
+	}
+	session, err := s.Store.SessionByHash(r.Context(), HashToken(cookie.Value))
+	if errors.Is(err, ErrNotFound) {
+		return Identity{}, false, nil
+	}
+	if err != nil {
+		return Identity{}, false, err
+	}
+	if !s.Now().Before(session.ExpiresAt) {
+		return Identity{}, false, nil
+	}
+	return Identity{DirectorID: session.DirectorID, Username: session.Username}, true, nil
 }
 
 func (s *Service) refuse(w http.ResponseWriter, username string) {

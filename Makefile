@@ -1,4 +1,4 @@
-.PHONY: dev infra infra-down migrate server worker test
+.PHONY: dev infra infra-down migrate server worker test e2e
 
 # Start everything; Ctrl-C stops everything.
 dev:
@@ -22,3 +22,8 @@ worker:
 
 test:
 	cd server && go test ./...
+
+# End-to-end tests. Starts its own isolated stack (separate database, its own
+# Temporal dev server, free ports) and tears it down afterwards. Needs Docker.
+e2e:
+	cd tests/e2e && go test ./... -count=1

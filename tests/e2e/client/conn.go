@@ -1,0 +1,127 @@
+package client
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"strings"
+
+	"github.com/coder/websocket"
+)
+
+// Message types sent by the server (docs/system-design.md, section 5).
+const (
+	TypeSnapshot     = "snapshot"
+	TypeUpdate       = "update"
+	TypeVoteReceived = "vote_received"
+	TypeError        = "error"
+)
+
+// Message is one WebSocket message from the server. Snapshots and updates
+// carry a revision and the state they describe.
+type Message struct {
+	Type     string `json:"type"`
+	Revision int    `json:"revision"`
+	State    State  `json:"state"`
+	// Raw is the whole message, for tests that need fields not modelled here.
+	Raw json.RawMessage `json:"-"`
+}
+
+// State is the part of the performance state the tests wait on. Further
+// fields are added as later steps need them.
+type State struct {
+	Phase string `json:"phase"`
+	Turn  int    `json:"turn"`
+}
+
+// Conn is one browser's WebSocket to the server.
+type Conn struct {
+	ws *websocket.Conn
+}
+
+// Connect opens a WebSocket at path, sending this client's cookies and its
+// own origin, as a browser on the same site would.
+func (c *Client) Connect(ctx context.Context, path string) (*Conn, error) {
+	wsURL := "ws" + strings.TrimPrefix(c.BaseURL, "http") + path
+	ws, resp, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
+		HTTPClient: c.HTTP,
+		HTTPHeader: http.Header{"Origin": []string{c.BaseURL}},
+	})
+	if err != nil {
+		if resp != nil {
+			return nil, fmt.Errorf("websocket handshake refused with status %d: %w", resp.StatusCode, err)
+		}
+		return nil, err
+	}
+	return &Conn{ws: ws}, nil
+}
+
+// Next reads the next message. If ctx ends first the connection is closed,
+// so a timeout here ends the test's use of this connection.
+func (c *Conn) Next(ctx context.Context) (Message, error) {
+	var msg Message
+	_, data, err := c.ws.Read(ctx)
+	if err != nil {
+		return msg, err
+	}
+	if err := json.Unmarshal(data, &msg); err != nil {
+		return msg, fmt.Errorf("decode message %q: %w", data, err)
+	}
+	msg.Raw = data
+	return msg, nil
+}
+
+// Snapshot reads the next message and requires it to be a snapshot, which
+// the server always sends first.
+func (c *Conn) Snapshot(ctx context.Context) (Message, error) {
+	msg, err := c.Next(ctx)
+	if err != nil {
+		return msg, err
+	}
+	if msg.Type != TypeSnapshot {
+		return msg, fmt.Errorf("expected a snapshot, got %q: %s", msg.Type, msg.Raw)
+	}
+	return msg, nil
+}
+
+// NextUpdate reads messages until the next update and returns it.
+func (c *Conn) NextUpdate(ctx context.Context) (Message, error) {
+	for {
+		msg, err := c.Next(ctx)
+		if err != nil {
+			return msg, err
+		}
+		if msg.Type == TypeUpdate {
+			return msg, nil
+		}
+	}
+}
+
+// WaitForPhase reads messages until a snapshot or update shows the given
+// phase and turn, and returns that message.
+func (c *Conn) WaitForPhase(ctx context.Context, phase string, turn int) (Message, error) {
+	for {
+		msg, err := c.Next(ctx)
+		if err != nil {
+			return msg, fmt.Errorf("waiting for phase %q turn %d: %w", phase, turn, err)
+		}
+		if (msg.Type == TypeSnapshot || msg.Type == TypeUpdate) && msg.State.Phase == phase && msg.State.Turn == turn {
+			return msg, nil
+		}
+	}
+}
+
+// Send writes v as a JSON message.
+func (c *Conn) Send(ctx context.Context, v any) error {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	return c.ws.Write(ctx, websocket.MessageText, data)
+}
+
+// Close closes the connection normally.
+func (c *Conn) Close() error {
+	return c.ws.Close(websocket.StatusNormalClosure, "")
+}

@@ -28,12 +28,23 @@ Other targets:
 
 | Command | Does |
 | --- | --- |
-| `make test` | Runs the Go tests |
+| `make test` | Runs the Go unit tests |
+| `make e2e` | Runs the end-to-end tests against their own isolated stack |
 | `make infra` / `make infra-down` | Starts or removes only PostgreSQL and Redis |
 | `make migrate` | Applies migrations |
 | `make server` / `make worker` | Runs one process on its own |
 
 Configuration comes from environment variables, all with local defaults. See [.env.example](.env.example).
+
+## End-to-end tests
+
+```sh
+make e2e
+```
+
+This needs Docker running and the Temporal CLI. It starts the real server and worker against real PostgreSQL, Redis, and Temporal, with fake stand-ins for the language model, speech, and S3, then tears everything down.
+
+It is isolated from `make dev` (its own database, its own Temporal server, free ports), so both can run at once. If the stack cannot start you get a `HARNESS FAILURE` banner with log tails, which is different from a failing test.
 
 ## Layout
 
@@ -43,6 +54,7 @@ server/cmd/worker    Temporal worker process
 server/cmd/migrate   Applies SQL migrations
 server/internal      Application packages
 server/migrations    SQL migrations
+tests/e2e            End-to-end tests: harness, client, fixtures
 ```
 
 ## Migration rules

@@ -79,7 +79,7 @@ Note: `.gitignore` excludes `*.mp3` and `*.wav`, so audio fixtures are generated
 
 ### Unit and workflow tests
 
-Kept small, for logic that is awkward to reach end to end: winner selection (majority, tie, empty), vote bookkeeping, input validation, the tag-preservation check, and the workflow itself under Temporal's test environment with mocked activities.
+Kept small, for logic that is awkward to reach end to end: winner selection (majority, tie, empty), vote bookkeeping, the conflict-retry helper, input validation, the tag-preservation check, and the workflow itself under Temporal's test environment with mocked activities.
 
 ## 2. Dependencies
 
@@ -100,6 +100,7 @@ Versions were checked against the Go module proxy, the npm registry, and Docker 
 | --- | --- | --- |
 | `go.temporal.io/sdk` | v1.49.0 | Workflow, activities, client, and the workflow test environment |
 | `github.com/jackc/pgx/v5` | v5.11.0 | PostgreSQL driver and connection pool |
+| `github.com/awslabs/aurora-dsql-connectors/go/pgx` | v0.5.0 | Builds the pgx pool for Aurora DSQL with automatic IAM tokens. Used only on AWS |
 | `github.com/pressly/goose/v3` | v3.28.0 | SQL migrations |
 | `github.com/redis/go-redis/v9` | v9.23.0 | Redis Streams publish and read |
 | `github.com/coder/websocket` | v1.8.15 | WebSocket server, and client in E2E tests |
@@ -128,7 +129,8 @@ Deliberately not added: a web framework (the standard library router is enough),
 
 | Name | Version | Purpose |
 | --- | --- | --- |
-| `postgres` image | 17-alpine | Local database. Confirm the same major version is available on RDS at step 15 |
+| `postgres` image | 17-alpine | Local database only |
+| Aurora DSQL | — | Database on AWS (D032). PostgreSQL-compatible, no version to choose |
 | `redis` image | 8-alpine | Local Redis. Confirm the matching ElastiCache engine at step 15 |
 | Temporal Cloud | — | Hosted workflow service for the AWS deployment |
 | Anthropic API | Model set by `LLM_MODEL` | Choice generation and tag enhancement |
@@ -157,7 +159,8 @@ Makefile           dev, test, e2e, migrate
 - The Go module with `cmd/server` and `cmd/worker`, each starting, logging one structured line, and exposing a health check (the server over HTTP; the worker by connecting to Temporal).
 - `docker-compose.yml` for PostgreSQL and Redis; `make dev` also starts the Temporal dev server.
 - Configuration loading from environment variables, with `.env.example` committed.
-- Migration tooling with an empty first migration; `make migrate`.
+- Migration tooling with an empty first migration; `make migrate`. From the start, each migration holds one schema statement and no data changes, so the same files run on Aurora DSQL.
+- A database package that accepts a pgx pool from either source: a connection string locally, or the Aurora DSQL connector on AWS.
 
 **Definition of done**
 - `make dev` brings up PostgreSQL, Redis, Temporal, the server, and the worker.
@@ -194,6 +197,7 @@ Makefile           dev, test, e2e, migrate
 - Migrations for `directors` and `director_sessions`.
 - Login and logout endpoints, argon2id hashing, the session cookie, throttling of failed attempts, and the middleware that yields a verified director ID.
 - A small command to add a director.
+- The write-transaction helper that retries on SQLSTATE `40001`, used by every write from here on, with a unit test that simulates a conflict.
 
 **Definition of done**
 - H1 (login part) and S1 pass.
@@ -214,7 +218,7 @@ Makefile           dev, test, e2e, migrate
 
 **What to build**
 - Migration for `audience_sessions`.
-- `POST /api/v1/audience-sessions`: create or restore, the per-room cookie, and the ten-session cap enforced under a room lock.
+- `POST /api/v1/audience-sessions`: create or restore, the per-room cookie, and the ten-session cap enforced by a conditional update of `rooms.audience_count` in the same transaction as the insert.
 - Audience access to the room and portrait endpoints.
 
 **Definition of done**
@@ -309,15 +313,17 @@ Makefile           dev, test, e2e, migrate
 ### Step 15 — AWS deployment
 
 **What to build**
-- A CDK app: network, load balancer with HTTPS, three Fargate services (web, server, worker), RDS PostgreSQL, ElastiCache, the private encrypted S3 bucket with a seven-day lifecycle rule, and secrets for the provider keys and Temporal Cloud credentials.
+- A CDK app: network, load balancer with HTTPS, three Fargate services (web, server, worker), an Aurora DSQL cluster, ElastiCache, the private encrypted S3 bucket with a seven-day lifecycle rule, and secrets for the provider keys and Temporal Cloud credentials.
 - The S3 implementation of the object store and its smoke test against a real bucket.
 - A Temporal Cloud namespace and the worker's connection to it.
+- The Aurora DSQL connection path: the connector, a scoped database role mapped to the task roles, and the migrations applied to the cluster. If goose does not run unmodified against DSQL, apply the same SQL files with a small script.
 
-Before starting this step, load the relevant AWS skills as the project's instructions require, and confirm the PostgreSQL and Redis engine versions available on RDS and ElastiCache.
+Before starting this step, load the relevant AWS skills as the project's instructions require, including `aurora-dsql`, and confirm that Aurora DSQL is available in the chosen region and which Redis engine version ElastiCache offers.
 
 **Definition of done**
 - `cdk deploy` succeeds from a clean account state and `cdk diff` is empty afterwards.
 - The Go E2E suite passes when pointed at the deployed URL with fake providers enabled in a test configuration.
+- The simultaneous-joins part of S4 passes against Aurora DSQL with exactly ten admitted. This is the first time conflict retries run for real.
 - A full performance with real providers and at least two remote browsers completes over the public URL.
 - An estimate of the monthly running cost is recorded, with instructions for tearing the stack down between demos.
 
@@ -330,6 +336,7 @@ These are items 11 to 16 in [the review](review.md), placed where they come up:
 | Whether to show a "recovering" message | Steps 13 and 14 |
 | What the page shows between rounds | Step 14 |
 | Database cleanup | Step 15, or defer |
+| Whether goose runs unmodified against Aurora DSQL | Step 15 |
 | Piping audio from the object store | Step 12 |
 | Who builds clip URLs | Step 12 |
 | Caching of audio responses | Step 12 |

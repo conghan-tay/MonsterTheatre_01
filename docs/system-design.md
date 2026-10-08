@@ -1,6 +1,6 @@
 # Monster Theatre — System Design
 
-Status: Simplified design, agreed with the user on 2026-10-07 and 2026-10-08 (D022–D031). It replaces the earlier draft built around PostgreSQL milestone snapshots, live audio streaming, and an S3 data lake. It passed the design-readiness checklist on 2026-10-08; the remaining build-time points are in [the review](review.md).
+Status: Simplified design, agreed with the user on 2026-10-07 and 2026-10-08 (D022–D032). It replaces the earlier draft built around PostgreSQL milestone snapshots, live audio streaming, and an S3 data lake. It passed the design-readiness checklist on 2026-10-08; the remaining build-time points are in [the review](review.md).
 
 Source of truth: [Product brief](monster-theatre-product-brief.md). Significant choices are recorded in [Decisions](decisions.md).
 
@@ -51,7 +51,7 @@ One performance involves at most 11 WebSocket connections, 25 published updates,
 | Go worker | A separate process from the same codebase. Runs the performance workflow and its activities (D026) |
 | Temporal Cloud | Stores and drives the performance workflow |
 | Redis Streams | The worker publishes performance updates; the server reads them and forwards to browsers (D024). ElastiCache on AWS, plain Redis locally |
-| PostgreSQL | Rooms, audience sessions, and one row per performance |
+| PostgreSQL | Rooms, audience sessions, and one row per performance. Aurora DSQL on AWS, a plain PostgreSQL container locally (D032) |
 | S3 | Portraits and the eight turn recordings |
 | Language model | Choice generation and audio-tag enhancement, behind a configurable adapter (D017) |
 | ElevenLabs | Speech for each winning line: one request per turn to the Text to Dialogue convert endpoint with `eleven_v4_turbo`, the speaker's voice, and the tagged text |
@@ -62,7 +62,7 @@ flowchart LR
     Browser[Director and audience browsers] -->|HTTPS| ALB[Load balancer]
     ALB -->|Pages| Web[Next.js]
     ALB -->|API and one WebSocket per browser| Server["Go server (Room service and Theater)"]
-    Server -->|Rooms, sessions, performance row| DB[(PostgreSQL)]
+    Server -->|Rooms, sessions, performance row| DB[("PostgreSQL (Aurora DSQL on AWS)")]
     Server -->|Portraits in, portraits and audio out| S3[(S3)]
     Server -->|Start workflow, signal votes, query state| Temporal[Temporal Cloud]
     Temporal <-->|Workflow and activity tasks| Worker[Go worker]
@@ -76,7 +76,7 @@ flowchart LR
 
 The server and the worker never talk to each other directly. The server reaches the workflow through Temporal (start, signal, query), and the workflow reaches the server through Redis.
 
-For prototyping, everything runs locally: the Temporal dev server, Redis, and PostgreSQL in containers, with a real S3 bucket or a local stand-in. On AWS the three application processes run as containers on ECS Fargate.
+For prototyping, everything runs locally: the Temporal dev server, Redis, and PostgreSQL in containers, with a real S3 bucket or a local stand-in. On AWS the three application processes run as containers on ECS Fargate, and the database is Aurora DSQL.
 
 ## 3. Stored data
 
@@ -86,13 +86,24 @@ For prototyping, everything runs locally: the Temporal dev server, Redis, and Po
 | --- | --- | --- |
 | `directors` | Director ID, username, password hash. Rows are added by an administrator; there is no signup | By hand |
 | `director_sessions` | Session ID, director, credential hash, expiry. Same pattern as audience sessions | At login |
-| `rooms` | Owner (director ID), scene topic/description/genre, character A and B (name, brief, voice, portrait key), hash of the share-link token | Once, at creation |
+| `rooms` | Owner (director ID), scene topic/description/genre, character A and B (name, brief, voice, portrait key), hash of the share-link token, and `audience_count` | Once, at creation; `audience_count` goes up by one per new audience session |
 | `audience_sessions` | Session ID, room, credential hash, timestamps. See [Audience session](audience-session.md) | When someone enters; `last_seen_at` on reconnect |
 | `performances` | Performance ID, room (unique, so one per room), status (`running`, `completed`, `failed`), and on completion the final script and the eight audio keys | A row at Start; one update at the end |
 
 The final script is one JSON document: for each turn the speaker, beat, three choices, vote counts, winner, how it was decided (majority, tie, no votes), the tagged text, and the model used.
 
 There are no snapshot, event, or vote tables. While a performance is running, its state exists only in the workflow.
+
+### Working on both databases
+
+The same code runs against local PostgreSQL and Aurora DSQL (D032). Four rules make that possible:
+
+- **Retry on conflict.** Aurora DSQL has no row locks; a transaction that conflicts with another fails at commit with SQLSTATE `40001`. Every write transaction runs through one helper that retries on that error with backoff. On local PostgreSQL the helper never has anything to retry.
+- **Session cap by counter.** Admitting an audience member is one transaction: `UPDATE rooms SET audience_count = audience_count + 1 WHERE id = $1 AND audience_count < 10`, then the session insert. If the update changes no row, the room is full. Locally the row lock makes simultaneous joins queue; on DSQL they conflict and one retries.
+- **Application-generated UUID keys.** No sequences are used.
+- **Plain migrations.** One schema statement per migration, never mixed with data changes, and no column drops or type changes without recreating the table. On DSQL, indexes are created with `CREATE INDEX ASYNC`.
+
+Nothing in the schema needs triggers, extensions, or LISTEN/NOTIFY, which DSQL does not support. The final script is a `jsonb` column well under DSQL's 1 MiB limit.
 
 ### S3
 
@@ -298,6 +309,7 @@ Two delivery rules keep the premiere continuous and working across browsers:
 - **WebSocket.** The handshake is authenticated by cookie, so the server also checks the `Origin` header and refuses connections from other sites.
 - **Login.** Passwords are stored with a slow hash, and repeated failed attempts are throttled.
 - **Secrets.** Language-model and ElevenLabs keys are held only by the worker; the Temporal credentials by server and worker. Nothing is sent to browsers.
+- **Database.** On AWS the server and worker connect to Aurora DSQL with short-lived IAM tokens issued to their task roles, through a scoped database role. There is no database password to store.
 - **Storage.** The S3 bucket is private and encrypted. Browsers reach portraits and audio only through the server's authorised endpoints.
 - **Input limits.** The validation bounds in section 5 apply to every upload and text field.
 
@@ -315,6 +327,7 @@ Two delivery rules keep the premiere continuous and working across browsers:
 - No limit on how many performances run at once (D027).
 - A room creation that fails halfway can leave orphaned portraits in S3 until the lifecycle rule removes them.
 - An activity may publish the same update twice after a retry; the revision rule makes that harmless.
+- The local and deployed databases behave differently under contention. Conflict retries only run for real on Aurora DSQL, so they are first exercised at deployment.
 
 ## 10. Next step
 

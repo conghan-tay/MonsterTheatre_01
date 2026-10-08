@@ -32,7 +32,7 @@ Related field on the room:
 
 Rules:
 
-- **Ten sessions per room.** Enforced when a session is created: lock the room row, count its sessions, insert only if fewer than ten. Locking the room row matters; without it two simultaneous joins can both see nine and both insert.
+- **Ten sessions per room.** Enforced when a session is created, in one transaction: add one to the room's `audience_count` only if it is below ten, then insert the session. If the update changes no row, the room is full. Counting first and inserting afterwards would let two simultaneous joins both see nine and both insert. On local PostgreSQL the update's row lock makes them queue; on Aurora DSQL they conflict at commit and one is retried (D032).
 - **A disconnect never deletes or frees a session.** Otherwise reconnecting could create a second voter.
 - **Connection state is not a column.** Whether a session is currently connected lives in the server's in-memory connection map only.
 
@@ -80,7 +80,7 @@ sequenceDiagram
     B->>S: POST /audience-sessions with link token, no cookie
     S->>DB: Look up room by token hash
     DB-->>S: Room found
-    S->>DB: Lock room, count sessions, insert new session with credential hash
+    S->>DB: Add one to room audience_count if below ten, insert session with credential hash
     DB-->>S: Session created, 4 of 10 used
     S-->>B: 201 with session ID and room, Set-Cookie with secret
     B->>S: Open WebSocket, cookie sent automatically

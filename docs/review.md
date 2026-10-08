@@ -1,6 +1,6 @@
 # Monster Theatre — Design Review
 
-Updated 2026-10-08 for the simplified design (D022–D031), after a run through the design-readiness checklist. The first version of this review covered the earlier architecture with PostgreSQL snapshots, live audio streaming, and a data lake. Most of its findings no longer apply; the table at the end records what happened to each.
+Updated 2026-10-08 for the simplified design (D022–D032), after a run through the design-readiness checklist. The first version of this review covered the earlier architecture with PostgreSQL snapshots, live audio streaming, and a data lake. Most of its findings no longer apply; the table at the end records what happened to each.
 
 Scope: high-level issues in [the product brief](monster-theatre-product-brief.md), [decisions](decisions.md), and [system design](system-design.md). Implementation detail is out of scope.
 
@@ -23,7 +23,7 @@ Scope: high-level issues in [the product brief](monster-theatre-product-brief.md
 
 ### Small design points
 
-Items 7 to 10 are decided. Items 11 to 16 are settled while building.
+Items 7 to 10 are decided. Items 11 to 17 are settled while building.
 
 7. **Start the timer before publishing the deadline.** Decided 2026-10-08: the workflow starts the timer first, then publishes the deadline (system design, section 4).
 8. **What happens when a publish fails.** Decided 2026-10-08: publishing retries briefly, then the workflow continues; a browser that sees a revision gap sends `resync` (system design, sections 4 and 5).
@@ -31,10 +31,11 @@ Items 7 to 10 are decided. Items 11 to 16 are settled while building.
 10. **A workflow that ends without marking its row.** Decided 2026-10-08: when a browser connects and the workflow is closed, the server marks the row `failed` (system design, section 6).
 11. **Recovery status.** The brief no longer requires a visible "recovering" state. Connected browsers just see updates pause. If you want a message, the server can show one when no worker answers a query.
 12. **Waiting between rounds.** After each vote come tagging, speech, and the next generation, with nothing to listen to. The page should show the winning line and a "preparing the next line" state. Running tagging and speech in the background during the next round is a later improvement noted in the system design.
-13. **Database cleanup.** S3 objects expire after seven days; nothing removes old PostgreSQL rows. Not urgent for a demo.
+13. **Database cleanup.** S3 objects expire after seven days; nothing removes old database rows. Not urgent for a demo.
 14. **Audio pass-through or buffer.** Whether the server pipes the S3 body straight to the response or loads the clip first. Suggested: pipe it through.
 15. **Clip URLs.** Whether the `premiere` clip list carries URLs or the browser builds them from the performance ID and turn number. Suggested: the browser builds them.
 16. **Audio caching.** Whether clip responses are cacheable for replays. Suggested: private caching, since a recording never changes once saved.
+17. **Migrations on Aurora DSQL.** Whether goose runs unmodified against DSQL is not confirmed. Check at deployment; the fallback is applying the same SQL files with a small script (D032).
 
 ## What happened to the earlier findings
 
@@ -62,4 +63,4 @@ Items 7 to 10 are decided. Items 11 to 16 are settled while building.
 ## Suggested order
 
 1. Run the spike in item 5 early; it is small.
-2. Settle items 11 to 16 as each part is built.
+2. Settle items 11 to 17 as each part is built.

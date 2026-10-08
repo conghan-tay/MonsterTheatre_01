@@ -15,6 +15,7 @@ import (
 	"go.temporal.io/sdk/client"
 	temporallog "go.temporal.io/sdk/log"
 
+	"github.com/conghan-tay/MonsterTheatre_01/server/internal/auth"
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/config"
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/db"
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/health"
@@ -71,6 +72,18 @@ func run(cfg config.Config, logger *slog.Logger) error {
 			return err
 		}},
 	))
+
+	directors := &auth.Service{
+		Store:        &auth.PGStore{Pool: pool},
+		Throttle:     auth.NewThrottle(),
+		Logger:       logger,
+		Now:          time.Now,
+		CookieSecure: cfg.CookieSecure,
+	}
+	mux.HandleFunc("POST /api/v1/director/login", directors.Login)
+	mux.HandleFunc("POST /api/v1/director/logout", directors.Logout)
+	// Every director route from here on is wrapped in RequireDirector.
+	mux.Handle("GET /api/v1/director/me", directors.RequireDirector(http.HandlerFunc(directors.Me)))
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,

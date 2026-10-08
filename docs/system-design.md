@@ -190,7 +190,8 @@ A possible later improvement: since nothing is played until the premiere, taggin
 
 | Operation | Who | Behaviour |
 | --- | --- | --- |
-| `POST /api/v1/director/login` | Anyone | Username and password; on success sets the director session cookie. `POST /api/v1/director/logout` clears it |
+| `POST /api/v1/director/login` | Anyone | Username and password as JSON; on success sets the director session cookie. Wrong password and unknown username get the same `401`. `POST /api/v1/director/logout` deletes the session and clears the cookie |
+| `GET /api/v1/director/me` | Director | The logged-in director's ID and username; `401` without a live session. The web pages use it to know whether someone is logged in |
 | `POST /api/v1/rooms` | Director | One multipart request with scene/character JSON and two portraits. Validate, upload portraits to S3 under a new room ID, insert the room row, return the room ID and share link. On failure the director resubmits (D025) |
 | `GET /api/v1/rooms/{roomId}` | Director or audience session of that room | Scene, characters, and the room's performance ID and status if started |
 | `POST /api/v1/rooms/{roomId}/performance` | Director | Insert the performance row, then start the workflow. A repeated Start returns the existing performance |
@@ -200,6 +201,8 @@ A possible later improvement: since nothing is played until the premiere, taggin
 | `GET /api/v1/rooms/{roomId}/ws` | Director or audience session of that room | Upgrades to the WebSocket described below |
 
 Start is safe to retry: the unique room constraint stops a second row, and starting a workflow whose ID already exists is treated as success.
+
+Every error response has the same shape, `{"error": {"code": "...", "message": "..."}}`, where the code is stable and the message is for people.
 
 Error outcomes: `401` not logged in or no session; `403` not your room; `404` unknown room or performance; `409` room already has ten sessions, or a conflicting Start; `413` upload too large; `422` invalid fields or image; `429` too many login attempts.
 
@@ -308,7 +311,8 @@ Two delivery rules keep the premiere continuous and working across browsers:
 - **Share link.** Valid for the life of the room. It grants an audience session for that room and nothing else.
 - **Ownership.** Every director operation checks that the room belongs to the logged-in director.
 - **WebSocket.** The handshake is authenticated by cookie, so the server also checks the `Origin` header and refuses connections from other sites.
-- **Login.** Passwords are stored with a slow hash, and repeated failed attempts are throttled.
+- **Login.** Passwords are stored with argon2id. Five failed attempts for a username within 15 minutes lock that username until the 15 minutes have passed, and the lock applies even to the correct password. The count is held in server memory. Accepted cost: someone who knows a director's username can lock that director out for 15 minutes.
+- **Cookie `Secure` flag.** On by default and controlled by `COOKIE_SECURE`. Local development and the test stack turn it off because they serve plain HTTP.
 - **Secrets.** Language-model and ElevenLabs keys are held only by the worker; the Temporal credentials by server and worker. Nothing is sent to browsers.
 - **Database.** On AWS the server and worker connect to Aurora DSQL with short-lived IAM tokens issued to their task roles, through a scoped database role. There is no database password to store.
 - **Storage.** The S3 bucket is private and encrypted. Browsers reach portraits and audio only through the server's authorised endpoints.

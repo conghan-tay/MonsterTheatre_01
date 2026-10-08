@@ -3,9 +3,11 @@
 package fixtures
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"testing"
+	"time"
 )
 
 // Director is a director account's credentials.
@@ -14,17 +16,25 @@ type Director struct {
 	Password string
 }
 
-// NewDirector returns credentials for a director unique to this test.
-//
-// For now it only generates the credentials. The directors table and the
-// add-director command arrive in step 4; from then on this function also
-// creates the account.
-func NewDirector(t testing.TB) Director {
+// DirectorAdder creates director accounts. The harness Stack implements it.
+type DirectorAdder interface {
+	AddDirector(ctx context.Context, username, password string) error
+}
+
+// NewDirector creates a director account unique to this test and returns
+// its credentials.
+func NewDirector(t testing.TB, stack DirectorAdder) Director {
 	t.Helper()
-	return Director{
+	d := Director{
 		Username: "director-" + randomHex(t, 6),
 		Password: "pw-" + randomHex(t, 12),
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := stack.AddDirector(ctx, d.Username, d.Password); err != nil {
+		t.Fatalf("fixture: %v", err)
+	}
+	return d
 }
 
 func randomHex(t testing.TB, bytes int) string {

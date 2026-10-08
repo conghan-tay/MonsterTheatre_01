@@ -32,9 +32,28 @@ Other targets:
 | `make e2e` | Runs the end-to-end tests against their own isolated stack |
 | `make infra` / `make infra-down` | Starts or removes only PostgreSQL and Redis |
 | `make migrate` | Applies migrations |
+| `make director USERNAME=alice` | Creates a director account (prompts for the password) |
 | `make server` / `make worker` | Runs one process on its own |
 
 Configuration comes from environment variables, all with local defaults. See [.env.example](.env.example).
+
+## Director accounts
+
+There is no signup. With the stack running, create an account from another terminal:
+
+```sh
+make director USERNAME=alice
+```
+
+It prompts for a password of at least 8 characters (or reads `DIRECTOR_PASSWORD`). Then log in:
+
+```sh
+curl -i -c cookies.txt -H 'Content-Type: application/json' \
+  -d '{"username":"alice","password":"..."}' localhost:8080/api/v1/director/login
+curl -b cookies.txt localhost:8080/api/v1/director/me
+```
+
+Five failed logins for a username within 15 minutes lock that username until the 15 minutes have passed. The count is held in the server's memory, so restarting the server clears it.
 
 ## End-to-end tests
 
@@ -52,6 +71,7 @@ It is isolated from `make dev` (its own database, its own Temporal server, free 
 server/cmd/server    HTTP and WebSocket process
 server/cmd/worker    Temporal worker process
 server/cmd/migrate   Applies SQL migrations
+server/cmd/adddirector  Creates a director account
 server/internal      Application packages
 server/migrations    SQL migrations
 tests/e2e            End-to-end tests: harness, client, fixtures

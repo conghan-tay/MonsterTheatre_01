@@ -198,6 +198,8 @@ Makefile           dev, test, e2e, migrate
 
 ### Step 4 — Director login
 
+**Done 2026-10-08.** `make e2e` is fully green. Added beyond the list below: `GET /api/v1/director/me` and the `COOKIE_SECURE` setting.
+
 **What to build**
 - Migrations for `directors` and `director_sessions`.
 - Login and logout endpoints, argon2id hashing, the session cookie, throttling of failed attempts, and the middleware that yields a verified director ID.

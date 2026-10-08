@@ -115,6 +115,8 @@ func Start(ctx context.Context) (stack *Stack, err error) {
 		"TEMPORAL_NAMESPACE":  "default",
 		"TEMPORAL_TASK_QUEUE": "performance",
 		"LOG_LEVEL":           "debug",
+		// The test stack runs over plain HTTP, so cookies must not be Secure.
+		"COOKIE_SECURE": "false",
 		// Settings below are read by later steps; they are set from the
 		// start so the test stack never reaches a paid provider.
 		"LLM_PROVIDER":       "fake",
@@ -197,6 +199,17 @@ func (s *Stack) StopWorker() error {
 	return nil
 }
 
+// AddDirector creates a director account with the same command an
+// administrator uses.
+func (s *Stack) AddDirector(ctx context.Context, username, password string) error {
+	cmd := s.command(ctx, s.bin("adddirector"), "-username", username)
+	cmd.Env = append(cmd.Env, "DIRECTOR_PASSWORD="+password)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("add director %q: %w\n%s", username, err, out)
+	}
+	return nil
+}
+
 // WorkerRunning reports whether the harness currently has a worker process.
 func (s *Stack) WorkerRunning() bool {
 	return s.worker != nil && !s.worker.exited()
@@ -221,7 +234,7 @@ func (s *Stack) startContainers(ctx context.Context) error {
 
 func (s *Stack) build(ctx context.Context) error {
 	cmd := exec.CommandContext(ctx, "go", "build", "-o", filepath.Join(s.workDir, "bin")+string(os.PathSeparator),
-		"./cmd/server", "./cmd/worker", "./cmd/migrate")
+		"./cmd/server", "./cmd/worker", "./cmd/migrate", "./cmd/adddirector")
 	cmd.Dir = filepath.Join(s.repoRoot, "server")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("build server binaries: %w\n%s", err, out)

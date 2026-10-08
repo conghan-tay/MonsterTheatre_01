@@ -170,6 +170,8 @@ Makefile           dev, test, e2e, migrate
 
 ### Step 2 — Spike: vote and timer ordering after a worker outage
 
+**Done 2026-10-08.** Result: workflow code cannot tell which vote arrived before the timer after an outage. Remedy: the server stamps each vote with its receipt time (D033, proposed). Details in [the review](review.md), item 5.
+
 **What to build**
 - A throwaway workflow that starts a short timer and collects signals, and a script that stops the worker before the deadline, sends one signal before and one after it, then restarts the worker.
 
@@ -259,7 +261,8 @@ Makefile           dev, test, e2e, migrate
 
 **What to build**
 - The `vote` message, the vote signal carrying the voter ID, and `vote_received`.
-- Vote bookkeeping in the workflow: first vote per voter, ignore unknown choices, wrong turns, and late votes (using the approach settled in step 2).
+- Vote bookkeeping in the workflow: first vote per voter, ignore unknown choices, wrong turns, and late votes. Lateness is decided by the receipt-time stamp against the deadline, and buffered votes are handled before the round closes (D033).
+- The server stamping each vote with its receipt time before signalling.
 - Winner selection by majority with the replay-safe random source for ties and empty rounds.
 - The voter's own vote included in snapshots.
 

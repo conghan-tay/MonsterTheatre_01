@@ -1,6 +1,6 @@
 # Monster Theatre — System Design
 
-Status: Simplified design, agreed with the user on 2026-10-07 and 2026-10-08 (D022–D032). It replaces the earlier draft built around PostgreSQL milestone snapshots, live audio streaming, and an S3 data lake. It passed the design-readiness checklist on 2026-10-08; the remaining build-time points are in [the review](review.md).
+Status: Simplified design, agreed with the user on 2026-10-07 and 2026-10-08 (D022–D033). It replaces the earlier draft built around PostgreSQL milestone snapshots, live audio streaming, and an S3 data lake. It passed the design-readiness checklist on 2026-10-08; the remaining build-time points are in [the review](review.md).
 
 Source of truth: [Product brief](monster-theatre-product-brief.md). Significant choices are recorded in [Decisions](decisions.md).
 
@@ -144,8 +144,9 @@ flowchart TD
 Notes on each part:
 
 - **Publishing is an activity.** Workflow code must be deterministic and cannot talk to Redis itself, so every "Publish" box is a small activity that appends one message to the stream. Before each publish the workflow increases its revision number and includes it in the message.
-- **Timer before publish.** The workflow starts the 10-second timer first and then publishes the deadline, so the deadline browsers show is the one the timer enforces.
-- **Collecting votes.** A vote arrives as a signal carrying a voter ID (an audience session ID or the director's ID), turn number, and choice ID. The workflow records the first vote from each voter for the current turn and ignores repeats, unknown choices, wrong turn numbers, and anything after the timer fires.
+- **Timer before publish.** The workflow computes the deadline (its current time plus the window), starts the 10-second timer, and then publishes that deadline, so browsers show the same deadline the workflow enforces.
+- **Collecting votes.** A vote arrives as a signal carrying a voter ID (an audience session ID or the director's ID), turn number, and choice ID. The signal also carries the time the server received the vote. The workflow records the first vote from each voter for the current turn and ignores repeats, unknown choices, wrong turn numbers, and late votes.
+- **Deciding lateness.** A vote is in time if the server's receipt time is at or before the deadline. The workflow does not rely on whether it saw the vote before or after the timer: the step 2 spike showed that after a worker outage those arrive together and their order is lost (D033). When the timer is delivered, the workflow first handles every vote still buffered, then closes the round. A vote that reaches the workflow after the round has closed is ignored whatever its stamp says.
 - **Picking the winner.** Done in workflow code: most votes wins; a tie or an empty round is settled with Temporal's replay-safe random source, so a replay after a crash reaches the same answer.
 - **Fallbacks.** Choice generation retries, then falls back to simple valid lines. Tag enhancement retries, then falls back to the untagged line. Text to speech retries; if it still fails the run fails.
 - **Failure.** If the workflow cannot continue, it runs one last activity to mark the performance row `failed` and publishes a `failed` update. A workflow run timeout bounds a run that hangs.
@@ -274,8 +275,8 @@ The server keeps an in-memory map of room to open connections. It reads each upd
 ### Voting
 
 1. The browser sends `vote` on its WebSocket.
-2. The server signals the workflow with the voter ID, turn, and choice, then replies `vote_received`.
-3. The workflow keeps the vote if it is that voter's first for the current turn and the timer has not fired.
+2. The server notes the time, signals the workflow with the voter ID, turn, choice, and that receipt time, then replies `vote_received`.
+3. The workflow keeps the vote if it is that voter's first for the current turn, the receipt time is not after the deadline, and the round has not yet closed.
 4. When the timer fires, the workflow picks the winner and publishes it. Every browser receives the winner and the counts.
 
 A browser that reconnects during a round gets its own vote back in the snapshot, because the workflow state includes who voted and the server sends each browser only its own entry.
@@ -297,7 +298,7 @@ Two delivery rules keep the premiere continuous and working across browsers:
 ### Worker restart
 
 - The workflow resumes from its history when a worker is back: completed activities are not repeated, and the timer keeps its original deadline.
-- Votes signalled while the worker is down are stored by Temporal and counted on return if they arrived before the timer fired.
+- Votes signalled while the worker is down are stored by Temporal. On return the workflow counts those whose receipt time is not after the deadline, and rejects the rest (D033).
 - Browsers stay connected to the server throughout and see updates pause, then continue.
 - A browser that connects while the worker is down cannot get a snapshot, because a query needs a worker. The server tells it the performance is recovering and the browser retries.
 

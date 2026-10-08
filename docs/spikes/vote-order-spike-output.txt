@@ -1,0 +1,110 @@
+Vote and timer ordering spike - raw output
+Run on 2026-10-08. Go 1.26.5, go.temporal.io/sdk v1.49.0, Temporal CLI 1.8.2 (server 1.31.2), macOS.
+Window 4s, 3 repeats per case. Program: server/spike/voteorder/main.go in the first commit of this change.
+Legend: [WFT ... WFT] = one workflow task handled by a worker. WFT-timed-out = a task no worker picked up.
+
+== control (worker up) | selector signal-first | run 1
+history : [WFT WFT] TimerStarted Signal(before) [WFT WFT] TimerFired [WFT WFT] Signal(after) [WFT WFT]
+workflow: signal(before){timerDelivered=false timerReady=false stampInTime=true} -> timer -> signal(after){timerDelivered=true timerReady=true stampInTime=false}
+
+== control (worker up) | selector signal-first | run 2
+history : [WFT WFT] TimerStarted Signal(before) [WFT WFT] TimerFired [WFT WFT] Signal(after) [WFT WFT]
+workflow: signal(before){timerDelivered=false timerReady=false stampInTime=true} -> timer -> signal(after){timerDelivered=true timerReady=true stampInTime=false}
+
+== control (worker up) | selector signal-first | run 3
+history : [WFT WFT] TimerStarted Signal(before) [WFT WFT] TimerFired [WFT WFT] Signal(after) [WFT WFT]
+workflow: signal(before){timerDelivered=false timerReady=false stampInTime=true} -> timer -> signal(after){timerDelivered=true timerReady=true stampInTime=false}
+
+== control (worker up) | selector timer-first | run 1
+history : [WFT WFT] TimerStarted Signal(before) [WFT WFT] TimerFired [WFT WFT] Signal(after) [WFT WFT]
+workflow: signal(before){timerDelivered=false timerReady=false stampInTime=true} -> timer -> signal(after){timerDelivered=true timerReady=true stampInTime=false}
+
+== control (worker up) | selector timer-first | run 2
+history : [WFT WFT] TimerStarted Signal(before) [WFT WFT] TimerFired [WFT WFT] Signal(after) [WFT WFT]
+workflow: signal(before){timerDelivered=false timerReady=false stampInTime=true} -> timer -> signal(after){timerDelivered=true timerReady=true stampInTime=false}
+
+== control (worker up) | selector timer-first | run 3
+history : [WFT WFT] TimerStarted Signal(before) [WFT WFT] TimerFired [WFT WFT] Signal(after) [WFT WFT]
+workflow: signal(before){timerDelivered=false timerReady=false stampInTime=true} -> timer -> signal(after){timerDelivered=true timerReady=true stampInTime=false}
+
+== outage across deadline | selector signal-first | run 1
+history : [WFT WFT] TimerStarted Signal(before) TimerFired Signal(after) WFT-timed-out [WFT WFT]
+workflow: signal(before){timerDelivered=false timerReady=true stampInTime=true} -> signal(after){timerDelivered=false timerReady=true stampInTime=false} -> timer
+
+== outage across deadline | selector signal-first | run 2
+history : [WFT WFT] TimerStarted Signal(before) TimerFired Signal(after) WFT-timed-out [WFT WFT]
+workflow: signal(before){timerDelivered=false timerReady=true stampInTime=true} -> signal(after){timerDelivered=false timerReady=true stampInTime=false} -> timer
+
+== outage across deadline | selector signal-first | run 3
+history : [WFT WFT] TimerStarted Signal(before) TimerFired Signal(after) WFT-timed-out [WFT WFT]
+workflow: signal(before){timerDelivered=false timerReady=true stampInTime=true} -> signal(after){timerDelivered=false timerReady=true stampInTime=false} -> timer
+
+== outage across deadline | selector timer-first | run 1
+history : [WFT WFT] TimerStarted Signal(before) TimerFired Signal(after) WFT-timed-out [WFT WFT]
+workflow: signal(before){timerDelivered=false timerReady=true stampInTime=true} -> timer -> signal(after){timerDelivered=true timerReady=true stampInTime=false}
+
+== outage across deadline | selector timer-first | run 2
+history : [WFT WFT] TimerStarted Signal(before) TimerFired Signal(after) WFT-timed-out [WFT WFT]
+workflow: signal(before){timerDelivered=false timerReady=true stampInTime=true} -> timer -> signal(after){timerDelivered=true timerReady=true stampInTime=false}
+
+== outage across deadline | selector timer-first | run 3
+history : [WFT WFT] TimerStarted Signal(before) TimerFired Signal(after) WFT-timed-out [WFT WFT]
+workflow: signal(before){timerDelivered=false timerReady=true stampInTime=true} -> timer -> signal(after){timerDelivered=true timerReady=true stampInTime=false}
+
+== outage, both votes early | selector signal-first | run 1
+history : [WFT WFT] TimerStarted Signal(before-1) Signal(before-2) TimerFired WFT-timed-out [WFT WFT]
+workflow: signal(before-1){timerDelivered=false timerReady=true stampInTime=true} -> signal(before-2){timerDelivered=false timerReady=true stampInTime=true} -> timer
+
+== outage, both votes early | selector signal-first | run 2
+history : [WFT WFT] TimerStarted Signal(before-1) Signal(before-2) TimerFired WFT-timed-out [WFT WFT]
+workflow: signal(before-1){timerDelivered=false timerReady=true stampInTime=true} -> signal(before-2){timerDelivered=false timerReady=true stampInTime=true} -> timer
+
+== outage, both votes early | selector signal-first | run 3
+history : [WFT WFT] TimerStarted Signal(before-1) Signal(before-2) TimerFired WFT-timed-out [WFT WFT]
+workflow: signal(before-1){timerDelivered=false timerReady=true stampInTime=true} -> signal(before-2){timerDelivered=false timerReady=true stampInTime=true} -> timer
+
+== outage, both votes early | selector timer-first | run 1
+history : [WFT WFT] TimerStarted Signal(before-1) Signal(before-2) TimerFired WFT-timed-out [WFT WFT]
+workflow: signal(before-1){timerDelivered=false timerReady=true stampInTime=true} -> timer -> signal(before-2){timerDelivered=true timerReady=true stampInTime=true}
+
+== outage, both votes early | selector timer-first | run 2
+history : [WFT WFT] TimerStarted Signal(before-1) Signal(before-2) TimerFired WFT-timed-out [WFT WFT]
+workflow: signal(before-1){timerDelivered=false timerReady=true stampInTime=true} -> timer -> signal(before-2){timerDelivered=true timerReady=true stampInTime=true}
+
+== outage, both votes early | selector timer-first | run 3
+history : [WFT WFT] TimerStarted Signal(before-1) Signal(before-2) TimerFired WFT-timed-out [WFT WFT]
+workflow: signal(before-1){timerDelivered=false timerReady=true stampInTime=true} -> timer -> signal(before-2){timerDelivered=true timerReady=true stampInTime=true}
+
+== CANDIDATE ALGORITHM (stamp check + drain when the timer is delivered)
+control (worker up)          | run 1 | accepted=[before] rejected=[] | correct=true
+            history: [WFT WFT] TimerStarted Signal(before) [WFT WFT] TimerFired [WFT WFT]
+control (worker up)          | run 2 | accepted=[before] rejected=[] | correct=true
+            history: [WFT WFT] TimerStarted Signal(before) [WFT WFT] TimerFired [WFT WFT]
+control (worker up)          | run 3 | accepted=[before] rejected=[] | correct=true
+            history: [WFT WFT] TimerStarted Signal(before) [WFT WFT] TimerFired [WFT WFT]
+outage across deadline       | run 1 | accepted=[before] rejected=[after] | correct=true
+            history: [WFT WFT] TimerStarted Signal(before) TimerFired Signal(after) WFT-timed-out [WFT WFT]
+outage across deadline       | run 2 | accepted=[before] rejected=[after] | correct=true
+            history: [WFT WFT] TimerStarted Signal(before) TimerFired Signal(after) WFT-timed-out [WFT WFT]
+outage across deadline       | run 3 | accepted=[before] rejected=[after] | correct=true
+            history: [WFT WFT] TimerStarted Signal(before) TimerFired Signal(after) WFT-timed-out [WFT WFT]
+outage, both votes early     | run 1 | accepted=[before-1 before-2] rejected=[] | correct=true
+            history: [WFT WFT] TimerStarted Signal(before-1) Signal(before-2) TimerFired WFT-timed-out [WFT WFT]
+outage, both votes early     | run 2 | accepted=[before-1 before-2] rejected=[] | correct=true
+            history: [WFT WFT] TimerStarted Signal(before-1) Signal(before-2) TimerFired WFT-timed-out [WFT WFT]
+outage, both votes early     | run 3 | accepted=[before-1 before-2] rejected=[] | correct=true
+            history: [WFT WFT] TimerStarted Signal(before-1) Signal(before-2) TimerFired WFT-timed-out [WFT WFT]
+
+== SUMMARY (votes classified correctly / total)
+control (worker up)          | C timer.IsReady()              | 12/12
+control (worker up)          | D receipt-time stamp           | 12/12
+control (worker up)          | A selector, signal case first  | 6/6
+control (worker up)          | B selector, timer case first   | 6/6
+outage across deadline       | A selector, signal case first  | 3/6
+outage across deadline       | C timer.IsReady()              | 6/12
+outage across deadline       | D receipt-time stamp           | 12/12
+outage across deadline       | B selector, timer case first   | 6/6
+outage, both votes early     | A selector, signal case first  | 6/6
+outage, both votes early     | C timer.IsReady()              | 0/12
+outage, both votes early     | D receipt-time stamp           | 12/12
+outage, both votes early     | B selector, timer case first   | 3/6

@@ -1,6 +1,6 @@
 # Monster Theatre — Design Review
 
-Updated 2026-10-08 for the simplified design (D022–D032), after a run through the design-readiness checklist. The first version of this review covered the earlier architecture with PostgreSQL snapshots, live audio streaming, and a data lake. Most of its findings no longer apply; the table at the end records what happened to each.
+Updated 2026-10-08 for the simplified design (D022–D033), after a run through the design-readiness checklist. The first version of this review covered the earlier architecture with PostgreSQL snapshots, live audio streaming, and a data lake. Most of its findings no longer apply; the table at the end records what happened to each.
 
 Scope: high-level issues in [the product brief](monster-theatre-product-brief.md), [decisions](decisions.md), and [system design](system-design.md). Implementation detail is out of scope.
 
@@ -13,11 +13,22 @@ Scope: high-level issues in [the product brief](monster-theatre-product-brief.md
 3. **Can the director vote?** Decided 2026-10-07: yes. The director votes through their own connection as one extra voter (D028).
 4. **Audience slots never release.** Decided 2026-10-07: accepted. Ten sessions per room, and closing a tab does not free a slot; a room filled by extra tabs or devices needs a new room (D028).
 
-### To verify with a spike
-
-5. **Vote and timer ordering after a worker outage.** Temporal records signals and the timer in one ordered history. But when a worker returns after an outage, a vote before the deadline, the timer firing, and a vote after it may all reach the workflow code at once, and the Go SDK may not show their relative order. Test: stop the worker across a deadline, send votes on either side, restart, and check which were counted. This comes from knowledge of the Go SDK and is not verified. The stakes are lower than before, since a miscounted late vote only affects one round.
-
 ### Closed
+
+5. **Vote and timer ordering after a worker outage.** Closed 2026-10-08 by the step 2 spike. The concern was real: workflow code cannot rely on seeing votes and the timer in the order Temporal recorded them. The remedy, a receipt-time stamp on each vote, is recorded as D033 (accepted).
+
+   What was tested: a workflow with a 4-second window, with the worker killed and restarted around the deadline, three runs per case, on Go SDK v1.49.0 against the local dev server. Each way of deciding "was this vote in time?" was compared with the order in Temporal's history.
+
+   | Way of deciding | Worker up | Outage across the deadline | Outage, both votes early |
+   | --- | --- | --- | --- |
+   | Selector, signal case registered first | Correct | Wrong: counts the late vote | Correct |
+   | Selector, timer case registered first | Correct | Correct | Wrong: rejects an in-time vote |
+   | Ask whether the timer is ready | Correct | Wrong: rejects the in-time vote | Wrong: rejects both |
+   | Receipt-time stamp compared with the deadline | Correct | Correct | Correct |
+
+   Why: with the worker down, history records `Signal(before) TimerFired Signal(after)` with no worker in between. When the worker returns it gets all three in one batch, and by the time workflow code runs, the timer is already ready and every signal is already buffered. Which one the code sees first then depends on how the code is written, not on the recorded order.
+
+   The algorithm step 10 will use (stamp check, plus handling every buffered vote when the timer is delivered) was also run through all three scenarios and was correct in 9 of 9 runs. Raw output: [spikes/vote-order-spike-output.txt](spikes/vote-order-spike-output.txt).
 
 6. **ElevenLabs model and output format.** Closed 2026-10-08. The user confirmed that the [Text to Dialogue convert endpoint](https://elevenlabs.io/docs/api-reference/text-to-dialogue/convert) with `eleven_v4_turbo` supports audio tags with the two chosen voices. Short gaps between MP3 clips at the premiere are accepted and need no check.
 
@@ -43,7 +54,7 @@ Items 7 to 10 are decided. Items 11 to 17 are settled while building.
 | --- | --- |
 | A1 One process must be both killable and available | Resolved. Server and worker are separate processes (D026); no audio flows between them |
 | A2 Late votes missing from the close transaction | Gone. Rejected votes are no longer recorded (D023) |
-| A3 History order versus what workflow code sees | Still open as item 5 |
+| A3 History order versus what workflow code sees | Confirmed by the spike and resolved; see item 5 |
 | A4 Capacity count race | Gone. The cap was removed (D027) |
 | A5 "No S3 URL" rule contradicted portrait delivery | Resolved. The server serves portraits and audio itself |
 | A6 Muddled randomness mechanism | Resolved. The workflow picks the winner with its replay-safe random source |
@@ -62,5 +73,4 @@ Items 7 to 10 are decided. Items 11 to 17 are settled while building.
 
 ## Suggested order
 
-1. Run the spike in item 5 early; it is small.
-2. Settle items 11 to 17 as each part is built.
+1. Settle items 11 to 17 as each part is built.

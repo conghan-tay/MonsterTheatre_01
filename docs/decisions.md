@@ -28,7 +28,7 @@ The log below is kept in full, including entries that were later replaced. These
 | D030 | Session cookies for audience and director |
 | D031 | WebSocket and Redis Streams kept as departures from the defaults |
 | D032 | Aurora DSQL on AWS, plain PostgreSQL locally |
-| D033 | Votes carry the server's receipt time; lateness is decided by that stamp (proposed) |
+| D033 | Votes carry the server's receipt time; lateness is decided by that stamp |
 
 Superseded or withdrawn: D002, D004, D006, D010, D011, D012, D014, D016, D019, D020, D021, and the data-lake half of D003.
 
@@ -620,8 +620,8 @@ This algorithm was run through the spike's three scenarios and was correct in ev
 
 **Why it fits:** It gives the same answer whether the worker was up or down, which is the property the recovery demonstration needs. It also makes the deadline browsers see and the deadline the workflow enforces the same value.
 
-**Alternatives considered:** Relying on selector order or on whether the timer future is ready, all shown wrong by the spike. Reading event timestamps from history inside the workflow, which the Go SDK does not expose for signals. Accepting misclassification during outages, which would make the worker-restart demonstration produce visibly wrong results.
+**Alternatives considered:** Relying on selector order or on whether the timer future is ready, all shown wrong by the spike. Reading event timestamps from history inside the workflow, which the Go SDK does not expose for signals. An activity that reads the workflow's history when the round closes and counts only the votes recorded before the timer fired: this uses Temporal's recorded order exactly and needs no clock comparison, but adds a network call and a failure mode to every round and was not tested in the spike; it remains the option to revisit if clock skew ever matters. Accepting misclassification during outages, which would make the worker-restart demonstration produce visibly wrong results.
 
 **Tradeoffs and consequences:** Lateness now compares two clocks, the server's and Temporal's, which D018 set out to avoid. Both are synchronised to network time, so the exposure is a few milliseconds of skew at the edge of a ten-second window; a vote that close to the deadline could go either way. A vote stamped just before the deadline can still miss the round if it reaches the workflow after the round closes, which only happens within the network delay of one request. The vote signal gains one field.
 
-**Status:** proposed — follows from the step 2 spike on 2026-10-08; awaiting the user's confirmation.
+**Status:** accepted — explicit user answer on 2026-10-08, after reviewing the step 2 spike.

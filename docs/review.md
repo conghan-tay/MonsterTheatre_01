@@ -15,7 +15,7 @@ Scope: high-level issues in [the product brief](monster-theatre-product-brief.md
 
 ### Closed
 
-5. **Vote and timer ordering after a worker outage.** Closed 2026-10-08 by the step 2 spike. The concern was real: workflow code cannot rely on seeing votes and the timer in the order Temporal recorded them. The remedy, a receipt-time stamp on each vote, is recorded as D033 (proposed).
+5. **Vote and timer ordering after a worker outage.** Closed 2026-10-08 by the step 2 spike. The concern was real: workflow code cannot rely on seeing votes and the timer in the order Temporal recorded them. The remedy, a receipt-time stamp on each vote, is recorded as D033 (accepted).
 
    What was tested: a workflow with a 4-second window, with the worker killed and restarted around the deadline, three runs per case, on Go SDK v1.49.0 against the local dev server. Each way of deciding "was this vote in time?" was compared with the order in Temporal's history.
 
@@ -73,5 +73,4 @@ Items 7 to 10 are decided. Items 11 to 17 are settled while building.
 
 ## Suggested order
 
-1. Confirm or change D033, which is recorded as proposed.
-2. Settle items 11 to 17 as each part is built.
+1. Settle items 11 to 17 as each part is built.

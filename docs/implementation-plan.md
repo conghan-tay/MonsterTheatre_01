@@ -170,7 +170,7 @@ Makefile           dev, test, e2e, migrate
 
 ### Step 2 — Spike: vote and timer ordering after a worker outage
 
-**Done 2026-10-08.** Result: workflow code cannot tell which vote arrived before the timer after an outage. Remedy: the server stamps each vote with its receipt time (D033, proposed). Details in [the review](review.md), item 5.
+**Done 2026-10-08.** Result: workflow code cannot tell which vote arrived before the timer after an outage. Remedy: the server stamps each vote with its receipt time (D033). Details in [the review](review.md), item 5.
 
 **What to build**
 - A throwaway workflow that starts a short timer and collects signals, and a script that stops the worker before the deadline, sends one signal before and one after it, then restarts the worker.

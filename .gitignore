@@ -29,3 +29,7 @@ dist/
 # Claude Code local overrides
 .claude/settings.local.json
 .claude/skills
+
+# Local development
+.temporal/
+bin/

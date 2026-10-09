@@ -31,6 +31,7 @@ The log below is kept in full, including entries that were later replaced. These
 | D033 | Votes carry the server's receipt time; lateness is decided by that stamp |
 | D034 | Share links are derived from a server secret, not stored |
 | D035 | The WebSocket accepts only the web app's origin or the server's own address |
+| D036 | Every update carries the whole state, not a change |
 
 Superseded or withdrawn: D002, D004, D006, D010, D011, D012, D014, D016, D019, D020, D021, and the data-lake half of D003.
 
@@ -661,3 +662,19 @@ This algorithm was run through the spike's three scenarios and was correct in ev
 **Tradeoffs and consequences:** A non-browser client must set `Origin` itself. `PUBLIC_BASE_URL` must be exactly what the browser's address bar shows, without a default port written out, or every browser is refused. A second web origin (a preview deployment, say) would need the rule extended.
 
 **Status:** accepted — approved in the step 8 plan on 2026-10-09.
+
+## D036 — Updates carry the whole state
+
+**Decision:** Every `update` message carries the complete public state of the performance as it stands at that revision, in exactly the shape a `snapshot` has. It is not a description of what changed.
+
+**Context / requirement:** The system design said an update carries "one published change" and left its shape open. Step 9 had to fix the shape, because the workflow, the Redis stream, the server, the test client, and later the web pages all depend on it.
+
+**Chosen approach:** The workflow keeps one public state value. Each publish replaces it, raises the revision, and sends the whole value. The `state` query returns the same value, so the server forwards a query answer as a snapshot without translating it. A browser needs one rule for both message types: take the state if its revision is higher than the one held.
+
+**Why it fits:** A browser that misses an update is correct again at the next one, without needing a resync for anything but the missed moment. There is no merge logic in the browser to get wrong and no second shape to keep in step with the first. The state is small: at most three choices and eight short lines.
+
+**Alternatives considered:** Deltas, each update carrying only the fields its phase introduces: smaller messages, but the browser must merge them, a missed update leaves it wrong until it resyncs, and snapshot and update become two shapes.
+
+**Tradeoffs and consequences:** Updates repeat the lines chosen so far, so the last ones are a few kilobytes instead of a few hundred bytes. Per-browser data cannot go in an update, since every browser in the room gets the same bytes; a voter's own vote (step 10) therefore travels in the snapshot and in `vote_received`, not in updates.
+
+**Status:** accepted — approved in the step 9 plan on 2026-10-09.

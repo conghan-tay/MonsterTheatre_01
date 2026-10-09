@@ -90,7 +90,7 @@ For prototyping, everything runs locally: the Temporal dev server, Redis, and Po
 | `director_sessions` | Session ID, director, credential hash, expiry. Same pattern as audience sessions | At login |
 | `rooms` | Owner (director ID), scene topic/description/genre, character A and B (name, brief, voice ID, portrait key), and `audience_count`. Nothing about the share link is stored (D034) | Once, at creation; `audience_count` goes up by one per new audience session |
 | `audience_sessions` | Session ID, room, credential hash, timestamps. See [Audience session](audience-session.md) | When someone enters; `last_seen_at` on reconnect |
-| `performances` | Performance ID, room (unique, so one per room), status (`running`, `completed`, `failed`), and on completion the final script and the eight audio keys | A row at Start; one update at the end |
+| `performances` | Performance ID, room (unique, so one per room), status (`running`, `completed`, `failed`), and on completion the final script and the eight audio keys, each a `jsonb` column (Aurora DSQL has no stored array type) | A row at Start; one update at the end |
 
 The final script is one JSON document: for each turn the speaker, beat, three choices, vote counts, winner, how it was decided (majority, tie, no votes), the tagged text, and the model used.
 
@@ -153,7 +153,8 @@ Notes on each part:
 - **Fallbacks.** Choice generation retries, then falls back to simple valid lines. Tag enhancement retries, then falls back to the untagged line. Text to speech retries; if it still fails the run fails.
 - **Failure.** If the workflow cannot continue, it runs one last activity to mark the performance row `failed` and publishes a `failed` update. A workflow run timeout bounds a run that hangs.
 - **A failed publish does not stop the run.** Publishing retries briefly and then the workflow carries on. A browser that receives an update whose revision skips a number knows it missed one and asks for a fresh snapshot.
-- **Query handler.** The workflow answers a `state` query with its current turn, phase, choices, deadline, votes, winners so far, and revision.
+- **Query handler.** The workflow answers a `state` query with its current turn, phase, choices, deadline, votes, winners so far, and revision. The answer has the same shape as a published update's state, so the server passes it on as the snapshot unchanged.
+- **Settings.** The vote window and the premiere countdown are the worker's settings (`VOTE_WINDOW`, `PREMIERE_COUNTDOWN`). The first activity returns them with the room context, so the values a run used are recorded in its history and a replay sees the same ones.
 
 ### What is published, and when
 
@@ -199,13 +200,13 @@ A possible later improvement: since nothing is played until the premiere, taggin
 | `POST /api/v1/rooms` | Director | One multipart request with scene/character JSON and two portraits. Validate, upload portraits to S3 under a new room ID, insert the room row, return the room ID and share link. Invalid input gets `422` naming each field; an oversize portrait gets `413`. On failure the director resubmits (D025) |
 | `GET /api/v1/rooms` | Director | The director's own rooms, newest first, so a director who closed the tab can find a room again |
 | `GET /api/v1/rooms/{roomId}` | Director or audience session of that room | Scene and characters. The director's view adds the share link and `audienceCount`; the audience's view has neither. `401` with no credentials, `403` for a director who does not own the room |
-| `POST /api/v1/rooms/{roomId}/performance` | Director | Insert the performance row, then start the workflow. A repeated Start returns the existing performance |
+| `POST /api/v1/rooms/{roomId}/performance` | Director | The body is an empty JSON object. Insert the performance row, then start the workflow. Returns `{performanceId, roomId, status}`: `201` the first time, `200` for a repeated Start, which returns the existing performance. `503` if the workflow could not be started; pressing again repairs it |
 | `POST /api/v1/audience-sessions` | Anyone with the share link | Takes the link's room ID and token. `201` and a cookie for a new session; `200` with `restored: true` for a browser that already has one; `403` for any invalid link; `409` when the room has ten. See [Audience session](audience-session.md) |
 | `GET /api/v1/rooms/{roomId}/portraits/{slot}` | Director or audience session | Portrait bytes, read from S3 by the server |
 | `GET /api/v1/performances/{id}/turns/{n}/audio` | Director or audience session | Turn recording as `audio/mpeg`, read from S3 by the server. Supports range requests. Available once the performance is completed |
 | `GET /api/v1/rooms/{roomId}/ws` | Director or audience session of that room | Upgrades to the WebSocket described below. Refusals are ordinary JSON errors sent before the upgrade: `403` `origin_not_allowed` for a page on another origin, then the same `401`, `403`, and `404` as reading the room |
 
-Start is safe to retry: the unique room constraint stops a second row, and starting a workflow whose ID already exists is treated as success.
+Start is safe to retry: the unique room constraint stops a second row, and starting a workflow whose ID already exists is treated as success. While the row says `running`, every Start asks Temporal to start the workflow; a running one is left alone and a finished one is never run again. A row that is `completed` or `failed` is returned as it is.
 
 Every error response has the same shape, `{"error": {"code": "...", "message": "..."}}`, where the code is stable and the message is for people.
 
@@ -222,7 +223,7 @@ Server to browser:
 | Message | Contents |
 | --- | --- |
 | `snapshot` | Full current state and its revision. Always the first message after connecting |
-| `update` | One published change with its revision: new phase, choices and deadline, winner, premiere start time and clip list, or failure |
+| `update` | One published change with its revision. It carries the whole state as it now stands, in the same shape as a snapshot, not only what changed (D036) |
 | `vote_received` | Confirms the server passed this browser's vote to the workflow |
 | `error` | A vote could not be delivered (for example, the performance has ended) |
 
@@ -239,9 +240,32 @@ Browser to server:
 | `vote` | Turn number and choice ID. The voter (audience session or director) comes from the connection, never from the message |
 | `resync` | Asks for a fresh `snapshot`. Sent when the browser sees a gap in revision numbers |
 
+The state of a running performance. A field is absent in the phases that do not have it:
+
+```json
+{"type": "update", "revision": 6, "state": {
+  "phase": "preparing_line", "turn": 2, "performanceId": "…", "speaker": "B", "beat": "QUESTION",
+  "choices": [{"id": "c1", "text": "…"}, {"id": "c2", "text": "…"}, {"id": "c3", "text": "…"}],
+  "winner": {"choiceId": "c2", "text": "…", "counts": {"c1": 0, "c2": 0, "c3": 0}, "decidedBy": "no_votes"},
+  "lines": [{"turn": 1, "speaker": "A", "text": "…"}, {"turn": 2, "speaker": "B", "text": "…"}]}}
+```
+
+| Field | Present in | Meaning |
+| --- | --- | --- |
+| `phase`, `turn` | Always | `turn` is 0 before the first turn |
+| `performanceId` | Once started | Needed to fetch the recordings |
+| `speaker`, `beat` | `generating`, `voting`, `preparing_line` | `A` or `B`, and the turn's story beat |
+| `choices` | `voting`, `preparing_line` | The three lines, with IDs `c1` to `c3` |
+| `deadline` | `voting` | When the round closes |
+| `winner` | `preparing_line` | The chosen line, each choice's count, and `decidedBy`: `majority`, `tie`, or `no_votes` |
+| `lines` | From the first winner on | The winning lines so far, in order |
+| `premiere` | `premiere` | `startsAt` and the ordered `clips` (turn and speaker) |
+
+The winning line with its audio tags is not sent to browsers. It goes to the speech service and into the final script.
+
 **Heartbeat.** The server pings each connection every 25 seconds and drops one that has not answered within 10. Browsers answer pings by themselves. This keeps a quiet connection alive through the load balancer's idle timeout and clears dead ones from the server's map.
 
-**Closing.** The server closes a connection with code `1001` when it shuts down, and with `1008` when a browser has fallen so far behind that its queue of unsent messages is full. In both cases the browser reconnects and gets a fresh snapshot.
+**Closing.** The server closes a connection with code `1001` when it shuts down, with `1008` when a browser has fallen so far behind that its queue of unsent messages is full, and with `1013` when it could not get a snapshot from the workflow. In each case the browser reconnects and gets a fresh snapshot.
 
 ## 6. Flows
 
@@ -289,6 +313,10 @@ If the performance row says `running` but the query fails, the server asks Tempo
 | Workflow running | No worker is available to answer | Tells the browser the performance is recovering; the browser retries |
 
 The server keeps an in-memory map of room to open connections. It reads each update from Redis once and writes it to every connection for that room. The server reads the stream from "now" at startup; history is not needed because snapshots come from the workflow.
+
+All performances share one stream, `performance-updates`. Each entry holds the room ID, the revision, and the message exactly as browsers receive it. The stream is trimmed to about a thousand entries. The reader notes the stream's last entry at startup and from then on always reads on from the last entry it has seen, including after a Redis outage; asking only for "what is new" on each read would lose an update that arrived between two reads.
+
+Built so far (step 9): the first and third branches of the diagram, and the second while a worker is running. Until steps 12 and 13, a room whose performance has finished gets a snapshot that only names the phase (`completed` or `failed`), and a query that fails closes the connection with code `1013` instead of following the table above.
 
 ### Voting
 

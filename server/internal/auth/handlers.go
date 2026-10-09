@@ -41,6 +41,12 @@ type Identity struct {
 
 type identityKey struct{}
 
+// WithDirector returns ctx carrying a verified director. RequireDirector is
+// the only caller outside tests.
+func WithDirector(ctx context.Context, identity Identity) context.Context {
+	return context.WithValue(ctx, identityKey{}, identity)
+}
+
 // DirectorFrom returns the director RequireDirector verified for this request.
 func DirectorFrom(ctx context.Context) (Identity, bool) {
 	id, ok := ctx.Value(identityKey{}).(Identity)
@@ -145,7 +151,7 @@ func (s *Service) RequireDirector(next http.Handler) http.Handler {
 			s.unauthenticated(w)
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), identityKey{}, identity)))
+		next.ServeHTTP(w, r.WithContext(WithDirector(r.Context(), identity)))
 	})
 }
 

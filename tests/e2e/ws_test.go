@@ -15,9 +15,6 @@ import (
 // noSuchRoomID is a well-formed room ID that no room has.
 const noSuchRoomID = "00000000-0000-4000-8000-000000000000"
 
-// PhaseWaiting is the phase of a room whose director has not pressed Start.
-const PhaseWaiting = "waiting"
-
 // enteredMember returns an audience member's browser holding a session for
 // the room.
 func enteredMember(t *testing.T, ctx context.Context, shareLink string) *client.AudienceClient {
@@ -36,7 +33,7 @@ func requireWaitingSnapshot(t *testing.T, ctx context.Context, conn *client.Conn
 	msg, err := conn.Snapshot(ctx)
 	require.NoError(t, err)
 	require.Equal(t, 0, msg.Revision, "nothing has been published yet; message: %s", msg.Raw)
-	require.Equal(t, PhaseWaiting, msg.State.Phase, "message: %s", msg.Raw)
+	require.Equal(t, client.PhaseWaiting, msg.State.Phase, "message: %s", msg.Raw)
 	require.Equal(t, 0, msg.State.Turn, "message: %s", msg.Raw)
 }
 

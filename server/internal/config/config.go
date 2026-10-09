@@ -1,7 +1,10 @@
 // Package config loads process configuration from environment variables.
 package config
 
-import "os"
+import (
+	"os"
+	"time"
+)
 
 // Config holds the settings shared by the server, worker, and migrate commands.
 // Every field has a default that works against the local development stack.
@@ -27,6 +30,19 @@ type Config struct {
 	// when it is created.
 	VoiceIDA string
 	VoiceIDB string
+	// LLMProvider and TTSProvider choose the worker's language model and
+	// speech service. Only "fake" exists until step 11.
+	LLMProvider string
+	TTSProvider string
+	// FakeScriptDir holds per-room scripts for the fake providers. Empty
+	// means every room gets the fakes' defaults.
+	FakeScriptDir string
+	// VoteWindow is how long each round's voting stays open, and
+	// PremiereCountdown how far ahead the premiere's start time is set.
+	// Zero means the variable was set but is not a duration; the worker
+	// refuses to start with that.
+	VoteWindow        time.Duration
+	PremiereCountdown time.Duration
 }
 
 // Load reads the configuration from the environment.
@@ -45,6 +61,11 @@ func Load() Config {
 		ObjectStoreDir:    env("OBJECT_STORE_DIR", ".data/objects"),
 		VoiceIDA:          env("VOICE_ID_A", "voice-a-placeholder"),
 		VoiceIDB:          env("VOICE_ID_B", "voice-b-placeholder"),
+		LLMProvider:       env("LLM_PROVIDER", "fake"),
+		TTSProvider:       env("TTS_PROVIDER", "fake"),
+		FakeScriptDir:     os.Getenv("FAKE_SCRIPT_DIR"),
+		VoteWindow:        envDuration("VOTE_WINDOW", 10*time.Second),
+		PremiereCountdown: envDuration("PREMIERE_COUNTDOWN", 5*time.Second),
 	}
 }
 
@@ -53,6 +74,20 @@ func env(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// envDuration reads a duration such as "10s". A value that is not a positive
+// duration gives zero, which the caller must refuse.
+func envDuration(key string, fallback time.Duration) time.Duration {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d <= 0 {
+		return 0
+	}
+	return d
 }
 
 // envBool reads a boolean. Only "false" and "0" turn a setting off, so a

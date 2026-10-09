@@ -2,6 +2,7 @@ package theater
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -10,6 +11,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/httpapi"
+	"github.com/conghan-tay/MonsterTheatre_01/server/internal/performance"
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/rooms"
 )
 
@@ -23,6 +25,9 @@ const (
 	DefaultPongTimeout = 10 * time.Second
 
 	writeTimeout = 10 * time.Second
+	// queryTimeout is how long a connecting browser waits for the workflow
+	// to describe itself. With no worker running, nothing answers.
+	queryTimeout = 5 * time.Second
 	// maxMessageBytes bounds a message from a browser. The largest one a
 	// browser has reason to send is a vote.
 	maxMessageBytes = 4 << 10
@@ -40,13 +45,27 @@ type SessionToucher interface {
 	Seen(ctx context.Context, sessionID string) error
 }
 
+// PerformanceReader finds a room's performance, or returns
+// performance.ErrNotFound. *performance.PGStore implements it.
+type PerformanceReader interface {
+	ByRoom(ctx context.Context, roomID string) (performance.Performance, error)
+}
+
+// StateQuerier asks a running performance's workflow for its state.
+// *performance.Workflows implements it.
+type StateQuerier interface {
+	State(ctx context.Context, performanceID string) (performance.Snapshot, error)
+}
+
 // Service serves the room WebSocket.
 type Service struct {
-	Rooms    RoomAuthorizer
-	Audience SessionToucher
-	Hub      *Hub
-	Origins  OriginPolicy
-	Logger   *slog.Logger
+	Rooms        RoomAuthorizer
+	Audience     SessionToucher
+	Performances PerformanceReader
+	Workflows    StateQuerier
+	Hub          *Hub
+	Origins      OriginPolicy
+	Logger       *slog.Logger
 	// PingInterval and PongTimeout default to DefaultPingInterval and
 	// DefaultPongTimeout when zero.
 	PingInterval time.Duration
@@ -90,13 +109,13 @@ func (s *Service) ServeWS(w http.ResponseWriter, r *http.Request) {
 
 	var closeOnce sync.Once
 	c := &conn{
-		send: make(chan []byte, sendBuffer),
+		send: make(chan outbound, sendBuffer),
 		close: func(code websocket.StatusCode, reason string) {
 			closeOnce.Do(func() { _ = ws.Close(code, reason) })
 		},
 	}
 
-	// Registered before the snapshot is sent, so no update can fall between
+	// Registered before the snapshot is taken, so no update can fall between
 	// the two: anything broadcast meanwhile waits in the queue behind it.
 	if !s.Hub.add(roomID, c) {
 		c.close(websocket.StatusGoingAway, "server shutting down")
@@ -109,7 +128,17 @@ func (s *Service) ServeWS(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
-	if err := write(ctx, ws, waitingSnapshot()); err != nil {
+	revision, state, err := s.snapshot(ctx, roomID)
+	if err != nil {
+		// Most likely no worker is running to answer. The browser is told to
+		// come back; step 13 replaces this with the recovery rule.
+		if ctx.Err() == nil {
+			log.Warn("theater: no snapshot available", "error", err)
+		}
+		c.close(websocket.StatusTryAgainLater, "performance state unavailable")
+		return
+	}
+	if err := write(ctx, ws, snapshotMessage(revision, state)); err != nil {
 		return
 	}
 
@@ -125,12 +154,41 @@ func (s *Service) ServeWS(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	s.writeLoop(ctx, ws, c)
+	s.writeLoop(ctx, ws, c, revision)
 }
 
-// writeLoop sends queued messages and pings until the connection ends. It is
+// snapshot returns the room's current state and its revision. Where it comes
+// from depends on the performance row (docs/system-design.md, section 6):
+// no row, the room is waiting; running, the workflow is asked; finished, the
+// row says how.
+func (s *Service) snapshot(ctx context.Context, roomID string) (int, performance.State, error) {
+	p, err := s.Performances.ByRoom(ctx, roomID)
+	if errors.Is(err, performance.ErrNotFound) {
+		return 0, performance.State{Phase: performance.PhaseWaiting}, nil
+	}
+	if err != nil {
+		return 0, performance.State{}, err
+	}
+	switch p.Status {
+	case performance.StatusRunning:
+		ctx, cancel := context.WithTimeout(ctx, queryTimeout)
+		defer cancel()
+		snapshot, err := s.Workflows.State(ctx, p.ID)
+		return snapshot.Revision, snapshot.State, err
+	case performance.StatusCompleted:
+		// The script and clips are added to this snapshot in step 12.
+		return 0, performance.State{Phase: performance.PhaseCompleted, PerformanceID: p.ID}, nil
+	default:
+		return 0, performance.State{Phase: performance.PhaseFailed, PerformanceID: p.ID}, nil
+	}
+}
+
+// writeLoop sends queued updates and pings until the connection ends. It is
 // the only writer of data messages, so they go out in the order queued.
-func (s *Service) writeLoop(ctx context.Context, ws *websocket.Conn, c *conn) {
+//
+// It drops any update at or below snapshotRevision: one that was queued
+// while the snapshot was being fetched and that the snapshot already covers.
+func (s *Service) writeLoop(ctx context.Context, ws *websocket.Conn, c *conn, snapshotRevision int) {
 	interval, timeout := s.PingInterval, s.PongTimeout
 	if interval <= 0 {
 		interval = DefaultPingInterval
@@ -145,8 +203,11 @@ func (s *Service) writeLoop(ctx context.Context, ws *websocket.Conn, c *conn) {
 		select {
 		case <-ctx.Done():
 			return
-		case msg := <-c.send:
-			if err := write(ctx, ws, msg); err != nil {
+		case update := <-c.send:
+			if update.revision <= snapshotRevision {
+				continue
+			}
+			if err := write(ctx, ws, update.data); err != nil {
 				return
 			}
 		case <-ticker.C:

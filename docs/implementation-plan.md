@@ -259,6 +259,8 @@ Makefile           dev, test, e2e, migrate
 
 ### Step 9 — Start and the eight-turn workflow, without votes
 
+**Done 2026-10-09.** Updates carry the whole state (D036). Added beyond the list below: unit tests for the Start handler and the stream reader, and a fix to the test harness, whose `AddDirector` was not safe to call from parallel tests. Left as stand-ins for later steps: a finished room's snapshot only names its phase (step 12), a failed query closes the socket with `1013` (step 13), and an activity that fails past its retries fails the workflow and leaves the row `running` (step 11).
+
 **What to build**
 - Migration for `performances`; the Start endpoint (insert the row, start the workflow with a fixed ID).
 - The workflow loop with fake providers: fetch context, then per turn publish `generating`, generate, start the timer, publish `voting`, wait, pick a winner at random, publish `preparing_line`, tag, and synthesise to the object store; finally save the script, mark completed, and publish `premiere`.

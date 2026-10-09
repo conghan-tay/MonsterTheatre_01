@@ -22,6 +22,7 @@ import (
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/health"
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/logging"
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/objectstore"
+	"github.com/conghan-tay/MonsterTheatre_01/server/internal/performance"
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/rooms"
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/theater"
 )
@@ -130,15 +131,32 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	// decide that themselves.
 	mux.HandleFunc("GET /api/v1/rooms/{roomId}", roomService.Get)
 	mux.HandleFunc("GET /api/v1/rooms/{roomId}/portraits/{slot}", roomService.Portrait)
+	// Start writes the performance row and starts its workflow.
+	performances := &performance.PGStore{Pool: pool}
+	workflows := &performance.Workflows{Client: temporalClient, TaskQueue: cfg.TemporalTaskQueue}
+	performanceService := &performance.Service{
+		Rooms:     roomStore,
+		Store:     performances,
+		Workflows: workflows,
+		Logger:    logger,
+		Now:       time.Now,
+	}
+	mux.Handle("POST /api/v1/rooms/{roomId}/performance", director(performanceService.Start))
+
 	// The room's live connection, for the same people who may read the room.
 	hub := theater.NewHub()
 	theaterService := &theater.Service{
-		Rooms:    roomService,
-		Audience: audienceService,
-		Hub:      hub,
-		Origins:  origins,
-		Logger:   logger,
+		Rooms:        roomService,
+		Audience:     audienceService,
+		Performances: performances,
+		Workflows:    workflows,
+		Hub:          hub,
+		Origins:      origins,
+		Logger:       logger,
 	}
+	// Updates the worker publishes are read from Redis here and forwarded to
+	// each room's connections, from startup until the process stops.
+	go (&theater.StreamReader{Redis: redisClient, Hub: hub, Logger: logger}).Run(ctx)
 	mux.HandleFunc("GET /api/v1/rooms/{roomId}/ws", theaterService.ServeWS)
 	// Open to anyone holding a valid share link.
 	mux.HandleFunc("POST /api/v1/audience-sessions", audienceService.Join)

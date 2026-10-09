@@ -110,6 +110,28 @@ new WebSocket(`ws://${location.host}/api/v1/rooms/${location.pathname.split("/")
 
 The handshake is accepted only from a page on `PUBLIC_BASE_URL` or on the server's own address; anything else, including a request with no `Origin` header, gets `403`. The server pings every 25 seconds and drops a connection that does not answer within 10.
 
+## Running a performance
+
+The Start button on the room page is not wired up yet, so start one with curl, logged in as the room's director (see "Director accounts" for `cookies.txt`):
+
+```sh
+curl -b cookies.txt -X POST -H 'Content-Type: application/json' -d '{}' \
+  localhost:8080/api/v1/rooms/ROOM_ID/performance
+```
+
+The response is `{"performanceId": "...", "roomId": "...", "status": "running"}`, with `201` the first time and `200` after that: a room has one performance, and pressing Start again returns it.
+
+The worker then runs eight turns. Each has a ten-second voting window; nobody can vote yet, so each winner is picked at random and a run takes about 80 seconds. An open room WebSocket (previous section) receives 25 updates: `generating`, `voting`, and `preparing_line` for each turn, then `premiere`. The run is visible in the Temporal UI at http://localhost:8233 as `performance/<performanceId>`, and the eight recordings land in `.data/objects/performances/<performanceId>/`.
+
+The language model and speech service are stand-ins until real ones are added: lines read "Turn 1, first option." and the recordings are silent. Settings, all optional:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `VOTE_WINDOW` | `10s` | How long each round stays open |
+| `PREMIERE_COUNTDOWN` | `5s` | How far ahead the premiere's start time is set |
+| `LLM_PROVIDER`, `TTS_PROVIDER` | `fake` | Only `fake` exists so far |
+| `FAKE_SCRIPT_DIR` | unset | A directory of `<roomId>.json` scripts for the stand-ins |
+
 ## End-to-end tests
 
 ```sh

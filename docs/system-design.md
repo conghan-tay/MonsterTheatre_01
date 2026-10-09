@@ -165,7 +165,7 @@ Every publish moves the performance into a new phase and increases the revision 
 | A turn begins | `generating` | Turn number, speaker, story beat | "Writing the next lines…" |
 | Three choices are ready | `voting` | The choices and the deadline | The three choices and a countdown |
 | The timer has fired and the winner is picked | `preparing_line` | The winner, vote counts, and how it was decided | The winning line while it is tagged and voiced |
-| All eight turns are saved | `premiere` | Start time five seconds ahead and the ordered clip list | Countdown, then playback |
+| All eight turns are saved | `premiere` | Start time five seconds ahead and the ordered clip list, each clip with its URL | Countdown, then playback |
 | The run cannot continue | `failed` | A short reason | A failure message |
 
 Before Start there is one more phase, `waiting`, which is never published: with no performance there is no workflow to publish it. It appears only in the snapshot the server builds for a room that has not started, at revision 0, so the first published update is always newer.
@@ -259,7 +259,7 @@ The state of a running performance. A field is absent in the phases that do not 
 | `deadline` | `voting` | When the round closes |
 | `winner` | `preparing_line` | The chosen line, each choice's count, and `decidedBy`: `majority`, `tie`, or `no_votes` |
 | `lines` | From the first winner on | The winning lines so far, in order |
-| `premiere` | `premiere` | `startsAt` and the ordered `clips` (turn and speaker) |
+| `premiere` | `premiere` | `startsAt` and the ordered `clips`. Each clip is `{turn, speaker, url}`, where `url` is a path on the server such as `/api/v1/performances/{id}/turns/1/audio` (D037) |
 
 The winning line with its audio tags is not sent to browsers. It goes to the speech service and into the final script.
 
@@ -330,8 +330,8 @@ A browser that reconnects during a round gets its own vote back in the snapshot,
 ### Premiere
 
 1. After the eighth recording is saved, the workflow saves the final script and audio keys to the performance row and marks it `completed`.
-2. It publishes `premiere` with a start time five seconds ahead and the ordered clip list (turn, speaker).
-3. Each browser counts down to the start time, then plays the eight clips in order with a normal audio element, fetching each from the server, and highlights the portrait of the clip's speaker.
+2. It publishes `premiere` with a start time five seconds ahead and the ordered clip list (turn, speaker, URL).
+3. Each browser counts down to the start time, then plays the eight clips in order with a normal audio element, fetching each from the URL the clip carries, and highlights the portrait of the clip's speaker. The browser never builds an audio address itself.
 4. A browser that connects after the start time gets the completed snapshot and plays from the beginning.
 
 Playback is not synchronised beyond the shared start time, which the brief accepts.

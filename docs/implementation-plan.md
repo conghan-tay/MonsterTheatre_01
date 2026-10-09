@@ -259,7 +259,7 @@ Makefile           dev, test, e2e, migrate
 
 ### Step 9 — Start and the eight-turn workflow, without votes
 
-**Done 2026-10-09.** Updates carry the whole state (D036). Added beyond the list below: unit tests for the Start handler and the stream reader, and a fix to the test harness, whose `AddDirector` was not safe to call from parallel tests. Left as stand-ins for later steps: a finished room's snapshot only names its phase (step 12), a failed query closes the socket with `1013` (step 13), and an activity that fails past its retries fails the workflow and leaves the row `running` (step 11).
+**Done 2026-10-09.** Updates carry the whole state (D036), and the premiere's clips carry their URLs (D037). Added beyond the list below: unit tests for the Start handler and the stream reader, and a fix to the test harness, whose `AddDirector` was not safe to call from parallel tests. Left as stand-ins for later steps: a finished room's snapshot only names its phase (step 12), a failed query closes the socket with `1013` (step 13), and an activity that fails past its retries fails the workflow and leaves the row `running` (step 11).
 
 **What to build**
 - Migration for `performances`; the Start endpoint (insert the row, start the workflow with a fixed ID).
@@ -356,5 +356,5 @@ These are items 11 to 16 in [the review](review.md), placed where they come up:
 | Database cleanup | Step 15, or defer |
 | Whether goose runs unmodified against Aurora DSQL | Step 15 |
 | Piping audio from the object store | Step 12 |
-| Who builds clip URLs | Step 12 |
+| Who builds clip URLs | Settled in step 9: the clip list carries them (D037) |
 | Caching of audio responses | Step 12 |

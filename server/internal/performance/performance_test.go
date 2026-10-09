@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -176,6 +177,26 @@ func TestStartMustBeSentAsJSON(t *testing.T) {
 	require.Equal(t, http.StatusUnprocessableEntity, w.Code)
 	require.Nil(t, store.row, "nothing is started")
 	require.Empty(t, starter.starts)
+}
+
+// The workflow publishes clip URLs long before any browser fetches one, so
+// the URL it builds and the route the server registers must agree.
+func TestAudioURLIsMatchedByAudioRoute(t *testing.T) {
+	const performanceID = "33333333-3333-4333-8333-333333333333"
+	var gotID, gotTurn string
+	mux := http.NewServeMux()
+	mux.HandleFunc(AudioRoute, func(_ http.ResponseWriter, r *http.Request) {
+		gotID, gotTurn = r.PathValue("performanceId"), r.PathValue("turn")
+	})
+
+	for turn := 1; turn <= Turns; turn++ {
+		gotID, gotTurn = "", ""
+		url := AudioURL(performanceID, turn)
+		require.True(t, strings.HasPrefix(url, "/"), "a relative path, so it works behind any origin: %s", url)
+		mux.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, url, nil))
+		require.Equal(t, performanceID, gotID, "url: %s", url)
+		require.Equal(t, strconv.Itoa(turn), gotTurn, "url: %s", url)
+	}
 }
 
 func TestWorkflowIDIsDerivedFromThePerformance(t *testing.T) {

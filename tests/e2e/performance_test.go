@@ -153,7 +153,11 @@ func TestPerformanceRunsEightTurnsWithoutVotes(t *testing.T) {
 				"playback starts one countdown ahead")
 			require.Len(t, state.Premiere.Clips, turns)
 			for i, clip := range state.Premiere.Clips {
-				require.Equal(t, client.Clip{Turn: i + 1, Speaker: schedule[i].speaker}, clip)
+				require.Equal(t, client.Clip{
+					Turn:    i + 1,
+					Speaker: schedule[i].speaker,
+					URL:     fmt.Sprintf("/api/v1/performances/%s/turns/%d/audio", started.PerformanceID, i+1),
+				}, clip, "each clip says where its recording is fetched from")
 			}
 			require.Equal(t, lines, state.Lines, "the premiere carries all eight winning lines")
 			continue

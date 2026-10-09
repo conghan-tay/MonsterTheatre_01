@@ -44,7 +44,7 @@ Items 7 to 10 are decided. Items 11 to 17 are settled while building.
 12. **Waiting between rounds.** After each vote come tagging, speech, and the next generation, with nothing to listen to. The page should show the winning line and a "preparing the next line" state. Running tagging and speech in the background during the next round is a later improvement noted in the system design.
 13. **Database cleanup.** S3 objects expire after seven days; nothing removes old database rows. Not urgent for a demo.
 14. **Audio pass-through or buffer.** Whether the server pipes the S3 body straight to the response or loads the clip first. Suggested: pipe it through.
-15. **Clip URLs.** Whether the `premiere` clip list carries URLs or the browser builds them from the performance ID and turn number. Suggested: the browser builds them.
+15. **Clip URLs.** Decided 2026-10-09: the `premiere` clip list carries URLs; the browser does not build them (D037).
 16. **Audio caching.** Whether clip responses are cacheable for replays. Suggested: private caching, since a recording never changes once saved.
 17. **Migrations on Aurora DSQL.** Whether goose runs unmodified against DSQL is not confirmed. Check at deployment; the fallback is applying the same SQL files with a small script (D032).
 

@@ -83,10 +83,11 @@ type Premiere struct {
 	Clips    []Clip    `json:"clips"`
 }
 
-// Clip is one turn's recording.
+// Clip is one turn's recording: who speaks in it and where to fetch it.
 type Clip struct {
 	Turn    int    `json:"turn"`
 	Speaker string `json:"speaker"`
+	URL     string `json:"url"`
 }
 
 // Conn is one browser's WebSocket to the server.

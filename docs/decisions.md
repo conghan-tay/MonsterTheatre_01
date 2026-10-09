@@ -32,6 +32,7 @@ The log below is kept in full, including entries that were later replaced. These
 | D034 | Share links are derived from a server secret, not stored |
 | D035 | The WebSocket accepts only the web app's origin or the server's own address |
 | D036 | Every update carries the whole state, not a change |
+| D037 | The premiere's clip list carries each clip's URL |
 
 Superseded or withdrawn: D002, D004, D006, D010, D011, D012, D014, D016, D019, D020, D021, and the data-lake half of D003.
 
@@ -678,3 +679,19 @@ This algorithm was run through the spike's three scenarios and was correct in ev
 **Tradeoffs and consequences:** Updates repeat the lines chosen so far, so the last ones are a few kilobytes instead of a few hundred bytes. Per-browser data cannot go in an update, since every browser in the room gets the same bytes; a voter's own vote (step 10) therefore travels in the snapshot and in `vote_received`, not in updates.
 
 **Status:** accepted — approved in the step 9 plan on 2026-10-09.
+
+## D037 — The server builds clip URLs
+
+**Decision:** Each clip in the `premiere` update is `{turn, speaker, url}`. The URL is a path on the server, `/api/v1/performances/{performanceId}/turns/{n}/audio`. The browser plays the URL it is given and never assembles one.
+
+**Context / requirement:** Review item 15 left open whether the clip list carries URLs or the browser builds them from the performance ID and turn number, and suggested the browser. The clip list was first built in step 9 as `{turn, speaker}`; the user chose URLs before that step merged, so the contract was never released in the other shape.
+
+**Chosen approach:** One function, `performance.AudioURL`, builds the path, and one constant beside it, `performance.AudioRoute`, is the route the server registers in step 12. Both are in the package the server and the worker share, and a test checks that every URL the function builds is matched by the route. The workflow calls the function when it builds the premiere, which keeps it deterministic: the URL depends only on the performance ID and the turn. The path is relative, like the portrait URLs a room returns, so it is correct behind the development proxy and the load balancer alike, and the worker does not need to know the public address.
+
+**Why it fits:** Only the Go code knows the audio route. The web page has no path to keep in step with the server, and the route can change without a web change. It matches what rooms already do with `portraitUrl`.
+
+**Alternatives considered:** The browser building the address: the smallest message and a worker that knows nothing about HTTP, but the same path written in two codebases. Putting the URL on each entry of `lines` and dropping `clips`: one list where there are two, but the user preferred a clip list that is complete on its own. A clip of `{turn, url}` with the speaker looked up in `lines`: less repetition, but the page must join two lists to play.
+
+**Tradeoffs and consequences:** Worker code now produces a server route, held together by the shared function and its test. The URL is recorded in workflow history and in the Redis stream; a run lasts minutes, so a route change mid-run is not a concern. Turn and speaker appear in both `clips` and `lines`, accepted for a self-contained clip. The URLs are published from step 9 but answer `404` until step 12 builds the endpoint. They are not storage URLs: the bucket stays private and the server serves the audio.
+
+**Status:** accepted — explicit user choice on 2026-10-09.

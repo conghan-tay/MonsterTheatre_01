@@ -192,7 +192,9 @@ func Performance(ctx workflow.Context, in performance.WorkflowInput) error {
 
 	clips := make([]performance.Clip, performance.Turns)
 	for i, plan := range Schedule {
-		clips[i] = performance.Clip{Turn: i + 1, Speaker: plan.Speaker}
+		clips[i] = performance.Clip{
+			Turn: i + 1, Speaker: plan.Speaker, URL: performance.AudioURL(in.PerformanceID, i+1),
+		}
 	}
 	r.publish(ctx, performance.State{
 		Phase: performance.PhasePremiere, Turn: performance.Turns,

@@ -205,7 +205,11 @@ func TestWinningLinesFeedTheNextTurnAndTheScript(t *testing.T) {
 	require.WithinDuration(t, premiere.at.Add(testCountdown), state.Premiere.StartsAt, 0)
 	require.Len(t, state.Premiere.Clips, performance.Turns)
 	for i, clip := range state.Premiere.Clips {
-		require.Equal(t, performance.Clip{Turn: i + 1, Speaker: Schedule[i].Speaker}, clip)
+		require.Equal(t, performance.Clip{
+			Turn:    i + 1,
+			Speaker: Schedule[i].Speaker,
+			URL:     fmt.Sprintf("/api/v1/performances/perf-1/turns/%d/audio", i+1),
+		}, clip)
 	}
 }
 

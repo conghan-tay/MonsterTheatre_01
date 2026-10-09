@@ -8,7 +8,10 @@
 // a WebSocket message.
 package performance
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // Turns is how many voted turns a performance has.
 const Turns = 8
@@ -82,10 +85,25 @@ type Premiere struct {
 	Clips    []Clip    `json:"clips"`
 }
 
-// Clip is one turn's recording.
+// Clip is one turn's recording: who speaks in it and where to fetch it.
 type Clip struct {
 	Turn    int    `json:"turn"`
 	Speaker string `json:"speaker"`
+	// URL is a path on the server, as a room's portrait URLs are. The
+	// browser plays it as given and never builds one itself
+	// (docs/decisions.md, D037).
+	URL string `json:"url"`
+}
+
+// AudioRoute is the route that serves a turn's recording, and AudioURL the
+// path of one recording on it. They live together, in the package the
+// server and the worker share, because the workflow publishes these URLs
+// and the server answers them.
+const AudioRoute = "GET /api/v1/performances/{performanceId}/turns/{turn}/audio"
+
+// AudioURL is where a browser fetches a turn's recording.
+func AudioURL(performanceID string, turn int) string {
+	return fmt.Sprintf("/api/v1/performances/%s/turns/%d/audio", performanceID, turn)
 }
 
 // Message is a snapshot or update as sent to a browser.

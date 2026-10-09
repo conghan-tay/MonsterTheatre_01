@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -211,6 +212,50 @@ func (s *Stack) Stop() {
 	_ = os.RemoveAll(filepath.Join(s.workDir, "objects"))
 }
 
+// PerformanceRow is a room's row in the performances table.
+type PerformanceRow struct {
+	ID     string
+	Status string
+	// Script and AudioKeys are the stored JSON, empty until the run completes.
+	Script    []byte
+	AudioKeys []byte
+}
+
+// PerformanceRow reads a room's performance straight from the database, for
+// what no endpoint exposes yet. found is false if the room has none.
+func (s *Stack) PerformanceRow(ctx context.Context, roomID string) (row PerformanceRow, found bool, err error) {
+	conn, err := pgx.Connect(ctx, e2eDatabaseURL)
+	if err != nil {
+		return row, false, err
+	}
+	defer conn.Close(ctx)
+	err = conn.QueryRow(ctx,
+		"SELECT id::text, status, script::text, audio_keys::text FROM performances WHERE room_id = $1", roomID,
+	).Scan(&row.ID, &row.Status, &row.Script, &row.AudioKeys)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return row, false, nil
+	}
+	return row, err == nil, err
+}
+
+// PerformanceCount returns how many performance rows a room has.
+func (s *Stack) PerformanceCount(ctx context.Context, roomID string) (int, error) {
+	conn, err := pgx.Connect(ctx, e2eDatabaseURL)
+	if err != nil {
+		return 0, err
+	}
+	defer conn.Close(ctx)
+	var n int
+	err = conn.QueryRow(ctx, "SELECT count(*) FROM performances WHERE room_id = $1", roomID).Scan(&n)
+	return n, err
+}
+
+// StoredObject reads an object the stack has stored, such as a turn's
+// recording, from the filesystem object store.
+func (s *Stack) StoredObject(key string) ([]byte, error) {
+	return os.ReadFile(filepath.Join(s.workDir, "objects", filepath.FromSlash(key)))
+}
+
 // StartWorker starts the worker process. Start calls it; tests call it again
 // after StopWorker.
 func (s *Stack) StartWorker() error {
@@ -280,7 +325,8 @@ func (s *Stack) build(ctx context.Context) error {
 
 func (s *Stack) command(ctx context.Context, bin string, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, bin, args...)
-	cmd.Env = s.env
+	// A copy: callers append to it, and tests run commands in parallel.
+	cmd.Env = slices.Clone(s.env)
 	return cmd
 }
 

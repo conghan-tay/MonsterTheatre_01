@@ -33,3 +33,16 @@ func (d *DirectorClient) Me(ctx context.Context) (*Response, error) {
 func (d *DirectorClient) Logout(ctx context.Context) (*Response, error) {
 	return d.PostJSON(ctx, "/api/v1/director/logout", struct{}{})
 }
+
+// StartResponse is the body of a Start.
+type StartResponse struct {
+	PerformanceID string `json:"performanceId"`
+	RoomID        string `json:"roomId"`
+	Status        string `json:"status"`
+}
+
+// Start is the Start button: it begins the room's one performance. Pressing
+// it again returns the same performance.
+func (c *Client) Start(ctx context.Context, roomID string) (*Response, error) {
+	return c.PostJSON(ctx, "/api/v1/rooms/"+roomID+"/performance", struct{}{})
+}

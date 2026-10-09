@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/coder/websocket"
 )
@@ -29,11 +30,64 @@ type Message struct {
 	Raw json.RawMessage `json:"-"`
 }
 
-// State is the part of the performance state the tests wait on. Further
-// fields are added as later steps need them.
+// Phases a snapshot or update can show (docs/system-design.md, section 4).
+const (
+	PhaseWaiting       = "waiting"
+	PhaseGenerating    = "generating"
+	PhaseVoting        = "voting"
+	PhasePreparingLine = "preparing_line"
+	PhasePremiere      = "premiere"
+	PhaseCompleted     = "completed"
+	PhaseFailed        = "failed"
+)
+
+// State is the performance state a snapshot or update carries. Every update
+// carries all of it; fields are absent in phases that do not have them.
 type State struct {
-	Phase string `json:"phase"`
-	Turn  int    `json:"turn"`
+	Phase         string    `json:"phase"`
+	Turn          int       `json:"turn"`
+	PerformanceID string    `json:"performanceId"`
+	Speaker       string    `json:"speaker"`
+	Beat          string    `json:"beat"`
+	Choices       []Choice  `json:"choices"`
+	Deadline      time.Time `json:"deadline"`
+	Winner        *Winner   `json:"winner"`
+	Lines         []Line    `json:"lines"`
+	Premiere      *Premiere `json:"premiere"`
+}
+
+// Choice is one of a turn's three candidate lines.
+type Choice struct {
+	ID   string `json:"id"`
+	Text string `json:"text"`
+}
+
+// Winner is the line a round chose.
+type Winner struct {
+	ChoiceID  string         `json:"choiceId"`
+	Text      string         `json:"text"`
+	Counts    map[string]int `json:"counts"`
+	DecidedBy string         `json:"decidedBy"`
+}
+
+// Line is a winning line from an earlier turn.
+type Line struct {
+	Turn    int    `json:"turn"`
+	Speaker string `json:"speaker"`
+	Text    string `json:"text"`
+}
+
+// Premiere says when playback starts and which clips to play.
+type Premiere struct {
+	StartsAt time.Time `json:"startsAt"`
+	Clips    []Clip    `json:"clips"`
+}
+
+// Clip is one turn's recording: who speaks in it and where to fetch it.
+type Clip struct {
+	Turn    int    `json:"turn"`
+	Speaker string `json:"speaker"`
+	URL     string `json:"url"`
 }
 
 // Conn is one browser's WebSocket to the server.

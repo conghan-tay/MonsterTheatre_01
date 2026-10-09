@@ -1,33 +1,16 @@
 package theater
 
-import "encoding/json"
+import (
+	"encoding/json"
 
-// Message types sent to browsers (docs/system-design.md, section 5).
-const typeSnapshot = "snapshot"
+	"github.com/conghan-tay/MonsterTheatre_01/server/internal/performance"
+)
 
-// PhaseWaiting is the phase of a room whose director has not pressed Start.
-// It appears only in snapshots: nothing publishes it.
-const PhaseWaiting = "waiting"
-
-// State is the performance state a snapshot or update carries. Later steps
-// add the choices, deadline, votes, and winners.
-type State struct {
-	Phase string `json:"phase"`
-	Turn  int    `json:"turn"`
-}
-
-type message struct {
-	Type     string `json:"type"`
-	Revision int    `json:"revision"`
-	State    State  `json:"state"`
-}
-
-// waitingSnapshot is the snapshot of a room with no performance: revision 0,
-// so the first published update (revision 1) is always newer.
-func waitingSnapshot() []byte {
-	data, err := json.Marshal(message{Type: typeSnapshot, Revision: 0, State: State{Phase: PhaseWaiting}})
+// snapshotMessage encodes a snapshot for a browser.
+func snapshotMessage(revision int, state performance.State) []byte {
+	data, err := json.Marshal(performance.Message{Type: performance.TypeSnapshot, Revision: revision, State: state})
 	if err != nil {
-		panic(err) // cannot happen: the value is fixed
+		panic(err) // cannot happen: the state holds only plain values
 	}
 	return data
 }

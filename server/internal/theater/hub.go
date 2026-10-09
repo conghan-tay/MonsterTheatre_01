@@ -12,11 +12,17 @@ import (
 // performance is 25 updates, so a browser this far behind is not reading.
 const sendBuffer = 32
 
+// outbound is an update waiting to be written to one browser.
+type outbound struct {
+	revision int
+	data     []byte
+}
+
 // conn is one browser's connection as the hub sees it.
 type conn struct {
-	// send holds messages waiting to be written. Only the connection's own
+	// send holds updates waiting to be written. Only the connection's own
 	// writer loop receives from it.
-	send chan []byte
+	send chan outbound
 	// close ends the connection with a close frame. It is safe to call from
 	// any goroutine and more than once.
 	close func(code websocket.StatusCode, reason string)
@@ -67,16 +73,17 @@ func (h *Hub) Count(roomID string) int {
 	return len(h.rooms[roomID])
 }
 
-// Broadcast queues msg for every connection in the room and returns without
-// waiting for any of them. A connection whose queue is full is closed rather
+// Broadcast queues an update for every connection in the room and returns
+// without waiting for any of them. The revision travels with it so that each
+// connection can drop what its snapshot already covered. A connection whose queue is full is closed rather
 // than waited for, so one stalled browser cannot hold up a room; when it
 // reconnects it gets a fresh snapshot.
-func (h *Hub) Broadcast(roomID string, msg []byte) {
+func (h *Hub) Broadcast(roomID string, revision int, msg []byte) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for c := range h.rooms[roomID] {
 		select {
-		case c.send <- msg:
+		case c.send <- outbound{revision: revision, data: msg}:
 		default:
 			delete(h.rooms[roomID], c)
 			go c.close(websocket.StatusPolicyViolation, "too far behind")

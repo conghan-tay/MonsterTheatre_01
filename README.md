@@ -9,16 +9,17 @@ An audience votes on the dialogue for two characters, line by line; after eight 
 
 ## Local development
 
-Prerequisites: Go 1.26+, Docker, and the [Temporal CLI](https://docs.temporal.io/cli).
+Prerequisites: Go 1.26+, Node.js 22+, Docker, and the [Temporal CLI](https://docs.temporal.io/cli).
 
 ```sh
 make dev
 ```
 
-This starts PostgreSQL and Redis in containers, the Temporal dev server, applies migrations, and runs the server and the worker. Ctrl-C stops all of it.
+This starts PostgreSQL and Redis in containers, the Temporal dev server, applies migrations, and runs the server, the worker, and the web app. Ctrl-C stops all of it. The first run installs the web app's packages.
 
 | What | Where |
 | --- | --- |
+| Web app | http://localhost:3000 |
 | Health check | http://localhost:8080/healthz |
 | Temporal UI | http://localhost:8233 |
 | PostgreSQL | `localhost:5432`, database `monstertheatre` |
@@ -34,9 +35,17 @@ Other targets:
 | `make infra` / `make infra-down` | Starts or removes only PostgreSQL and Redis |
 | `make migrate` | Applies migrations |
 | `make director USERNAME=alice` | Creates a director account (prompts for the password) |
-| `make server` / `make worker` | Runs one process on its own |
+| `make web-e2e` | Runs the browser tests against their own isolated stack and web app |
+| `make web-check` | Lints and type-checks the web app |
+| `make server` / `make worker` / `make web` | Runs one process on its own |
 
 Configuration comes from environment variables, all with local defaults. See [.env.example](.env.example).
+
+## The web app
+
+`make dev` serves it at http://localhost:3000. A director logs in, creates a room from one form, and gets the room's page with its share link. Create an account first (next section).
+
+The browser only ever talks to port 3000: the web app proxies `/api/*` to the Go server, which is the routing a load balancer does in production. Opening a share link does not work yet; the audience page arrives in a later step.
 
 ## Director accounts
 
@@ -93,7 +102,9 @@ make e2e
 
 This needs Docker running and the Temporal CLI. It starts the real server and worker against real PostgreSQL, Redis, and Temporal, with fake stand-ins for the language model, speech, and S3, then tears everything down.
 
-It is isolated from `make dev` (its own database, its own Temporal server, free ports), so both can run at once. If the stack cannot start you get a `HARNESS FAILURE` banner with log tails, which is different from a failing test.
+`make web-e2e` runs the browser tests the same way: Playwright starts that stack, starts the web app pointed at it, and stops both. The first run downloads Chromium (about 100 MB).
+
+Both are isolated from `make dev` (their own database, their own Temporal server, their own ports), so they can run while it is up. If the stack cannot start you get a `HARNESS FAILURE` banner with log tails, which is different from a failing test.
 
 ## Layout
 
@@ -105,6 +116,7 @@ server/cmd/adddirector  Creates a director account
 server/internal      Application packages
 server/migrations    SQL migrations
 tests/e2e            End-to-end tests: harness, client, fixtures
+web                  Next.js web app and its Playwright tests (web/e2e)
 ```
 
 ## Migration rules

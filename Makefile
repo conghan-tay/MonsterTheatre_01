@@ -1,4 +1,4 @@
-.PHONY: dev infra infra-down migrate server worker director test test-verbose e2e e2e-verbose
+.PHONY: dev infra infra-down migrate server worker web director test test-verbose e2e e2e-verbose web-check web-e2e
 
 # Start everything; Ctrl-C stops everything.
 dev:
@@ -20,6 +20,10 @@ server:
 worker:
 	cd server && go run ./cmd/worker
 
+# The web app on its own, proxying /api to a server on port 8080.
+web:
+	cd web && API_ORIGIN=http://localhost:8080 npm run dev
+
 # Create a director account: make director USERNAME=alice
 # Prompts for the password, or reads it from DIRECTOR_PASSWORD.
 director:
@@ -40,3 +44,13 @@ e2e:
 # The same suite, listing every test with its result and a final count.
 e2e-verbose:
 	./scripts/test-report.sh tests/e2e -count=1
+
+# Lint and type-check the web app.
+web-check:
+	cd web && npm run lint && npx tsc --noEmit
+
+# Browser tests. Starts the same isolated stack as `make e2e`, plus the web
+# app pointed at it, and tears both down. The first run downloads Chromium.
+web-e2e:
+	cd web && { [ -d node_modules ] || npm install; } && npx playwright install chromium \
+		&& E2E_RUN_ID=$$(date +%s) npx playwright test

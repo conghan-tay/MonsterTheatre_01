@@ -120,7 +120,7 @@ Deliberately not added: a web framework (the standard library router is enough),
 | --- | --- | --- |
 | `next` | 16.4.0 | Web frontend |
 | `react`, `react-dom` | 19.3.0 | Required by Next.js |
-| `typescript` | 6.0.3 | Type checking. 7.0.2 is the latest release, but I could not confirm that Next.js 16.4 supports it; use whatever `create-next-app` installs and treat this row as the fallback |
+| `typescript` | 5.9.3 | Type checking. This is what `create-next-app` 16.4.0 installed (`^5`) |
 | `tailwindcss` | 4.3.3 | Styling |
 | `@playwright/test` | 1.64.0 | Browser E2E tests |
 | `aws-cdk-lib` | 2.272.0 | Infrastructure as code for the AWS deployment |
@@ -236,6 +236,8 @@ Makefile           dev, test, e2e, migrate
 - H2 and S4 pass, including ten simultaneous joins followed by an eleventh.
 
 ### Step 7 — Director web pages
+
+**Done 2026-10-08.** Added beyond the list below: a room list page, and three more browser tests (wrong password, not logged in, and two near-limit portraits through the proxy). The browser tests reuse the Go test stack through `tests/e2e/cmd/stack`.
 
 **What to build**
 - The Next.js app: login page, room creation form, and a room page showing the share link and a Start button (not yet wired).

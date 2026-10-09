@@ -35,10 +35,14 @@ const (
 	DecidedByNoVotes  = "no_votes"
 )
 
-// Message types on the WebSocket (docs/system-design.md, section 5).
+// Message types on the WebSocket (docs/system-design.md, section 5). The
+// first four are sent by the server; a browser sends vote.
 const (
-	TypeSnapshot = "snapshot"
-	TypeUpdate   = "update"
+	TypeSnapshot     = "snapshot"
+	TypeUpdate       = "update"
+	TypeVoteReceived = "vote_received"
+	TypeError        = "error"
+	TypeVote         = "vote"
 )
 
 // State is everything a browser is shown about a performance. Snapshots and
@@ -53,6 +57,10 @@ type State struct {
 	Choices       []Choice   `json:"choices,omitempty"`
 	Deadline      *time.Time `json:"deadline,omitempty"`
 	Winner        *Winner    `json:"winner,omitempty"`
+	// YourVote is the choice the asking voter has made in the current turn.
+	// Only a snapshot carries it: an update goes to every browser in the
+	// room, so it can say nothing about one voter.
+	YourVote string `json:"yourVote,omitempty"`
 	// Lines are the winning lines so far, in turn order.
 	Lines    []Line    `json:"lines,omitempty"`
 	Premiere *Premiere `json:"premiere,omitempty"`
@@ -104,6 +112,18 @@ const AudioRoute = "GET /api/v1/performances/{performanceId}/turns/{turn}/audio"
 // AudioURL is where a browser fetches a turn's recording.
 func AudioURL(performanceID string, turn int) string {
 	return fmt.Sprintf("/api/v1/performances/%s/turns/%d/audio", performanceID, turn)
+}
+
+// Vote is one vote as the server hands it to the workflow.
+type Vote struct {
+	// VoterID is an audience session ID or a director ID. The server takes
+	// it from the connection, never from what the browser sent.
+	VoterID  string
+	Turn     int
+	ChoiceID string
+	// ReceivedAt is the server's clock when the vote arrived. Whether the
+	// vote was in time is decided from this stamp (docs/decisions.md, D033).
+	ReceivedAt time.Time
 }
 
 // Message is a snapshot or update as sent to a browser.

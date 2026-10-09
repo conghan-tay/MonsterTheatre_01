@@ -69,6 +69,11 @@ type run struct {
 	// state is what browsers are shown: published with each update, and
 	// returned by the state query.
 	state performance.State
+	// votes is who has voted for what in the current turn, by voter ID. It
+	// is never published: a snapshot shows a voter only their own entry.
+	votes map[string]string
+	// counts is how many votes each of the current turn's choices has.
+	counts map[string]int
 }
 
 // Performance runs one performance from Start to the premiere.
@@ -76,8 +81,10 @@ func Performance(ctx workflow.Context, in performance.WorkflowInput) error {
 	r := &run{in: in, state: performance.State{Phase: performance.PhaseWaiting, PerformanceID: in.PerformanceID}}
 	// Registered before anything else, so a browser connecting at any moment
 	// of the run can be answered.
-	err := workflow.SetQueryHandler(ctx, performance.QueryState, func() (performance.Snapshot, error) {
-		return performance.Snapshot{Revision: r.revision, State: r.state}, nil
+	err := workflow.SetQueryHandler(ctx, performance.QueryState, func(voterID string) (performance.Snapshot, error) {
+		state := r.state
+		state.YourVote = r.votes[voterID]
+		return performance.Snapshot{Revision: r.revision, State: state}, nil
 	})
 	if err != nil {
 		return err
@@ -102,7 +109,8 @@ func Performance(ctx workflow.Context, in performance.WorkflowInput) error {
 			speaker = room.CharacterB
 		}
 
-		// A turn begins.
+		// A turn begins, with nobody having voted in it.
+		r.votes, r.counts = map[string]string{}, nil
 		r.publish(ctx, performance.State{
 			Phase: performance.PhaseGenerating, Turn: turn, Speaker: plan.Speaker, Beat: plan.Beat,
 		})
@@ -135,17 +143,22 @@ func Performance(ctx workflow.Context, in performance.WorkflowInput) error {
 		// The timer is started before the deadline is published, so browsers
 		// are shown the deadline the workflow enforces, however long the
 		// publish takes.
-		deadline := workflow.Now(ctx).Add(room.VoteWindow)
+		r.counts = make(map[string]int, len(choices))
+		for _, choice := range choices {
+			r.counts[choice.ID] = 0
+		}
+		opened := workflow.Now(ctx)
+		deadline := opened.Add(room.VoteWindow)
 		timer := workflow.NewTimer(ctx, room.VoteWindow)
 		r.publish(ctx, performance.State{
 			Phase: performance.PhaseVoting, Turn: turn, Speaker: plan.Speaker, Beat: plan.Beat,
 			Choices: choices, Deadline: &deadline,
 		})
 
-		counts, err := collectVotes(ctx, timer, choices)
-		if err != nil {
+		if err := r.collectVotes(ctx, timer, round{turn: turn, opened: opened, deadline: deadline}); err != nil {
 			return err
 		}
+		counts := r.counts
 		winner, decidedBy := pickWinner(ctx, choices, counts)
 
 		history = append(history, providers.Line{Speaker: plan.Speaker, Text: winner.Text})
@@ -225,31 +238,95 @@ func (r *run) publish(ctx workflow.Context, next performance.State) {
 	}
 }
 
-// collectVotes waits for the round to close and returns each choice's count.
-//
-// Nobody can vote yet, so it only waits for the timer and every count is
-// zero. Step 10 receives vote signals here, under the rules in D033.
-func collectVotes(ctx workflow.Context, timer workflow.Future, choices []performance.Choice) (map[string]int, error) {
-	if err := timer.Get(ctx, nil); err != nil {
-		return nil, err
-	}
-	counts := make(map[string]int, len(choices))
-	for _, choice := range choices {
-		counts[choice.ID] = 0
-	}
-	return counts, nil
+// round is one turn's voting round.
+type round struct {
+	turn int
+	// opened and deadline bound when a vote may have been received.
+	opened   time.Time
+	deadline time.Time
 }
 
-// pickWinner chooses the round's winner. With no votes it is picked at
-// random; the pick is recorded in history by SideEffect, so a replay after a
-// worker restart reaches the same answer. Step 10 adds majority and ties.
-func pickWinner(ctx workflow.Context, choices []performance.Choice, _ map[string]int) (performance.Choice, string) {
+// collectVotes records the round's votes in r.votes and returns when the
+// round has closed.
+//
+// Whether a vote was in time is decided by the server's receipt stamp, not
+// by whether this code saw the vote before the timer. After a worker outage
+// the timer and every vote sent meanwhile are delivered together, and the
+// order this code sees them in says nothing about the order they happened in
+// (docs/decisions.md, D033). So when the timer is delivered, every vote
+// still waiting is handled before the round closes.
+//
+// A vote that arrives after that is not seen here at all. It waits for the
+// next round, which ignores it for naming the wrong turn.
+func (r *run) collectVotes(ctx workflow.Context, timer workflow.Future, rd round) error {
+	votes := workflow.GetSignalChannel(ctx, performance.SignalVote)
+
+	var timerErr error
+	closed := false
+	selector := workflow.NewSelector(ctx)
+	selector.AddFuture(timer, func(f workflow.Future) {
+		timerErr = f.Get(ctx, nil)
+		closed = true
+	})
+	selector.AddReceive(votes, func(c workflow.ReceiveChannel, _ bool) {
+		var vote performance.Vote
+		c.Receive(ctx, &vote)
+		r.record(rd, vote)
+	})
+	for !closed {
+		selector.Select(ctx)
+	}
+	if timerErr != nil {
+		return timerErr
+	}
+
+	for {
+		var vote performance.Vote
+		if !votes.ReceiveAsync(&vote) {
+			return nil
+		}
+		r.record(rd, vote)
+	}
+}
+
+// record keeps a vote if it counts: it is for this turn, for one of the
+// three choices, the voter's first this turn, and was received while the
+// round was open. Anything else is dropped without a trace (D023).
+//
+// The opening time matters because choice IDs are the same every turn: a
+// vote sent before the choices were shown would otherwise count.
+func (r *run) record(rd round, vote performance.Vote) {
+	if vote.Turn != rd.turn || vote.VoterID == "" {
+		return
+	}
+	if vote.ReceivedAt.Before(rd.opened) || vote.ReceivedAt.After(rd.deadline) {
+		return
+	}
+	if _, voted := r.votes[vote.VoterID]; voted {
+		return
+	}
+	if _, offered := r.counts[vote.ChoiceID]; !offered {
+		return
+	}
+	r.votes[vote.VoterID] = vote.ChoiceID
+	r.counts[vote.ChoiceID]++
+}
+
+// pickWinner chooses the round's winner from the counts. When the counts do
+// not settle it (a tie, or no votes), it picks at random among the leaders;
+// the pick is recorded in history by SideEffect, so a replay after a worker
+// restart reaches the same answer and the tie is settled only once.
+func pickWinner(ctx workflow.Context, choices []performance.Choice, counts map[string]int) (performance.Choice, string) {
+	top, decidedBy := leaders(choices, counts)
+	if len(top) == 1 {
+		return top[0], decidedBy
+	}
 	var index int
-	pick := workflow.SideEffect(ctx, func(workflow.Context) any { return rand.IntN(len(choices)) })
-	if err := pick.Get(&index); err != nil || index < 0 || index >= len(choices) {
-		// Cannot happen: an int always decodes. The first choice is as good
+	pick := workflow.SideEffect(ctx, func(workflow.Context) any { return rand.IntN(len(top)) })
+	if err := pick.Get(&index); err != nil || index < 0 || index >= len(top) {
+		// Cannot happen: an int always decodes. The first leader is as good
 		// as any, and the same on every replay.
 		index = 0
 	}
-	return choices[index], performance.DecidedByNoVotes
+	return top[index], decidedBy
 }

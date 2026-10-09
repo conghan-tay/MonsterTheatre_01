@@ -121,7 +121,15 @@ curl -b cookies.txt -X POST -H 'Content-Type: application/json' -d '{}' \
 
 The response is `{"performanceId": "...", "roomId": "...", "status": "running"}`, with `201` the first time and `200` after that: a room has one performance, and pressing Start again returns it.
 
-The worker then runs eight turns. Each has a ten-second voting window; nobody can vote yet, so each winner is picked at random and a run takes about 80 seconds. An open room WebSocket (previous section) receives 25 updates: `generating`, `voting`, and `preparing_line` for each turn, then `premiere`. The run is visible in the Temporal UI at http://localhost:8233 as `performance/<performanceId>`, and the eight recordings land in `.data/objects/performances/<performanceId>/`.
+The worker then runs eight turns. Each has a ten-second voting window, so a run takes about 80 seconds. The choice with the most votes wins; a tie, or a round nobody voted in, is settled at random. An open room WebSocket (previous section) receives 25 updates: `generating`, `voting`, and `preparing_line` for each turn, then `premiere`. The run is visible in the Temporal UI at http://localhost:8233 as `performance/<performanceId>`, and the eight recordings land in `.data/objects/performances/<performanceId>/`.
+
+To vote, send a message on the room WebSocket while a round is open. From the browser console, with `ws` connected as in the previous section:
+
+```js
+ws.send(JSON.stringify({type: "vote", turn: 1, choiceId: "c2"}))
+```
+
+The reply is `{"type":"vote_received","turn":1,"choiceId":"c2"}`. The director and each audience member get one vote per turn, and the first one stands. The result arrives in that turn's `preparing_line` update as `winner`, with each choice's count and `decidedBy` (`majority`, `tie`, or `no_votes`).
 
 The language model and speech service are stand-ins until real ones are added: lines read "Turn 1, first option." and the recordings are silent. Settings, all optional:
 
@@ -142,7 +150,7 @@ This needs Docker running and the Temporal CLI. It starts the real server and wo
 
 `make web-e2e` runs the browser tests the same way: Playwright starts that stack, starts the web app pointed at it, and stops both. The first run downloads Chromium (about 100 MB).
 
-Both are isolated from `make dev` (their own database, their own Temporal server, their own ports), so they can run while it is up. If the stack cannot start you get a `HARNESS FAILURE` banner with log tails, which is different from a failing test.
+Both are isolated from `make dev` (their own database, their own Temporal server, their own ports). `make e2e` can run while it is up. `make web-e2e` cannot: Next.js refuses to start a second development server from the same directory, so stop `make dev` first. If the stack cannot start you get a `HARNESS FAILURE` banner with log tails, which is different from a failing test.
 
 ## Layout
 

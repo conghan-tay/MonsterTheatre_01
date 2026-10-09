@@ -242,6 +242,12 @@ func TestPerformanceRunsEightTurnsWithoutVotes(t *testing.T) {
 		require.Equal(t, "fake", turn.Model)
 	}
 
+	// Step 10: the voting is over, and a vote now is refused.
+	reply, err := directorConn.Vote(ctx, turns, "c1")
+	require.NoError(t, err)
+	require.Equal(t, client.TypeError, reply.Type, "reply: %s", reply.Raw)
+	require.Equal(t, "vote_not_delivered", reply.Code, "reply: %s", reply.Raw)
+
 	var audioKeys []string
 	require.NoError(t, json.Unmarshal(row.AudioKeys, &audioKeys), "audio keys: %s", row.AudioKeys)
 	require.Len(t, audioKeys, turns)

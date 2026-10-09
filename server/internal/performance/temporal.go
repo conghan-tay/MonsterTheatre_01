@@ -14,8 +14,11 @@ const (
 	// WorkflowName is the name the performance workflow is registered under.
 	// The server starts it by name, so it does not link the workflow's code.
 	WorkflowName = "Performance"
-	// QueryState is the query that returns a Snapshot.
+	// QueryState is the query that returns a Snapshot. Its argument is the
+	// asking voter's ID, so the answer can include that voter's own vote.
 	QueryState = "state"
+	// SignalVote is the signal that carries a Vote.
+	SignalVote = "vote"
 	// StreamKey is the Redis stream every update is published to.
 	StreamKey = "performance-updates"
 
@@ -68,11 +71,18 @@ func (w *Workflows) Start(ctx context.Context, performanceID, roomID string) err
 	return err
 }
 
-// State asks a running performance's workflow for its current state. It
-// needs a worker to answer, so it fails while none is running.
-func (w *Workflows) State(ctx context.Context, performanceID string) (Snapshot, error) {
+// Vote hands a vote to a performance's workflow. Temporal stores it even
+// while no worker is running; it fails if the performance has ended.
+func (w *Workflows) Vote(ctx context.Context, performanceID string, vote Vote) error {
+	return w.Client.SignalWorkflow(ctx, WorkflowID(performanceID), "", SignalVote, vote)
+}
+
+// State asks a running performance's workflow for its current state, as
+// seen by one voter. It needs a worker to answer, so it fails while none is
+// running.
+func (w *Workflows) State(ctx context.Context, performanceID, voterID string) (Snapshot, error) {
 	var snapshot Snapshot
-	value, err := w.Client.QueryWorkflow(ctx, WorkflowID(performanceID), "", QueryState)
+	value, err := w.Client.QueryWorkflow(ctx, WorkflowID(performanceID), "", QueryState, voterID)
 	if err != nil {
 		return snapshot, err
 	}

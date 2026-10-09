@@ -274,6 +274,8 @@ Makefile           dev, test, e2e, migrate
 
 ### Step 10 — Voting
 
+**Done 2026-10-09.** Added beyond the list below: votes received before a round opens are ignored (an amendment to D033); a connection passes on one vote per turn; and an end-to-end test that stops the worker across a deadline to check D033 against the real workflow. Snapshots carry the voter's own vote as `yourVote`.
+
 **What to build**
 - The `vote` message, the vote signal carrying the voter ID, and `vote_received`.
 - Vote bookkeeping in the workflow: first vote per voter, ignore unknown choices, wrong turns, and late votes. Lateness is decided by the receipt-time stamp against the deadline, and buffered votes are handled before the round closes (D033).

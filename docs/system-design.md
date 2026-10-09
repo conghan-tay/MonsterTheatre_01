@@ -148,7 +148,7 @@ Notes on each part:
 - **Publishing is an activity.** Workflow code must be deterministic and cannot talk to Redis itself, so every "Publish" box is a small activity that appends one message to the stream. Before each publish the workflow increases its revision number and includes it in the message.
 - **Timer before publish.** The workflow computes the deadline (its current time plus the window), starts the 10-second timer, and then publishes that deadline, so browsers show the same deadline the workflow enforces.
 - **Collecting votes.** A vote arrives as a signal carrying a voter ID (an audience session ID or the director's ID), turn number, and choice ID. The signal also carries the time the server received the vote. The workflow records the first vote from each voter for the current turn and ignores repeats, unknown choices, wrong turn numbers, and late votes.
-- **Deciding lateness.** A vote is in time if the server's receipt time is at or before the deadline. The workflow does not rely on whether it saw the vote before or after the timer: the step 2 spike showed that after a worker outage those arrive together and their order is lost (D033). When the timer is delivered, the workflow first handles every vote still buffered, then closes the round. A vote that reaches the workflow after the round has closed is ignored whatever its stamp says.
+- **Deciding lateness.** A vote is in time if the server's receipt time is at or before the deadline, and not before the round opened. (Choice IDs are the same every turn, so without the second half a vote sent before the choices were shown would count.) The workflow does not rely on whether it saw the vote before or after the timer: the step 2 spike showed that after a worker outage those arrive together and their order is lost (D033). When the timer is delivered, the workflow first handles every vote still buffered, then closes the round. A vote that reaches the workflow after the round has closed is ignored whatever its stamp says.
 - **Picking the winner.** Done in workflow code: most votes wins; a tie or an empty round is settled with Temporal's replay-safe random source, so a replay after a crash reaches the same answer.
 - **Fallbacks.** Choice generation retries, then falls back to simple valid lines. Tag enhancement retries, then falls back to the untagged line. Text to speech retries; if it still fails the run fails.
 - **Failure.** If the workflow cannot continue, it runs one last activity to mark the performance row `failed` and publishes a `failed` update. A workflow run timeout bounds a run that hangs.
@@ -224,8 +224,8 @@ Server to browser:
 | --- | --- |
 | `snapshot` | Full current state and its revision. Always the first message after connecting |
 | `update` | One published change with its revision. It carries the whole state as it now stands, in the same shape as a snapshot, not only what changed (D036) |
-| `vote_received` | Confirms the server passed this browser's vote to the workflow |
-| `error` | A vote could not be delivered (for example, the performance has ended) |
+| `vote_received` | Confirms the server passed this browser's vote to the workflow, and names it: `{"type": "vote_received", "turn": 1, "choiceId": "c2"}`. It does not say the vote counted; only the workflow knows that, and a browser sees what counted as `yourVote` in its next snapshot |
+| `error` | Something this browser sent could not be acted on: `{"type": "error", "code": "…", "message": "…"}`. Codes: `vote_not_delivered` (the performance has not started, has ended, or the workflow could not be reached) and `invalid_message` (not a readable message, or a vote without a turn from 1 to 8 and a choice) |
 
 Every server message has the same envelope. A snapshot for a room that has not started:
 
@@ -237,7 +237,7 @@ Browser to server:
 
 | Message | Contents |
 | --- | --- |
-| `vote` | Turn number and choice ID. The voter (audience session or director) comes from the connection, never from the message |
+| `vote` | Turn number and choice ID: `{"type": "vote", "turn": 1, "choiceId": "c2"}`. The voter (audience session or director) comes from the connection, never from the message |
 | `resync` | Asks for a fresh `snapshot`. Sent when the browser sees a gap in revision numbers |
 
 The state of a running performance. A field is absent in the phases that do not have it:
@@ -257,7 +257,8 @@ The state of a running performance. A field is absent in the phases that do not 
 | `speaker`, `beat` | `generating`, `voting`, `preparing_line` | `A` or `B`, and the turn's story beat |
 | `choices` | `voting`, `preparing_line` | The three lines, with IDs `c1` to `c3` |
 | `deadline` | `voting` | When the round closes |
-| `winner` | `preparing_line` | The chosen line, each choice's count, and `decidedBy`: `majority`, `tie`, or `no_votes` |
+| `winner` | `preparing_line` | The chosen line, each choice's count, and `decidedBy`: `majority` (the most votes, not necessarily more than half), `tie`, or `no_votes` |
+| `yourVote` | Snapshots only, in `voting` and `preparing_line` | The choice ID this browser's voter has made in the current turn. Absent if they have not voted. Never in an update, which every browser in the room receives alike |
 | `lines` | From the first winner on | The winning lines so far, in order |
 | `premiere` | `premiere` | `startsAt` and the ordered `clips`. Each clip is `{turn, speaker, url}`, where `url` is a path on the server such as `/api/v1/performances/{id}/turns/1/audio` (D037) |
 
@@ -321,11 +322,11 @@ Built so far (step 9): the first and third branches of the diagram, and the seco
 ### Voting
 
 1. The browser sends `vote` on its WebSocket.
-2. The server notes the time, signals the workflow with the voter ID, turn, choice, and that receipt time, then replies `vote_received`.
-3. The workflow keeps the vote if it is that voter's first for the current turn, the receipt time is not after the deadline, and the round has not yet closed.
+2. The server notes the time, reads the performance row (no row or a finished run gets `error`), signals the workflow with the voter ID, turn, choice, and that receipt time, then replies `vote_received`. A connection passes on one vote per turn: a repeat on the same connection is answered with the vote already passed on and is not signalled again, so a stuck or hostile browser cannot fill the workflow's history.
+3. The workflow keeps the vote if it is for the current turn and one of its three choices, is that voter's first for the turn, was received between the round's opening and its deadline, and the round has not yet closed. Anything else is dropped silently.
 4. When the timer fires, the workflow picks the winner and publishes it. Every browser receives the winner and the counts.
 
-A browser that reconnects during a round gets its own vote back in the snapshot, because the workflow state includes who voted and the server sends each browser only its own entry.
+A browser that reconnects during a round gets its own vote back in the snapshot, as `yourVote`. The server passes the connection's voter ID with the `state` query, and the workflow, which holds who voted for what, answers with that voter's entry only. Nobody is shown another voter's choice, and no counts are shown until the round closes.
 
 ### Premiere
 

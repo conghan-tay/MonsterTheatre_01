@@ -630,6 +630,8 @@ This algorithm was run through the spike's three scenarios and was correct in ev
 
 **Tradeoffs and consequences:** Lateness now compares two clocks, the server's and Temporal's, which D018 set out to avoid. Both are synchronised to network time, so the exposure is a few milliseconds of skew at the edge of a ten-second window; a vote that close to the deadline could go either way. A vote stamped just before the deadline can still miss the round if it reaches the workflow after the round closes, which only happens within the network delay of one request. The vote signal gains one field.
 
+**Amended 2026-10-09 (step 10):** the stamp must also be at or after the moment the round opened. Choice IDs are `c1` to `c3` on every turn, so a vote sent while the lines were still being written would otherwise have counted for lines nobody had seen. The rest stands, and is now exercised for real: an end-to-end test stops the worker across a deadline, casts one vote before it and one after, and checks that only the first counts.
+
 **Status:** accepted — explicit user answer on 2026-10-08, after reviewing the step 2 spike.
 
 ## D034 — Share links are derived from a server secret

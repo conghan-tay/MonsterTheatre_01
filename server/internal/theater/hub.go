@@ -23,6 +23,9 @@ type conn struct {
 	// send holds updates waiting to be written. Only the connection's own
 	// writer loop receives from it.
 	send chan outbound
+	// replies holds answers to this browser's own messages, such as
+	// vote_received. Nil for a connection that cannot be answered.
+	replies chan []byte
 	// close ends the connection with a close frame. It is safe to call from
 	// any goroutine and more than once.
 	close func(code websocket.StatusCode, reason string)

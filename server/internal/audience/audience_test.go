@@ -57,9 +57,10 @@ func TestSessionForRecognisesALiveSessionForThatRoom(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, "s-1", session.ID)
 
-	member, err := svc.IsMember(requestWith(CookieName(roomA), "secret-a"), roomA)
+	id, member, err := svc.MemberID(requestWith(CookieName(roomA), "secret-a"), roomA)
 	require.NoError(t, err)
 	require.True(t, member)
+	require.Equal(t, "s-1", id)
 }
 
 func TestSessionForRefusesEverythingElse(t *testing.T) {

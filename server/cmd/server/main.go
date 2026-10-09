@@ -23,6 +23,7 @@ import (
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/logging"
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/objectstore"
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/rooms"
+	"github.com/conghan-tay/MonsterTheatre_01/server/internal/theater"
 )
 
 func main() {
@@ -41,6 +42,10 @@ func run(cfg config.Config, logger *slog.Logger) error {
 
 	// Checked first, so a missing secret stops the server before it listens.
 	shareLinks, err := rooms.NewShareLinks(cfg.ShareLinkSecret, cfg.PublicBaseURL)
+	if err != nil {
+		return err
+	}
+	origins, err := theater.NewOriginPolicy(cfg.PublicBaseURL)
 	if err != nil {
 		return err
 	}
@@ -125,6 +130,16 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	// decide that themselves.
 	mux.HandleFunc("GET /api/v1/rooms/{roomId}", roomService.Get)
 	mux.HandleFunc("GET /api/v1/rooms/{roomId}/portraits/{slot}", roomService.Portrait)
+	// The room's live connection, for the same people who may read the room.
+	hub := theater.NewHub()
+	theaterService := &theater.Service{
+		Rooms:    roomService,
+		Audience: audienceService,
+		Hub:      hub,
+		Origins:  origins,
+		Logger:   logger,
+	}
+	mux.HandleFunc("GET /api/v1/rooms/{roomId}/ws", theaterService.ServeWS)
 	// Open to anyone holding a valid share link.
 	mux.HandleFunc("POST /api/v1/audience-sessions", audienceService.Join)
 
@@ -149,6 +164,8 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	if err := srv.Shutdown(shutdownCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
+	// Shutdown leaves upgraded connections alone, so they are closed here.
+	hub.CloseAll()
 	logger.Info("server stopped")
 	return nil
 }

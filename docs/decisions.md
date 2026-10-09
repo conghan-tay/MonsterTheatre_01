@@ -30,6 +30,7 @@ The log below is kept in full, including entries that were later replaced. These
 | D032 | Aurora DSQL on AWS, plain PostgreSQL locally |
 | D033 | Votes carry the server's receipt time; lateness is decided by that stamp |
 | D034 | Share links are derived from a server secret, not stored |
+| D035 | The WebSocket accepts only the web app's origin or the server's own address |
 
 Superseded or withdrawn: D002, D004, D006, D010, D011, D012, D014, D016, D019, D020, D021, and the data-lake half of D003.
 
@@ -644,3 +645,19 @@ This algorithm was run through the spike's three scenarios and was correct in ev
 **Tradeoffs and consequences:** One more secret to configure and protect. Changing it invalidates every existing link at once, and there is no way to revoke a single room's link. Anyone holding the secret can forge a link to any room whose ID they know. The `rooms` table has no share-link column, and joining presents the room ID together with the token.
 
 **Status:** accepted — explicit user choice on 2026-10-08.
+
+## D035 — WebSocket origin rule
+
+**Decision:** The WebSocket handshake is accepted only when its `Origin` header is present and names either the web app's origin (`PUBLIC_BASE_URL`: scheme, host, and port) or the same host and port the request was addressed to. Anything else gets `403` before any session is looked up.
+
+**Context / requirement:** The handshake is authenticated by cookie ([D030](#d030--session-cookies-for-audience-and-director)), and a browser attaches cookies to a WebSocket handshake whichever site's page opened it. The system design already said other sites must be refused; step 8 had to say exactly which origins are not "other". Three callers must pass: a browser coming through the Next.js development proxy, which rewrites `Host` to the Go server's address while `Origin` stays the web app's; a browser behind the AWS load balancer, where both are the public address; and the Go end-to-end client, which sends the Go server's own URL.
+
+**Chosen approach:** One check in `server/internal/theater/origin.go`, run first in the handler. The first clause covers every real browser on the web app, by whichever route it arrives, including straight to the Go server's port in local development. The second covers a page served from the address the request reached, which is the test client. The WebSocket library is given the same allowed origin as a second check.
+
+**Why it fits:** No new configuration: `PUBLIC_BASE_URL` already exists for share links. It leaves both local routes open (through the proxy, or directly to the port), so the theatre pages in step 14 can use either.
+
+**Alternatives considered:** The library's default, which also accepts a missing `Origin`: harmless against browsers, which always send one, but there is no reason to accept it. A separate list of allowed origins in configuration: more to set and get wrong, with nothing yet that needs it. Comparing hosts only, ignoring scheme: would let a plain-HTTP page on the same host connect to an HTTPS deployment.
+
+**Tradeoffs and consequences:** A non-browser client must set `Origin` itself. `PUBLIC_BASE_URL` must be exactly what the browser's address bar shows, without a default port written out, or every browser is refused. A second web origin (a preview deployment, say) would need the rule extended.
+
+**Status:** accepted — approved in the step 8 plan on 2026-10-09.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
@@ -40,17 +41,65 @@ type Conn struct {
 	ws *websocket.Conn
 }
 
+// HandshakeError is a WebSocket handshake the server answered with an
+// ordinary HTTP response instead of upgrading.
+type HandshakeError struct {
+	Status int
+	// Code is the error code from the response body, if it had one.
+	Code string
+	err  error
+}
+
+func (e *HandshakeError) Error() string {
+	return fmt.Sprintf("websocket handshake refused with status %d (code %q): %v", e.Status, e.Code, e.err)
+}
+
+func (e *HandshakeError) Unwrap() error { return e.err }
+
 // Connect opens a WebSocket at path, sending this client's cookies and its
 // own origin, as a browser on the same site would.
 func (c *Client) Connect(ctx context.Context, path string) (*Conn, error) {
+	return c.ConnectFrom(ctx, path, c.BaseURL)
+}
+
+// ConnectRoom opens the room's WebSocket.
+func (c *Client) ConnectRoom(ctx context.Context, roomID string) (*Conn, error) {
+	return c.Connect(ctx, RoomSocketPath(roomID))
+}
+
+// RoomSocketPath is the path of a room's WebSocket.
+func RoomSocketPath(roomID string) string {
+	return "/api/v1/rooms/" + roomID + "/ws"
+}
+
+// ConnectFrom opens a WebSocket at path as a page on the given origin would,
+// still sending this client's cookies. An empty origin sends no Origin
+// header, which no browser does. A refusal is returned as a *HandshakeError.
+func (c *Client) ConnectFrom(ctx context.Context, path, origin string) (*Conn, error) {
 	wsURL := "ws" + strings.TrimPrefix(c.BaseURL, "http") + path
+	header := http.Header{}
+	if origin != "" {
+		header.Set("Origin", origin)
+	}
 	ws, resp, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
 		HTTPClient: c.HTTP,
-		HTTPHeader: http.Header{"Origin": []string{c.BaseURL}},
+		HTTPHeader: header,
 	})
 	if err != nil {
 		if resp != nil {
-			return nil, fmt.Errorf("websocket handshake refused with status %d: %w", resp.StatusCode, err)
+			refusal := &HandshakeError{Status: resp.StatusCode, err: err}
+			var body struct {
+				Error struct {
+					Code string `json:"code"`
+				} `json:"error"`
+			}
+			if resp.Body != nil {
+				// Dial keeps the start of a refused handshake's body readable.
+				if data, readErr := io.ReadAll(resp.Body); readErr == nil && json.Unmarshal(data, &body) == nil {
+					refusal.Code = body.Error.Code
+				}
+			}
+			return nil, refusal
 		}
 		return nil, err
 	}

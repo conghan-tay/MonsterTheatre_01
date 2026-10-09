@@ -167,6 +167,8 @@ Every publish moves the performance into a new phase and increases the revision 
 | All eight turns are saved | `premiere` | Start time five seconds ahead and the ordered clip list | Countdown, then playback |
 | The run cannot continue | `failed` | A short reason | A failure message |
 
+Before Start there is one more phase, `waiting`, which is never published: with no performance there is no workflow to publish it. It appears only in the snapshot the server builds for a room that has not started, at revision 0, so the first published update is always newer.
+
 A normal run publishes three updates per turn and one for the premiere: revisions 1 to 25. Tagging, text to speech, and saving to the database publish nothing of their own; the browser stays in `preparing_line` until the next turn's `generating` arrives (or `premiere` after turn eight).
 
 ### Retries and timeouts
@@ -201,7 +203,7 @@ A possible later improvement: since nothing is played until the premiere, taggin
 | `POST /api/v1/audience-sessions` | Anyone with the share link | Takes the link's room ID and token. `201` and a cookie for a new session; `200` with `restored: true` for a browser that already has one; `403` for any invalid link; `409` when the room has ten. See [Audience session](audience-session.md) |
 | `GET /api/v1/rooms/{roomId}/portraits/{slot}` | Director or audience session | Portrait bytes, read from S3 by the server |
 | `GET /api/v1/performances/{id}/turns/{n}/audio` | Director or audience session | Turn recording as `audio/mpeg`, read from S3 by the server. Supports range requests. Available once the performance is completed |
-| `GET /api/v1/rooms/{roomId}/ws` | Director or audience session of that room | Upgrades to the WebSocket described below |
+| `GET /api/v1/rooms/{roomId}/ws` | Director or audience session of that room | Upgrades to the WebSocket described below. Refusals are ordinary JSON errors sent before the upgrade: `403` `origin_not_allowed` for a page on another origin, then the same `401`, `403`, and `404` as reading the room |
 
 Start is safe to retry: the unique room constraint stops a second row, and starting a workflow whose ID already exists is treated as success.
 
@@ -224,12 +226,22 @@ Server to browser:
 | `vote_received` | Confirms the server passed this browser's vote to the workflow |
 | `error` | A vote could not be delivered (for example, the performance has ended) |
 
+Every server message has the same envelope. A snapshot for a room that has not started:
+
+```json
+{"type": "snapshot", "revision": 0, "state": {"phase": "waiting", "turn": 0}}
+```
+
 Browser to server:
 
 | Message | Contents |
 | --- | --- |
 | `vote` | Turn number and choice ID. The voter (audience session or director) comes from the connection, never from the message |
 | `resync` | Asks for a fresh `snapshot`. Sent when the browser sees a gap in revision numbers |
+
+**Heartbeat.** The server pings each connection every 25 seconds and drops one that has not answered within 10. Browsers answer pings by themselves. This keeps a quiet connection alive through the load balancer's idle timeout and clears dead ones from the server's map.
+
+**Closing.** The server closes a connection with code `1001` when it shuts down, and with `1008` when a browser has fallen so far behind that its queue of unsent messages is full. In both cases the browser reconnects and gets a fresh snapshot.
 
 ## 6. Flows
 
@@ -314,7 +326,7 @@ Two delivery rules keep the premiere continuous and working across browsers:
 - **Share link.** `{PUBLIC_BASE_URL}/join/{roomId}/{token}`, where the token is an HMAC-SHA256 of the room ID under `SHARE_LINK_SECRET` (D034). Nothing is stored: the link is rebuilt whenever the director's page needs it and checked by recomputing. It is valid for the life of the room and grants an audience session for that room and nothing else. The server refuses to start without the secret, and changing the secret invalidates every existing link.
 - **Portraits.** The type is detected from the file's own bytes, not from what the uploader claims; animated images and anything over 4096 by 4096 pixels are refused. Portraits are served with `nosniff`.
 - **Ownership.** Every director operation checks that the room belongs to the logged-in director.
-- **WebSocket.** The handshake is authenticated by cookie, so the server also checks the `Origin` header and refuses connections from other sites.
+- **WebSocket.** The handshake is authenticated by cookie, so the server also checks the `Origin` header and refuses connections from other sites (D035). The header must be present and name either the web app's origin (`PUBLIC_BASE_URL`: scheme, host, and port) or the host and port the request itself was addressed to. The check runs before any session lookup.
 - **Login.** Passwords are stored with argon2id. Five failed attempts for a username within 15 minutes lock that username until the 15 minutes have passed, and the lock applies even to the correct password. The count is held in server memory. Accepted cost: someone who knows a director's username can lock that director out for 15 minutes.
 - **Cookie `Secure` flag.** On by default and controlled by `COOKIE_SECURE`. Local development and the test stack turn it off because they serve plain HTTP.
 - **Secrets.** Language-model and ElevenLabs keys are held only by the worker; the Temporal credentials by server and worker. Nothing is sent to browsers.

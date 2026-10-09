@@ -94,6 +94,22 @@ A room admits ten audience sessions and never frees a slot; the eleventh gets `4
 
 Share links are derived from `SHARE_LINK_SECRET`, not stored. `make dev` keeps a local secret in `.data/share-link-secret`; deleting that file invalidates every link made with it. `make server` on its own needs the variable set.
 
+## The room WebSocket
+
+`GET /api/v1/rooms/{roomId}/ws` upgrades to a WebSocket for the room's director or a member of its audience. Its first message is always a snapshot. Before the director starts the performance that is:
+
+```json
+{"type":"snapshot","revision":0,"state":{"phase":"waiting","turn":0}}
+```
+
+No page opens it yet. To try it, log in at http://localhost:3000, open a room, and run this in the browser console on that page:
+
+```js
+new WebSocket(`ws://${location.host}/api/v1/rooms/${location.pathname.split("/").pop()}/ws`).onmessage = (e) => console.log(e.data)
+```
+
+The handshake is accepted only from a page on `PUBLIC_BASE_URL` or on the server's own address; anything else, including a request with no `Origin` header, gets `403`. The server pings every 25 seconds and drops a connection that does not answer within 10.
+
 ## End-to-end tests
 
 ```sh

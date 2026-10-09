@@ -3,6 +3,7 @@ module github.com/conghan-tay/MonsterTheatre_01/server
 go 1.26.5
 
 require (
+	github.com/coder/websocket v1.8.15
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/pressly/goose/v3 v3.28.0

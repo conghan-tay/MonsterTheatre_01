@@ -33,10 +33,21 @@ type DirectorResolver interface {
 	Director(r *http.Request) (auth.Identity, bool, error)
 }
 
-// MemberResolver reports whether a request carries a live audience session
-// for a room. *audience.Service implements it.
+// MemberResolver finds the live audience session a request carries for a
+// room, if any. *audience.Service implements it.
 type MemberResolver interface {
-	IsMember(r *http.Request, roomID string) (bool, error)
+	MemberID(r *http.Request, roomID string) (sessionID string, ok bool, err error)
+}
+
+// Viewer is someone allowed to read a room: its director, or a member of its
+// audience.
+type Viewer struct {
+	Room Room
+	// AsDirector is true for the room's director.
+	AsDirector bool
+	// ID is the director's ID or the audience session's ID. It is the
+	// identity a vote is counted under.
+	ID string
 }
 
 // Service serves the room endpoints. Create and List are behind
@@ -247,56 +258,63 @@ func (s *Service) Portrait(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.Copy(w, obj.Body)
 }
 
-// readableRoom loads the room named in the path for someone allowed to read
-// it: its director (asDirector true) or a member of its audience. It writes
-// the error response itself when ok is false.
+// readableRoom is Authorize for handlers that only need the room.
+func (s *Service) readableRoom(w http.ResponseWriter, r *http.Request) (room Room, asDirector, ok bool) {
+	viewer, ok := s.Authorize(w, r)
+	return viewer.Room, viewer.AsDirector, ok
+}
+
+// Authorize loads the room named in the path for someone allowed to read it:
+// its director or a member of its audience. It writes the error response
+// itself when ok is false. The room's WebSocket uses it too, so the same
+// people can read a room and watch it.
 //
 // Someone with no credentials at all gets 401 whatever the room ID is, so the
 // endpoint does not reveal which rooms exist. A logged-in director asking for
 // another director's room gets 403.
-func (s *Service) readableRoom(w http.ResponseWriter, r *http.Request) (room Room, asDirector, ok bool) {
+func (s *Service) Authorize(w http.ResponseWriter, r *http.Request) (viewer Viewer, ok bool) {
 	director, isDirector, err := s.Directors.Director(r)
 	if err != nil {
 		s.internalError(w, "look up director", err)
-		return Room{}, false, false
+		return Viewer{}, false
 	}
 
 	id := r.PathValue("roomId")
 	validID := uuid.Validate(id) == nil
-	isMember := false
+	sessionID, isMember := "", false
 	if validID {
-		if isMember, err = s.Audience.IsMember(r, id); err != nil {
+		if sessionID, isMember, err = s.Audience.MemberID(r, id); err != nil {
 			s.internalError(w, "look up audience session", err)
-			return Room{}, false, false
+			return Viewer{}, false
 		}
 	}
 	if !isDirector && !isMember {
 		httpapi.WriteError(w, http.StatusUnauthorized, "not_logged_in", "Log in or enter the theatre to continue.")
-		return Room{}, false, false
+		return Viewer{}, false
 	}
 	if !validID {
 		httpapi.WriteError(w, http.StatusNotFound, "not_found", "No such room.")
-		return Room{}, false, false
+		return Viewer{}, false
 	}
 
-	room, err = s.Store.Get(r.Context(), id)
+	room, err := s.Store.Get(r.Context(), id)
 	if errors.Is(err, ErrNotFound) {
 		httpapi.WriteError(w, http.StatusNotFound, "not_found", "No such room.")
-		return Room{}, false, false
+		return Viewer{}, false
 	}
 	if err != nil {
 		s.internalError(w, "load room", err)
-		return Room{}, false, false
+		return Viewer{}, false
 	}
 
 	switch {
 	case isDirector && room.DirectorID == director.DirectorID:
-		return room, true, true
+		return Viewer{Room: room, AsDirector: true, ID: director.DirectorID}, true
 	case isMember:
-		return room, false, true
+		return Viewer{Room: room, ID: sessionID}, true
 	default:
 		httpapi.WriteError(w, http.StatusForbidden, "not_your_room", "This room belongs to another director.")
-		return Room{}, false, false
+		return Viewer{}, false
 	}
 }
 

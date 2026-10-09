@@ -152,10 +152,16 @@ func (s *Service) SessionFor(r *http.Request, roomID string) (Session, bool, err
 	return session, true, nil
 }
 
-// IsMember reports whether the request holds a live session for the room.
-func (s *Service) IsMember(r *http.Request, roomID string) (bool, error) {
-	_, ok, err := s.SessionFor(r, roomID)
-	return ok, err
+// MemberID returns the ID of the live session the request holds for the
+// room, if any.
+func (s *Service) MemberID(r *http.Request, roomID string) (string, bool, error) {
+	session, ok, err := s.SessionFor(r, roomID)
+	return session.ID, ok, err
+}
+
+// Seen records that a session's browser has just connected.
+func (s *Service) Seen(ctx context.Context, sessionID string) error {
+	return s.Store.Touch(ctx, sessionID, s.Now())
 }
 
 func (s *Service) internalError(w http.ResponseWriter, what string, err error) {

@@ -249,6 +249,8 @@ Makefile           dev, test, e2e, migrate
 
 ### Step 8 — WebSocket connection and waiting snapshot
 
+**Done 2026-10-09.** The pre-Start phase is named `waiting`. The origin rule is D035. Added beyond the list below: `Broadcast` on the connection map (unused until step 9, but it is what makes the map testable), closing every connection on server shutdown, and three browser tests showing the Next.js development proxy carries the WebSocket upgrade.
+
 **What to build**
 - `GET /api/v1/rooms/{roomId}/ws`: cookie authentication for director or audience, the `Origin` check, the in-memory map of room to connections, heartbeats, and the `snapshot` message for a room that has not started.
 

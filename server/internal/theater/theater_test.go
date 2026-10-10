@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -166,11 +167,17 @@ func (s *seenRecorder) Seen(_ context.Context, id string) error {
 
 // fakePerformances is the room's performance row, or none.
 type fakePerformances struct {
+	mu  sync.Mutex
 	row *performance.Performance
 	err error
+	// calls counts lookups.
+	calls int
 }
 
 func (f *fakePerformances) ByRoom(context.Context, string) (performance.Performance, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
 	if f.err != nil {
 		return performance.Performance{}, f.err
 	}
@@ -186,9 +193,12 @@ type fakeWorkflow struct {
 	snapshot performance.Snapshot
 	err      error
 	asked    func()
+	// askedBy records the voter each query was made for.
+	askedBy []string
 }
 
-func (f *fakeWorkflow) State(context.Context, string) (performance.Snapshot, error) {
+func (f *fakeWorkflow) State(_ context.Context, _, voterID string) (performance.Snapshot, error) {
+	f.askedBy = append(f.askedBy, voterID)
 	if f.asked != nil {
 		f.asked()
 	}
@@ -205,6 +215,8 @@ func served(t *testing.T, ping, pong time.Duration) (*Service, *seenRecorder, st
 		Audience:     seen,
 		Performances: &fakePerformances{},
 		Workflows:    &fakeWorkflow{err: errors.New("no performance is running")},
+		Votes:        &fakeVotes{},
+		Now:          func() time.Time { return testNow },
 		Hub:          NewHub(),
 		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 		PingInterval: ping,
@@ -560,4 +572,189 @@ func TestStreamReaderSkipsAMalformedEntry(t *testing.T) {
 
 	require.Eventually(t, func() bool { return len(hub.all()) == 1 }, time.Second, time.Millisecond)
 	require.Equal(t, []broadcast{{"room", 2, "good"}}, hub.all())
+}
+
+var testNow = time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+
+// fakeVotes records the votes passed to the workflow.
+type fakeVotes struct {
+	mu    sync.Mutex
+	err   error
+	votes []performance.Vote
+	// performances is the performance each vote was sent to.
+	performances []string
+}
+
+func (f *fakeVotes) Vote(_ context.Context, performanceID string, vote performance.Vote) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return f.err
+	}
+	f.votes = append(f.votes, vote)
+	f.performances = append(f.performances, performanceID)
+	return nil
+}
+
+func (f *fakeVotes) all() []performance.Vote {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]performance.Vote(nil), f.votes...)
+}
+
+// votingRoom is a served room whose performance is running, with one
+// browser connected and its snapshot read.
+func votingRoom(t *testing.T, ctx context.Context) (*Service, *fakeVotes, *websocket.Conn) {
+	t.Helper()
+	svc, _, url := served(t, 0, 0)
+	votes := &fakeVotes{}
+	svc.Votes = votes
+	svc.Performances = &fakePerformances{row: &performance.Performance{ID: "perf-1", RoomID: "room", Status: performance.StatusRunning}}
+	svc.Workflows = &fakeWorkflow{snapshot: performance.Snapshot{Revision: 2, State: performance.State{Phase: performance.PhaseVoting, Turn: 1}}}
+	ws := dial(t, ctx, url)
+	readMessage(t, ctx, ws)
+	return svc, votes, ws
+}
+
+// say sends a raw message and returns the reply, as generic JSON.
+func say(t *testing.T, ctx context.Context, ws *websocket.Conn, message string) map[string]any {
+	t.Helper()
+	require.NoError(t, ws.Write(ctx, websocket.MessageText, []byte(message)))
+	_, data, err := ws.Read(ctx)
+	require.NoError(t, err)
+	var reply map[string]any
+	require.NoError(t, json.Unmarshal(data, &reply), "reply: %s", data)
+	return reply
+}
+
+func TestAVoteIsStampedAndPassedOnAsTheConnectionsVoter(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, votes, ws := votingRoom(t, ctx)
+
+	// The message tries to vote as someone else, at a time of its choosing.
+	reply := say(t, ctx, ws, `{"type":"vote","turn":1,"choiceId":"c2","voterId":"director-1","receivedAt":"2020-01-01T00:00:00Z"}`)
+	require.Equal(t, map[string]any{"type": "vote_received", "turn": float64(1), "choiceId": "c2"}, reply)
+
+	require.Equal(t, []performance.Vote{
+		{VoterID: "session-1", Turn: 1, ChoiceID: "c2", ReceivedAt: testNow},
+	}, votes.all(), "the voter is the connection's and the stamp is the server's clock")
+	require.Equal(t, []string{"perf-1"}, votes.performances)
+}
+
+func TestTheSnapshotIsAskedForAsTheConnectionsVoter(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	svc, _, _ := votingRoom(t, ctx)
+	require.Equal(t, []string{"session-1"}, svc.Workflows.(*fakeWorkflow).askedBy)
+}
+
+func TestAConnectionPassesOnOneVotePerTurn(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, votes, ws := votingRoom(t, ctx)
+
+	say(t, ctx, ws, `{"type":"vote","turn":1,"choiceId":"c2"}`)
+	again := say(t, ctx, ws, `{"type":"vote","turn":1,"choiceId":"c3"}`)
+	require.Equal(t, map[string]any{"type": "vote_received", "turn": float64(1), "choiceId": "c2"}, again,
+		"the reply names the vote that was passed on, not the repeat")
+	next := say(t, ctx, ws, `{"type":"vote","turn":2,"choiceId":"c1"}`)
+	require.Equal(t, "c1", next["choiceId"])
+
+	passed := votes.all()
+	require.Len(t, passed, 2, "one signal per turn")
+	require.Equal(t, "c2", passed[0].ChoiceID)
+	require.Equal(t, 2, passed[1].Turn)
+}
+
+func TestMessagesThatAreNotVotes(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, votes, ws := votingRoom(t, ctx)
+
+	for name, message := range map[string]string{
+		"not JSON":           `vote for c1 please`,
+		"turn is not number": `{"type":"vote","turn":"one","choiceId":"c1"}`,
+		"turn zero":          `{"type":"vote","turn":0,"choiceId":"c1"}`,
+		"turn nine":          `{"type":"vote","turn":9,"choiceId":"c1"}`,
+		"no choice":          `{"type":"vote","turn":1}`,
+		"an enormous choice": `{"type":"vote","turn":1,"choiceId":"` + strings.Repeat("c", 100) + `"}`,
+	} {
+		reply := say(t, ctx, ws, message)
+		require.Equal(t, "error", reply["type"], name)
+		require.Equal(t, "invalid_message", reply["code"], name)
+		require.NotEmpty(t, reply["message"], name)
+	}
+	require.Empty(t, votes.all(), "nothing reached the workflow")
+
+	// A type this server does not know is ignored without a reply: the next
+	// reply to arrive is the vote's.
+	require.NoError(t, ws.Write(ctx, websocket.MessageText, []byte(`{"type":"resync"}`)))
+	reply := say(t, ctx, ws, `{"type":"vote","turn":1,"choiceId":"c1"}`)
+	require.Equal(t, "vote_received", reply["type"])
+}
+
+func TestAVoteThatCannotBeDeliveredIsReportedAndCanBeRetried(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, votes, ws := votingRoom(t, ctx)
+
+	votes.mu.Lock()
+	votes.err = errors.New("workflow execution already completed")
+	votes.mu.Unlock()
+	reply := say(t, ctx, ws, `{"type":"vote","turn":1,"choiceId":"c1"}`)
+	require.Equal(t, "error", reply["type"])
+	require.Equal(t, "vote_not_delivered", reply["code"])
+
+	// It was not recorded as passed on, so the same vote can be sent again.
+	votes.mu.Lock()
+	votes.err = nil
+	votes.mu.Unlock()
+	reply = say(t, ctx, ws, `{"type":"vote","turn":1,"choiceId":"c1"}`)
+	require.Equal(t, "vote_received", reply["type"])
+	require.Len(t, votes.all(), 1)
+}
+
+func TestAVoteBeforeStartIsNotDeliveredThenWorksOnceStarted(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	svc, _, url := served(t, 0, 0)
+	votes := svc.Votes.(*fakeVotes)
+	rows := svc.Performances.(*fakePerformances)
+
+	// Connected while the room is waiting, as most browsers are.
+	ws := dial(t, ctx, url)
+	readMessage(t, ctx, ws)
+	reply := say(t, ctx, ws, `{"type":"vote","turn":1,"choiceId":"c1"}`)
+	require.Equal(t, "vote_not_delivered", reply["code"])
+	require.Empty(t, votes.all())
+
+	// The director presses Start. The same connection can now vote.
+	rows.mu.Lock()
+	rows.row = &performance.Performance{ID: "perf-1", RoomID: "room", Status: performance.StatusRunning}
+	rows.mu.Unlock()
+	reply = say(t, ctx, ws, `{"type":"vote","turn":1,"choiceId":"c1"}`)
+	require.Equal(t, "vote_received", reply["type"])
+	require.Equal(t, []string{"perf-1"}, votes.performances)
+}
+
+func TestAConnectionLooksItsPerformanceUpOnce(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	svc, votes, ws := votingRoom(t, ctx)
+	rows := svc.Performances.(*fakePerformances)
+	rows.mu.Lock()
+	rows.calls = 0 // connecting read the row once, for the snapshot
+	rows.mu.Unlock()
+
+	for turn := 1; turn <= performance.Turns; turn++ {
+		reply := say(t, ctx, ws, fmt.Sprintf(`{"type":"vote","turn":%d,"choiceId":"c1"}`, turn))
+		require.Equal(t, "vote_received", reply["type"], "turn %d", turn)
+	}
+	require.Len(t, votes.all(), performance.Turns)
+
+	rows.mu.Lock()
+	defer rows.mu.Unlock()
+	require.Equal(t, 1, rows.calls,
+		"a vote is one call to Temporal and nothing else: the database is read for the first vote only")
 }

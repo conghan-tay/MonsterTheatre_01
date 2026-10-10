@@ -20,12 +20,21 @@ const (
 	TypeError        = "error"
 )
 
+// TypeVote is the message a browser sends to vote.
+const TypeVote = "vote"
+
 // Message is one WebSocket message from the server. Snapshots and updates
 // carry a revision and the state they describe.
 type Message struct {
 	Type     string `json:"type"`
 	Revision int    `json:"revision"`
 	State    State  `json:"state"`
+	// Turn and ChoiceID are set on vote_received: the vote the server passed on.
+	Turn     int    `json:"turn"`
+	ChoiceID string `json:"choiceId"`
+	// Code and Text are set on error.
+	Code string `json:"code"`
+	Text string `json:"message"`
 	// Raw is the whole message, for tests that need fields not modelled here.
 	Raw json.RawMessage `json:"-"`
 }
@@ -51,9 +60,12 @@ type State struct {
 	Beat          string    `json:"beat"`
 	Choices       []Choice  `json:"choices"`
 	Deadline      time.Time `json:"deadline"`
-	Winner        *Winner   `json:"winner"`
-	Lines         []Line    `json:"lines"`
-	Premiere      *Premiere `json:"premiere"`
+	// YourVote is the choice this browser's voter has made in the current
+	// turn. Only snapshots carry it.
+	YourVote string    `json:"yourVote"`
+	Winner   *Winner   `json:"winner"`
+	Lines    []Line    `json:"lines"`
+	Premiere *Premiere `json:"premiere"`
 }
 
 // Choice is one of a turn's three candidate lines.
@@ -93,6 +105,9 @@ type Clip struct {
 // Conn is one browser's WebSocket to the server.
 type Conn struct {
 	ws *websocket.Conn
+	// pending holds messages read while waiting for something else, in the
+	// order they arrived. Next returns these before reading more.
+	pending []Message
 }
 
 // HandshakeError is a WebSocket handshake the server answered with an
@@ -163,6 +178,15 @@ func (c *Client) ConnectFrom(ctx context.Context, path, origin string) (*Conn, e
 // Next reads the next message. If ctx ends first the connection is closed,
 // so a timeout here ends the test's use of this connection.
 func (c *Conn) Next(ctx context.Context) (Message, error) {
+	if len(c.pending) > 0 {
+		msg := c.pending[0]
+		c.pending = c.pending[1:]
+		return msg, nil
+	}
+	return c.read(ctx)
+}
+
+func (c *Conn) read(ctx context.Context) (Message, error) {
 	var msg Message
 	_, data, err := c.ws.Read(ctx)
 	if err != nil {
@@ -212,6 +236,32 @@ func (c *Conn) WaitForPhase(ctx context.Context, phase string, turn int) (Messag
 		if (msg.Type == TypeSnapshot || msg.Type == TypeUpdate) && msg.State.Phase == phase && msg.State.Turn == turn {
 			return msg, nil
 		}
+	}
+}
+
+// Vote is a click on one of the three choices. It returns the server's
+// reply.
+func (c *Conn) Vote(ctx context.Context, turn int, choiceID string) (Message, error) {
+	err := c.Send(ctx, map[string]any{"type": TypeVote, "turn": turn, "choiceId": choiceID})
+	if err != nil {
+		return Message{}, err
+	}
+	return c.Reply(ctx)
+}
+
+// Reply reads the server's answer to something this browser sent:
+// vote_received, or error. Snapshots and updates that arrive first are
+// kept, in order, for the next call to Next.
+func (c *Conn) Reply(ctx context.Context) (Message, error) {
+	for {
+		msg, err := c.read(ctx)
+		if err != nil {
+			return msg, fmt.Errorf("waiting for a reply: %w", err)
+		}
+		if msg.Type == TypeVoteReceived || msg.Type == TypeError {
+			return msg, nil
+		}
+		c.pending = append(c.pending, msg)
 	}
 }
 

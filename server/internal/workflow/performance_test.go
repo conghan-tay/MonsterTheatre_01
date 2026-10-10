@@ -217,7 +217,7 @@ func TestStateQueryAnswersWithTheCurrentRevision(t *testing.T) {
 	env, _ := newRun(t)
 
 	query := func() performance.Snapshot {
-		value, err := env.QueryWorkflow(performance.QueryState)
+		value, err := env.QueryWorkflow(performance.QueryState, "nobody")
 		require.NoError(t, err)
 		var snapshot performance.Snapshot
 		require.NoError(t, value.Get(&snapshot))
@@ -277,4 +277,171 @@ func TestTheRunFailsIfTheModelReturnsTheWrongNumberOfChoices(t *testing.T) {
 	env.ExecuteWorkflow(Performance, testInput)
 	require.True(t, env.IsWorkflowCompleted())
 	require.ErrorContains(t, env.GetWorkflowError(), "returned 2 choices")
+}
+
+// castAt sends a vote signal at a moment of workflow time, stamped as
+// received then unless the test says otherwise.
+func castAt(env *testsuite.TestWorkflowEnvironment, at time.Duration, voter string, turn int, choice string, stampOffset time.Duration) {
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(performance.SignalVote, performance.Vote{
+			VoterID: voter, Turn: turn, ChoiceID: choice, ReceivedAt: env.Now().Add(stampOffset),
+		})
+	}, at)
+}
+
+// winnerOf returns the winner published for a turn.
+func winnerOf(t *testing.T, rec *recorder, turn int) *performance.Winner {
+	t.Helper()
+	preparing := rec.publishes[3*turn-1].update.State
+	require.Equal(t, performance.PhasePreparingLine, preparing.Phase)
+	require.Equal(t, turn, preparing.Turn)
+	require.NotNil(t, preparing.Winner)
+	return preparing.Winner
+}
+
+// Turn n's round is open from (n-1) windows to n windows of workflow time,
+// because the mocked activities take no time.
+func during(turn int) time.Duration { return time.Duration(turn-1)*testWindow + testWindow/2 }
+
+func TestTheMostVotedChoiceWins(t *testing.T) {
+	env, rec := newRun(t)
+	castAt(env, during(1), "director-1", 1, "c3", 0)
+	castAt(env, during(1), "session-1", 1, "c3", 0)
+	castAt(env, during(1), "session-2", 1, "c1", 0)
+	// Turn 2: one vote is enough.
+	castAt(env, during(2), "session-2", 2, "c2", 0)
+
+	env.ExecuteWorkflow(Performance, testInput)
+	require.NoError(t, env.GetWorkflowError())
+
+	first := winnerOf(t, rec, 1)
+	require.Equal(t, "c3", first.ChoiceID)
+	require.Equal(t, "turn 1 three", first.Text)
+	require.Equal(t, map[string]int{"c1": 1, "c2": 0, "c3": 2}, first.Counts)
+	require.Equal(t, performance.DecidedByMajority, first.DecidedBy)
+
+	second := winnerOf(t, rec, 2)
+	require.Equal(t, "c2", second.ChoiceID)
+	require.Equal(t, map[string]int{"c1": 0, "c2": 1, "c3": 0}, second.Counts, "counts start again each turn")
+
+	require.Equal(t, performance.DecidedByNoVotes, winnerOf(t, rec, 3).DecidedBy)
+
+	// The script keeps the counts and how each turn was decided.
+	script := rec.completed[0].Script
+	require.Equal(t, map[string]int{"c1": 1, "c2": 0, "c3": 2}, script.Turns[0].Counts)
+	require.Equal(t, performance.DecidedByMajority, script.Turns[0].DecidedBy)
+	require.Equal(t, "c3", script.Turns[0].Winner.ID)
+	require.Equal(t, "[tag] turn 1 three", script.Turns[0].TaggedText)
+}
+
+func TestATieIsSettledBetweenTheTiedChoicesOnly(t *testing.T) {
+	env, rec := newRun(t)
+	for turn := 1; turn <= performance.Turns; turn++ {
+		castAt(env, during(turn), "session-1", turn, "c1", 0)
+		castAt(env, during(turn), "session-2", turn, "c3", 0)
+	}
+
+	env.ExecuteWorkflow(Performance, testInput)
+	require.NoError(t, env.GetWorkflowError())
+
+	for turn := 1; turn <= performance.Turns; turn++ {
+		winner := winnerOf(t, rec, turn)
+		require.Equal(t, performance.DecidedByTie, winner.DecidedBy)
+		require.Equal(t, map[string]int{"c1": 1, "c2": 0, "c3": 1}, winner.Counts)
+		require.Contains(t, []string{"c1", "c3"}, winner.ChoiceID, "turn %d: never the choice nobody voted for", turn)
+	}
+}
+
+func TestVotesThatDoNotCount(t *testing.T) {
+	env, rec := newRun(t)
+
+	// Turn 1. The first vote from each voter stands.
+	castAt(env, during(1), "session-1", 1, "c1", 0)
+	castAt(env, during(1)+time.Second, "session-1", 1, "c2", 0)
+	// A choice that was not offered; another turn's round; no voter.
+	castAt(env, during(1), "session-2", 1, "c9", 0)
+	castAt(env, during(1), "session-3", 5, "c2", 0)
+	castAt(env, during(1), "", 1, "c2", 0)
+	// Delivered while the round is open, but received by the server after
+	// its deadline, or before it opened.
+	castAt(env, during(1), "session-4", 1, "c2", testWindow)
+	castAt(env, during(1), "session-5", 1, "c2", -testWindow)
+	// A voter whose first vote did not count may still vote.
+	castAt(env, during(1)+2*time.Second, "session-2", 1, "c1", 0)
+
+	// Turn 2 is open now. A vote for turn 1 is too late, even though its
+	// stamp claims it was received in time.
+	castAt(env, during(2), "session-6", 1, "c2", -testWindow)
+
+	env.ExecuteWorkflow(Performance, testInput)
+	require.NoError(t, env.GetWorkflowError())
+
+	first := winnerOf(t, rec, 1)
+	require.Equal(t, map[string]int{"c1": 2, "c2": 0, "c3": 0}, first.Counts)
+	require.Equal(t, "c1", first.ChoiceID)
+
+	second := winnerOf(t, rec, 2)
+	require.Equal(t, map[string]int{"c1": 0, "c2": 0, "c3": 0}, second.Counts, "nothing leaks into the next round")
+	require.Equal(t, performance.DecidedByNoVotes, second.DecidedBy)
+}
+
+func TestAVoteAtTheDeadlineCountsAndOneJustAfterDoesNot(t *testing.T) {
+	env, rec := newRun(t)
+	// Both are delivered mid-round; only their stamps differ.
+	castAt(env, during(1), "session-1", 1, "c1", testWindow/2)
+	castAt(env, during(1), "session-2", 1, "c2", testWindow/2+time.Nanosecond)
+	// And at the other edge: the moment the round opened, and just before.
+	castAt(env, during(1), "session-3", 1, "c1", -testWindow/2)
+	castAt(env, during(1), "session-4", 1, "c3", -testWindow/2-time.Nanosecond)
+
+	env.ExecuteWorkflow(Performance, testInput)
+	require.NoError(t, env.GetWorkflowError())
+	require.Equal(t, map[string]int{"c1": 2, "c2": 0, "c3": 0}, winnerOf(t, rec, 1).Counts)
+}
+
+func TestTheQueryShowsAVoterOnlyTheirOwnVote(t *testing.T) {
+	env, _ := newRun(t)
+	query := func(voter string) performance.Snapshot {
+		value, err := env.QueryWorkflow(performance.QueryState, voter)
+		require.NoError(t, err)
+		var snapshot performance.Snapshot
+		require.NoError(t, value.Get(&snapshot))
+		return snapshot
+	}
+
+	castAt(env, during(1), "session-1", 1, "c2", 0)
+	castAt(env, during(1), "session-2", 1, "c3", 0)
+
+	var mine, theirs, nobodys, afterwards performance.Snapshot
+	env.RegisterDelayedCallback(func() {
+		mine, theirs, nobodys = query("session-1"), query("session-2"), query("session-9")
+	}, during(1)+time.Second)
+	env.RegisterDelayedCallback(func() { afterwards = query("session-1") }, during(2))
+
+	env.ExecuteWorkflow(Performance, testInput)
+	require.NoError(t, env.GetWorkflowError())
+
+	require.Equal(t, performance.PhaseVoting, mine.State.Phase)
+	require.Equal(t, "c2", mine.State.YourVote)
+	require.Equal(t, "c3", theirs.State.YourVote)
+	require.Empty(t, nobodys.State.YourVote)
+	require.Nil(t, mine.State.Winner, "no count is shown while the round is open")
+
+	// Apart from that one field, everyone is shown the same thing.
+	mine.State.YourVote, theirs.State.YourVote = "", ""
+	require.Equal(t, nobodys, mine)
+	require.Equal(t, nobodys, theirs)
+
+	require.Equal(t, 2, afterwards.State.Turn)
+	require.Empty(t, afterwards.State.YourVote, "a new turn starts with no vote")
+}
+
+func TestUpdatesNeverCarryAnyonesVote(t *testing.T) {
+	env, rec := newRun(t)
+	castAt(env, during(1), "session-1", 1, "c2", 0)
+	env.ExecuteWorkflow(Performance, testInput)
+	require.NoError(t, env.GetWorkflowError())
+	for _, p := range rec.publishes {
+		require.Empty(t, p.update.State.YourVote, "revision %d", p.update.Revision)
+	}
 }

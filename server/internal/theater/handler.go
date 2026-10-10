@@ -54,7 +54,13 @@ type PerformanceReader interface {
 // StateQuerier asks a running performance's workflow for its state.
 // *performance.Workflows implements it.
 type StateQuerier interface {
-	State(ctx context.Context, performanceID string) (performance.Snapshot, error)
+	State(ctx context.Context, performanceID, voterID string) (performance.Snapshot, error)
+}
+
+// VoteSignaller hands a vote to a performance's workflow.
+// *performance.Workflows implements it.
+type VoteSignaller interface {
+	Vote(ctx context.Context, performanceID string, vote performance.Vote) error
 }
 
 // Service serves the room WebSocket.
@@ -63,6 +69,7 @@ type Service struct {
 	Audience     SessionToucher
 	Performances PerformanceReader
 	Workflows    StateQuerier
+	Votes        VoteSignaller
 	Hub          *Hub
 	Origins      OriginPolicy
 	Logger       *slog.Logger
@@ -70,6 +77,8 @@ type Service struct {
 	// DefaultPongTimeout when zero.
 	PingInterval time.Duration
 	PongTimeout  time.Duration
+	// Now is the clock votes are stamped with.
+	Now func() time.Time
 }
 
 // ServeWS handles GET /api/v1/rooms/{roomId}/ws.
@@ -109,7 +118,8 @@ func (s *Service) ServeWS(w http.ResponseWriter, r *http.Request) {
 
 	var closeOnce sync.Once
 	c := &conn{
-		send: make(chan outbound, sendBuffer),
+		send:    make(chan outbound, sendBuffer),
+		replies: make(chan []byte),
 		close: func(code websocket.StatusCode, reason string) {
 			closeOnce.Do(func() { _ = ws.Close(code, reason) })
 		},
@@ -128,7 +138,7 @@ func (s *Service) ServeWS(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
-	revision, state, err := s.snapshot(ctx, roomID)
+	revision, state, err := s.snapshot(ctx, roomID, viewer.ID)
 	if err != nil {
 		// Most likely no worker is running to answer. The browser is told to
 		// come back; step 13 replaces this with the recovery rule.
@@ -143,12 +153,24 @@ func (s *Service) ServeWS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Reading is what notices the browser closing, and what lets pings be
-	// answered. Messages are ignored for now: votes arrive in step 10 and
-	// resync in step 13.
+	// answered. Each message is handled before the next is read, so one
+	// browser's votes reach the workflow in the order it sent them.
 	go func() {
 		defer cancel()
+		in := &inbox{service: s, roomID: roomID, voterID: viewer.ID, log: log}
 		for {
-			if _, _, err := ws.Read(ctx); err != nil {
+			_, data, err := ws.Read(ctx)
+			if err != nil {
+				return
+			}
+			reply := in.handle(ctx, data)
+			if reply == nil {
+				continue
+			}
+			// Handed to the write loop, which does all the writing.
+			select {
+			case c.replies <- reply:
+			case <-ctx.Done():
 				return
 			}
 		}
@@ -161,7 +183,10 @@ func (s *Service) ServeWS(w http.ResponseWriter, r *http.Request) {
 // from depends on the performance row (docs/system-design.md, section 6):
 // no row, the room is waiting; running, the workflow is asked; finished, the
 // row says how.
-func (s *Service) snapshot(ctx context.Context, roomID string) (int, performance.State, error) {
+//
+// voterID is who is asking, so a running performance can include their own
+// vote in the answer.
+func (s *Service) snapshot(ctx context.Context, roomID, voterID string) (int, performance.State, error) {
 	p, err := s.Performances.ByRoom(ctx, roomID)
 	if errors.Is(err, performance.ErrNotFound) {
 		return 0, performance.State{Phase: performance.PhaseWaiting}, nil
@@ -173,7 +198,7 @@ func (s *Service) snapshot(ctx context.Context, roomID string) (int, performance
 	case performance.StatusRunning:
 		ctx, cancel := context.WithTimeout(ctx, queryTimeout)
 		defer cancel()
-		snapshot, err := s.Workflows.State(ctx, p.ID)
+		snapshot, err := s.Workflows.State(ctx, p.ID, voterID)
 		return snapshot.Revision, snapshot.State, err
 	case performance.StatusCompleted:
 		// The script and clips are added to this snapshot in step 12.
@@ -183,7 +208,7 @@ func (s *Service) snapshot(ctx context.Context, roomID string) (int, performance
 	}
 }
 
-// writeLoop sends queued updates and pings until the connection ends. It is
+// writeLoop sends queued updates, replies, and pings until the connection ends. It is
 // the only writer of data messages, so they go out in the order queued.
 //
 // It drops any update at or below snapshotRevision: one that was queued
@@ -208,6 +233,10 @@ func (s *Service) writeLoop(ctx context.Context, ws *websocket.Conn, c *conn, sn
 				continue
 			}
 			if err := write(ctx, ws, update.data); err != nil {
+				return
+			}
+		case reply := <-c.replies:
+			if err := write(ctx, ws, reply); err != nil {
 				return
 			}
 		case <-ticker.C:

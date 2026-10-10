@@ -150,9 +150,11 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		Audience:     audienceService,
 		Performances: performances,
 		Workflows:    workflows,
+		Votes:        workflows,
 		Hub:          hub,
 		Origins:      origins,
 		Logger:       logger,
+		Now:          time.Now,
 	}
 	// Updates the worker publishes are read from Redis here and forwarded to
 	// each room's connections, from startup until the process stops.

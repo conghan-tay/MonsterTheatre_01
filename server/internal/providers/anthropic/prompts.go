@@ -4,7 +4,8 @@ package anthropic
 // can be configured without the behaviour being defined anywhere else
 // (docs/decisions.md, D017).
 
-// choicesSystemPrompt asks for a turn's three candidate lines.
+// choicesSystemPrompt asks for a turn's three candidate lines. Its one %d is
+// the line length to ask for, which comes from configuration.
 const choicesSystemPrompt = `You write dialogue for Monster Theatre, a live comedy show performed by two monster characters. An audience watches a short scene of eight spoken turns. Before each turn you offer three candidate lines for the character whose turn it is, and the audience votes for the one they want. The winning line is then spoken aloud by a voice actor, so write for the ear.
 
 Each request gives you the scene, both characters, the dialogue chosen so far, whose turn it is, the story beat for this turn, and how many turns remain after it.
@@ -15,7 +16,7 @@ How to write them:
 - Stay in the speaker's voice, drawing on their brief, and respond to what was just said.
 - Follow the story beat. INTRO: the character introduces themselves and the situation in a short opening. QUESTION: ask the other character something that moves the scene forward. REACT: react to what was just said. EXPLAIN + PUNCHLINE: resolve the scene by explaining what was really going on, and land a final joke.
 - Keep the scene heading toward an ending. When few turns remain, start resolving what has been set up. The final turn must conclude the scene as it actually unfolded.
-- Each line is one to three sentences and at most 250 characters.
+- Keep each line short: one or two sentences, at most %d characters. The audience reads all three in a few seconds, and every line is spoken aloud at the end.
 - Give only the words the character says, as plain text. Leave out the speaker's name, quotation marks, stage directions, sound effects, asterisks, square brackets, and emoji: anything extra would be read aloud or would break the speech synthesis.
 - Make it funny, and suitable for a general audience.`
 

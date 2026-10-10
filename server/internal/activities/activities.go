@@ -59,7 +59,9 @@ type Activities struct {
 	// ChoicesRetryWindow is how long choice generation is retried, in
 	// total, before the run fails.
 	ChoicesRetryWindow time.Duration
-	Now                func() time.Time
+	// LineLimit is the longest a generated line may be, in characters.
+	LineLimit int
+	Now       func() time.Time
 }
 
 // Character is a character as the workflow needs it.
@@ -139,7 +141,7 @@ func (a *Activities) GenerateChoices(ctx context.Context, in ChoicesInput) (Choi
 	if err != nil {
 		return ChoicesResult{}, activityError(err)
 	}
-	lines, err := providers.ValidateChoices(choices.Lines)
+	lines, err := providers.ValidateChoices(choices.Lines, a.LineLimit)
 	if err != nil {
 		return ChoicesResult{}, fmt.Errorf("turn %d: unusable choices: %w", in.Turn, err)
 	}

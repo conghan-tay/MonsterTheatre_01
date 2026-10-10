@@ -58,8 +58,11 @@ func newModel(t *testing.T, a *api) *Model {
 	}
 	srv := httptest.NewServer(a)
 	t.Cleanup(srv.Close)
-	return New("test-key", "", option.WithBaseURL(srv.URL))
+	return New("test-key", "", testTarget, option.WithBaseURL(srv.URL))
 }
+
+// testTarget is the line length the adapter under test asks for.
+const testTarget = 130
 
 var choicesRequest = providers.ChoicesRequest{
 	RoomID: "room-1", Turn: 3, Attempt: 1,
@@ -96,6 +99,9 @@ func TestGenerateChoicesAsksWithTheWholeSceneAndParsesThreeLines(t *testing.T) {
 
 	system := a.request["system"].([]any)[0].(map[string]any)["text"].(string)
 	require.Contains(t, system, "meaningfully different directions")
+	require.Contains(t, system, "at most 130 characters", "the length asked for is the one configured")
+	require.NotContains(t, system, "250")
+	require.NotContains(t, system, "%", "the template was filled in")
 
 	// The user message carries everything that changes from turn to turn.
 	messages := a.request["messages"].([]any)
@@ -189,8 +195,20 @@ func TestNewUsesTheConfiguredModel(t *testing.T) {
 	a := &api{t: t, status: http.StatusOK, response: message(`{"tagged":"x"}`, "end_turn")}
 	srv := httptest.NewServer(a)
 	defer srv.Close()
-	m := New("k", "claude-haiku-4-5", option.WithBaseURL(srv.URL))
+	m := New("k", "claude-haiku-4-5", 100, option.WithBaseURL(srv.URL))
 	_, err := m.EnhanceTags(context.Background(), providers.TagsRequest{Text: "x"})
 	require.NoError(t, err)
 	require.Equal(t, "claude-haiku-4-5", a.request["model"])
+}
+
+func TestTheLengthAskedForFollowsTheSetting(t *testing.T) {
+	a := &api{t: t, status: http.StatusOK, response: message(`{"line1":"a","line2":"b","line3":"c"}`, "end_turn")}
+	srv := httptest.NewServer(a)
+	defer srv.Close()
+	m := New("k", "", 250, option.WithBaseURL(srv.URL))
+	_, err := m.GenerateChoices(context.Background(), choicesRequest)
+	require.NoError(t, err)
+	system := a.request["system"].([]any)[0].(map[string]any)["text"].(string)
+	require.Contains(t, system, "at most 250 characters")
+	require.NotContains(t, system, "130")
 }

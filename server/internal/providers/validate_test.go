@@ -9,7 +9,8 @@ import (
 )
 
 func TestValidateChoices(t *testing.T) {
-	long := strings.Repeat("é", MaxLineLength) // characters, not bytes
+	const limit = 160
+	long := strings.Repeat("é", limit) // characters, not bytes
 	cases := []struct {
 		name  string
 		lines []string
@@ -30,7 +31,7 @@ func TestValidateChoices(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := ValidateChoices(tc.lines)
+			_, err := ValidateChoices(tc.lines, limit)
 			if tc.ok {
 				require.NoError(t, err)
 			} else {
@@ -39,7 +40,7 @@ func TestValidateChoices(t *testing.T) {
 		})
 	}
 
-	cleaned, err := ValidateChoices([]string{"  padded.  ", "b", "c"})
+	cleaned, err := ValidateChoices([]string{"  padded.  ", "b", "c"}, limit)
 	require.NoError(t, err)
 	require.Equal(t, []string{"padded.", "b", "c"}, cleaned, "lines come back trimmed")
 }
@@ -94,4 +95,41 @@ func TestPermanent(t *testing.T) {
 	} {
 		require.Equal(t, permanent, PermanentStatus(status), "status %d", status)
 	}
+}
+
+func TestValidateChoicesHoldsLinesToTheGivenLimit(t *testing.T) {
+	lines := []string{strings.Repeat("a", 100), "b", "c"}
+	_, err := ValidateChoices(lines, 100)
+	require.NoError(t, err, "exactly at the limit")
+	_, err = ValidateChoices(lines, 99)
+	require.Error(t, err, "one over")
+	_, err = ValidateChoices(lines, 300)
+	require.NoError(t, err, "the same line under a higher limit")
+}
+
+func TestLineLimit(t *testing.T) {
+	// The length to ask the model for is five sixths of the limit, rounded
+	// down to a ten, so an answer that runs a little long still passes.
+	for limit, target := range map[int]int{
+		DefaultLineLimit: 130,
+		HighestLineLimit: 250,
+		LowestLineLimit:  50,
+		120:              100,
+		200:              160,
+	} {
+		got, err := LineLimit(limit)
+		require.NoError(t, err, "limit %d", limit)
+		require.Equal(t, target, got, "limit %d", limit)
+		require.Less(t, got, limit)
+	}
+
+	// The setting has guard rails: a typo must not start a worker.
+	for _, bad := range []int{LowestLineLimit - 1, HighestLineLimit + 1, 0, -160, 20, 1600} {
+		_, err := LineLimit(bad)
+		require.Error(t, err, "limit %d", bad)
+	}
+
+	require.Equal(t, 160, DefaultLineLimit)
+	require.Equal(t, 60, LowestLineLimit)
+	require.Equal(t, 300, HighestLineLimit)
 }

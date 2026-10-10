@@ -3,7 +3,10 @@ package config
 
 import (
 	"os"
+	"strconv"
 	"time"
+
+	"github.com/conghan-tay/MonsterTheatre_01/server/internal/providers"
 )
 
 // Config holds the settings shared by the server, worker, and migrate commands.
@@ -52,6 +55,10 @@ type Config struct {
 	// ChoicesRetryWindow is how long choice generation is retried, in
 	// total, before the run fails. Zero is refused, like the two above.
 	ChoicesRetryWindow time.Duration
+	// MaxLineLength is the longest a generated line may be, in characters.
+	// Zero means the variable was set but is not a whole number; the worker
+	// refuses that, and any value outside the allowed range.
+	MaxLineLength int
 }
 
 // Load reads the configuration from the environment.
@@ -76,6 +83,7 @@ func Load() Config {
 		VoteWindow:         envDuration("VOTE_WINDOW", 10*time.Second),
 		PremiereCountdown:  envDuration("PREMIERE_COUNTDOWN", 5*time.Second),
 		ChoicesRetryWindow: envDuration("CHOICES_RETRY_WINDOW", 2*time.Minute),
+		MaxLineLength:      envInt("MAX_LINE_LENGTH", providers.DefaultLineLimit),
 		LLMModel:           os.Getenv("LLM_MODEL"),
 		TTSModel:           os.Getenv("TTS_MODEL"),
 	}
@@ -100,6 +108,20 @@ func envDuration(key string, fallback time.Duration) time.Duration {
 		return 0
 	}
 	return d
+}
+
+// envInt reads a whole number. A value that is not one gives zero, which the
+// caller must refuse.
+func envInt(key string, fallback int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 // envBool reads a boolean. Only "false" and "0" turn a setting off, so a

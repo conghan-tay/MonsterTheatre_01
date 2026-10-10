@@ -167,6 +167,7 @@ All optional, read by the worker:
 | `TTS_PROVIDER` | `fake` | `fake` or `elevenlabs` |
 | `TTS_MODEL` | `eleven_v4_turbo` | The ElevenLabs model, when `TTS_PROVIDER` is `elevenlabs` |
 | `CHOICES_RETRY_WINDOW` | `2m` | How long writing a turn's lines is retried before the run fails |
+| `MAX_LINE_LENGTH` | `160` | The longest a generated line may be, in characters. May be set from 60 to 300. About 13 characters are spoken per second, so 160 is roughly 12 seconds a line |
 | `FAKE_SCRIPT_DIR` | unset | A directory of `<roomId>.json` scripts for the stand-ins |
 
 ## End-to-end tests

@@ -27,23 +27,31 @@ const maxTokens = 16000
 type Model struct {
 	client sdk.Client
 	model  string
+	// choicesPrompt is the choices system prompt with the line length
+	// filled in.
+	choicesPrompt string
 }
 
 var _ providers.DialogueModel = (*Model)(nil)
 
 // New returns the adapter. model is the Claude model ID; empty means
-// DefaultModel. Extra options are for tests, which point it at a local
-// server.
+// DefaultModel. lineLength is how long a line the model is asked to write,
+// in characters (providers.LineLimit works it out from the configured
+// limit). Extra options are for tests, which point it at a local server.
 //
 // The SDK's own retries are turned off: every call here runs inside a
 // Temporal activity, and the workflow decides how often and how long to
 // retry (docs/system-design.md, section 4).
-func New(apiKey, model string, opts ...option.RequestOption) *Model {
+func New(apiKey, model string, lineLength int, opts ...option.RequestOption) *Model {
 	if model == "" {
 		model = DefaultModel
 	}
 	opts = append([]option.RequestOption{option.WithAPIKey(apiKey), option.WithMaxRetries(0)}, opts...)
-	return &Model{client: sdk.NewClient(opts...), model: model}
+	return &Model{
+		client:        sdk.NewClient(opts...),
+		model:         model,
+		choicesPrompt: fmt.Sprintf(choicesSystemPrompt, lineLength),
+	}
 }
 
 // choicesSchema makes the answer three named strings, so that the count is
@@ -75,7 +83,7 @@ func (m *Model) GenerateChoices(ctx context.Context, req providers.ChoicesReques
 		Line2 string `json:"line2"`
 		Line3 string `json:"line3"`
 	}
-	model, err := m.ask(ctx, choicesSystemPrompt, choicesMessage(req), choicesSchema, &answer)
+	model, err := m.ask(ctx, m.choicesPrompt, choicesMessage(req), choicesSchema, &answer)
 	if err != nil {
 		return providers.Choices{}, fmt.Errorf("generate choices: %w", err)
 	}

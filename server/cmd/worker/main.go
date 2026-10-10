@@ -83,6 +83,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		"tts_model", cfg.TTSModel,
 		"vote_window", cfg.VoteWindow.String(),
 		"choices_retry_window", cfg.ChoicesRetryWindow.String(),
+		"max_line_length", cfg.MaxLineLength,
 	)
 
 	<-ctx.Done()
@@ -106,7 +107,13 @@ func buildActivities(ctx context.Context, cfg config.Config) (*activities.Activi
 	if cfg.ChoicesRetryWindow <= 0 {
 		return nil, nil, errors.New(`CHOICES_RETRY_WINDOW must be a positive duration such as "2m"`)
 	}
-	dialogue, speech, err := buildProviders(cfg)
+	// Checked before any provider is built: the limit is enforced on what
+	// the model returns, and a little less is what the model is asked for.
+	lineLength, err := providers.LineLimit(cfg.MaxLineLength)
+	if err != nil {
+		return nil, nil, err
+	}
+	dialogue, speech, err := buildProviders(cfg, lineLength)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -135,6 +142,7 @@ func buildActivities(ctx context.Context, cfg config.Config) (*activities.Activi
 		VoteWindow:         cfg.VoteWindow,
 		PremiereCountdown:  cfg.PremiereCountdown,
 		ChoicesRetryWindow: cfg.ChoicesRetryWindow,
+		LineLimit:          cfg.MaxLineLength,
 		Now:                time.Now,
 	}
 	return acts, func() {
@@ -149,7 +157,9 @@ func buildActivities(ctx context.Context, cfg config.Config) (*activities.Activi
 // (docs/system-design.md, section 7), and they are never logged. Asking for
 // a real provider without its key stops the worker now, with the name of
 // what is missing, and not at the first turn of a performance.
-func buildProviders(cfg config.Config) (providers.DialogueModel, providers.Speech, error) {
+//
+// lineLength is how long a line the language model is asked to write.
+func buildProviders(cfg config.Config, lineLength int) (providers.DialogueModel, providers.Speech, error) {
 	scripts := fake.Scripts{Dir: cfg.FakeScriptDir}
 
 	var dialogue providers.DialogueModel
@@ -161,7 +171,7 @@ func buildProviders(cfg config.Config) (providers.DialogueModel, providers.Speec
 		if key == "" {
 			return nil, nil, errors.New("LLM_PROVIDER is anthropic but ANTHROPIC_API_KEY is not set")
 		}
-		dialogue = anthropic.New(key, cfg.LLMModel)
+		dialogue = anthropic.New(key, cfg.LLMModel, lineLength)
 	default:
 		return nil, nil, fmt.Errorf(`LLM_PROVIDER %q is not supported; use "fake" or "anthropic"`, cfg.LLMProvider)
 	}

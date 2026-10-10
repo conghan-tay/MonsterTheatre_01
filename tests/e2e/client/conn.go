@@ -66,6 +66,14 @@ type State struct {
 	Winner   *Winner   `json:"winner"`
 	Lines    []Line    `json:"lines"`
 	Premiere *Premiere `json:"premiere"`
+	// Failure is set in the failed phase: why the run could not continue.
+	Failure *Failure `json:"failure"`
+}
+
+// Failure is why a performance ended early.
+type Failure struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
 }
 
 // Choice is one of a turn's three candidate lines.

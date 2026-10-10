@@ -30,10 +30,16 @@ type Config struct {
 	// when it is created.
 	VoiceIDA string
 	VoiceIDB string
-	// LLMProvider and TTSProvider choose the worker's language model and
-	// speech service. Only "fake" exists until step 11.
+	// LLMProvider chooses the worker's language model: "fake" or
+	// "anthropic". TTSProvider chooses its speech service: "fake" or
+	// "elevenlabs". Both default to "fake", so nothing is spent unless a
+	// real provider is asked for.
 	LLMProvider string
 	TTSProvider string
+	// LLMModel and TTSModel name the model each real provider uses. Empty
+	// means that provider's own default.
+	LLMModel string
+	TTSModel string
 	// FakeScriptDir holds per-room scripts for the fake providers. Empty
 	// means every room gets the fakes' defaults.
 	FakeScriptDir string
@@ -43,29 +49,35 @@ type Config struct {
 	// refuses to start with that.
 	VoteWindow        time.Duration
 	PremiereCountdown time.Duration
+	// ChoicesRetryWindow is how long choice generation is retried, in
+	// total, before the run fails. Zero is refused, like the two above.
+	ChoicesRetryWindow time.Duration
 }
 
 // Load reads the configuration from the environment.
 func Load() Config {
 	return Config{
-		HTTPAddr:          env("HTTP_ADDR", ":8080"),
-		DatabaseURL:       env("DATABASE_URL", "postgres://monster:monster@localhost:5432/monstertheatre?sslmode=disable"),
-		RedisURL:          env("REDIS_URL", "redis://localhost:6379/0"),
-		TemporalAddress:   env("TEMPORAL_ADDRESS", "localhost:7233"),
-		TemporalNamespace: env("TEMPORAL_NAMESPACE", "default"),
-		TemporalTaskQueue: env("TEMPORAL_TASK_QUEUE", "performance"),
-		LogLevel:          env("LOG_LEVEL", "info"),
-		CookieSecure:      envBool("COOKIE_SECURE", true),
-		ShareLinkSecret:   os.Getenv("SHARE_LINK_SECRET"),
-		PublicBaseURL:     env("PUBLIC_BASE_URL", "http://localhost:3000"),
-		ObjectStoreDir:    env("OBJECT_STORE_DIR", ".data/objects"),
-		VoiceIDA:          env("VOICE_ID_A", "voice-a-placeholder"),
-		VoiceIDB:          env("VOICE_ID_B", "voice-b-placeholder"),
-		LLMProvider:       env("LLM_PROVIDER", "fake"),
-		TTSProvider:       env("TTS_PROVIDER", "fake"),
-		FakeScriptDir:     os.Getenv("FAKE_SCRIPT_DIR"),
-		VoteWindow:        envDuration("VOTE_WINDOW", 10*time.Second),
-		PremiereCountdown: envDuration("PREMIERE_COUNTDOWN", 5*time.Second),
+		HTTPAddr:           env("HTTP_ADDR", ":8080"),
+		DatabaseURL:        env("DATABASE_URL", "postgres://monster:monster@localhost:5432/monstertheatre?sslmode=disable"),
+		RedisURL:           env("REDIS_URL", "redis://localhost:6379/0"),
+		TemporalAddress:    env("TEMPORAL_ADDRESS", "localhost:7233"),
+		TemporalNamespace:  env("TEMPORAL_NAMESPACE", "default"),
+		TemporalTaskQueue:  env("TEMPORAL_TASK_QUEUE", "performance"),
+		LogLevel:           env("LOG_LEVEL", "info"),
+		CookieSecure:       envBool("COOKIE_SECURE", true),
+		ShareLinkSecret:    os.Getenv("SHARE_LINK_SECRET"),
+		PublicBaseURL:      env("PUBLIC_BASE_URL", "http://localhost:3000"),
+		ObjectStoreDir:     env("OBJECT_STORE_DIR", ".data/objects"),
+		VoiceIDA:           env("VOICE_ID_A", "voice-a-placeholder"),
+		VoiceIDB:           env("VOICE_ID_B", "voice-b-placeholder"),
+		LLMProvider:        env("LLM_PROVIDER", "fake"),
+		TTSProvider:        env("TTS_PROVIDER", "fake"),
+		FakeScriptDir:      os.Getenv("FAKE_SCRIPT_DIR"),
+		VoteWindow:         envDuration("VOTE_WINDOW", 10*time.Second),
+		PremiereCountdown:  envDuration("PREMIERE_COUNTDOWN", 5*time.Second),
+		ChoicesRetryWindow: envDuration("CHOICES_RETRY_WINDOW", 2*time.Minute),
+		LLMModel:           os.Getenv("LLM_MODEL"),
+		TTSModel:           os.Getenv("TTS_MODEL"),
 	}
 }
 

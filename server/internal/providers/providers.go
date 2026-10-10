@@ -1,9 +1,13 @@
 // Package providers defines the external services the performance workflow
-// calls: a language model for dialogue and a speech service. Real
-// implementations are added in step 11; fakes live in the fake subpackage.
+// calls: a language model for dialogue and a speech service. The anthropic
+// and elevenlabs subpackages are the real ones; fake holds scripted
+// stand-ins for tests and for running without API keys.
 package providers
 
-import "context"
+import (
+	"context"
+	"errors"
+)
 
 // Scene is the room's immutable scene context.
 type Scene struct {
@@ -48,7 +52,11 @@ type TagsRequest struct {
 	Turn    int
 	Attempt int
 	Speaker string
-	Text    string
+	// Character is who says the line, and Beat the turn's story beat, so
+	// the delivery can suit them.
+	Character Character
+	Beat      string
+	Text      string
 }
 
 // SpeechRequest asks for one line to be spoken in one voice.
@@ -60,13 +68,61 @@ type SpeechRequest struct {
 	Text    string
 }
 
+// Choices is a turn's candidate lines and the model that wrote them.
+type Choices struct {
+	Lines []string
+	// Model is the identifier of the model that answered, recorded in the
+	// final script so a saved performance stays interpretable after the
+	// configured model changes (docs/decisions.md, D017).
+	Model string
+}
+
+// Tagged is a line with audio tags added, and the model that added them.
+type Tagged struct {
+	Text  string
+	Model string
+}
+
 // DialogueModel generates dialogue choices and enhances the winner.
+//
+// Implementations return what the model said. Checking it (three distinct
+// lines, words preserved) is done by the caller with ValidateChoices and
+// ValidateTagged, so the same rules hold for every model.
 type DialogueModel interface {
-	GenerateChoices(ctx context.Context, req ChoicesRequest) ([]string, error)
-	EnhanceTags(ctx context.Context, req TagsRequest) (string, error)
+	GenerateChoices(ctx context.Context, req ChoicesRequest) (Choices, error)
+	EnhanceTags(ctx context.Context, req TagsRequest) (Tagged, error)
 }
 
 // Speech turns a tagged line into MP3 audio.
 type Speech interface {
 	Synthesize(ctx context.Context, req SpeechRequest) ([]byte, error)
+}
+
+// permanentError marks a failure that trying again cannot fix.
+type permanentError struct{ err error }
+
+func (e *permanentError) Error() string { return e.err.Error() }
+func (e *permanentError) Unwrap() error { return e.err }
+
+// Permanent marks err as not worth retrying: a wrong API key, a request the
+// provider rejects as malformed, an unknown voice. Other errors (timeouts,
+// rate limits, server errors, an answer that fails validation) are retried.
+func Permanent(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &permanentError{err: err}
+}
+
+// IsPermanent reports whether err was marked with Permanent.
+func IsPermanent(err error) bool {
+	var p *permanentError
+	return errors.As(err, &p)
+}
+
+// PermanentStatus reports whether an HTTP status from a provider means the
+// request itself is wrong, so sending it again would fail the same way.
+// 408 and 429 are the client-error codes that are worth retrying.
+func PermanentStatus(status int) bool {
+	return status >= 400 && status < 500 && status != 408 && status != 429
 }

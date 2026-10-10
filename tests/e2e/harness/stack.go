@@ -156,12 +156,15 @@ func StartWith(ctx context.Context, opts Options) (stack *Stack, err error) {
 		"PUBLIC_BASE_URL":   opts.PublicBaseURL,
 		// Settings below are read by later steps; they are set from the
 		// start so the test stack never reaches a paid provider.
-		"LLM_PROVIDER":       "fake",
-		"TTS_PROVIDER":       "fake",
-		"FAKE_SCRIPT_DIR":    s.ScriptDir,
-		"OBJECT_STORE_DIR":   filepath.Join(workDir, "objects"),
-		"VOTE_WINDOW":        "2s",
-		"PREMIERE_COUNTDOWN": "1s",
+		"LLM_PROVIDER":     "fake",
+		"TTS_PROVIDER":     "fake",
+		"FAKE_SCRIPT_DIR":  s.ScriptDir,
+		"OBJECT_STORE_DIR": filepath.Join(workDir, "objects"),
+		"VOTE_WINDOW":      "2s",
+		// How long choice generation is retried before the run fails. Short,
+		// so the test of that failure takes seconds and not minutes.
+		"CHOICES_RETRY_WINDOW": "4s",
+		"PREMIERE_COUNTDOWN":   "1s",
 	})
 
 	if err := s.build(ctx); err != nil {
@@ -219,6 +222,8 @@ type PerformanceRow struct {
 	// Script and AudioKeys are the stored JSON, empty until the run completes.
 	Script    []byte
 	AudioKeys []byte
+	// FailureReason is set on a failed run.
+	FailureReason string
 }
 
 // PerformanceRow reads a room's performance straight from the database, for
@@ -230,8 +235,8 @@ func (s *Stack) PerformanceRow(ctx context.Context, roomID string) (row Performa
 	}
 	defer conn.Close(ctx)
 	err = conn.QueryRow(ctx,
-		"SELECT id::text, status, script::text, audio_keys::text FROM performances WHERE room_id = $1", roomID,
-	).Scan(&row.ID, &row.Status, &row.Script, &row.AudioKeys)
+		"SELECT id::text, status, script::text, audio_keys::text, coalesce(failure_reason, '') FROM performances WHERE room_id = $1", roomID,
+	).Scan(&row.ID, &row.Status, &row.Script, &row.AudioKeys, &row.FailureReason)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return row, false, nil
 	}

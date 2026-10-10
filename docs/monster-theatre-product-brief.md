@@ -93,7 +93,7 @@ Voting defaults:
 - Randomly resolve ties; randomly select a choice when there are no votes. The selection is made once and cannot be re-rolled by recovery.
 - Anonymous audience sessions are sufficient for the demo. Reconnection reuses the same identity; strong prevention of multiple identities is deferred.
 - Late joiners see the current phase and can vote in any round that is still open.
-- AI choice generation uses bounded retries and a simple valid fallback. Generation time does not consume the voting window.
+- AI choice generation is retried for a bounded time. If it still fails, the performance fails visibly; the audience is never offered stand-in lines the AI did not write. Generation time does not consume the voting window.
 
 ### 3. Premiere and replay
 

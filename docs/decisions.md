@@ -33,6 +33,7 @@ The log below is kept in full, including entries that were later replaced. These
 | D035 | The WebSocket accepts only the web app's origin or the server's own address |
 | D036 | Every update carries the whole state, not a change |
 | D037 | The premiere's clip list carries each clip's URL |
+| D038 | Choice generation has no stand-in lines: retry for a window, then fail the run |
 
 Superseded or withdrawn: D002, D004, D006, D010, D011, D012, D014, D016, D019, D020, D021, and the data-lake half of D003.
 
@@ -315,6 +316,8 @@ Flink's output is the per-choice counts for a round, keyed by round and closure 
 **Alternatives considered:** Hardcoding one provider/model, which makes comparison awkward and buries a swap in application code. An agent framework or separate Python service, already rejected in the system design as unjustified for two stateless calls.
 
 **Tradeoffs and consequences:** A configurable model means dialogue quality, latency, and token cost vary by configuration and are not fixed properties of the design; the bounded retry and valid-fallback rules must hold for any configured model. Prompt portability across providers is not guaranteed and is a tuning concern, not a design one. No specific latency target is set for either call at this stage.
+
+**Amended 2026-10-10 ([D038](#d038--no-stand-in-lines-for-choice-generation)):** the "valid-fallback rule" mentioned below no longer exists for choice generation. What must hold for any configured model is the validation of its answers and the bounded retry. The first provider is Anthropic, with `claude-sonnet-5-5` as the default model (`LLM_MODEL`); both prompts are in `server/internal/providers/anthropic/prompts.go`. The model recorded per turn is the one that wrote that turn's choices.
 
 **Status:** accepted — explicit user answer on 2026-10-04 that the model should be config-selectable; provider shortlist and prompts remain open.
 
@@ -697,3 +700,19 @@ This algorithm was run through the spike's three scenarios and was correct in ev
 **Tradeoffs and consequences:** Worker code now produces a server route, held together by the shared function and its test. The URL is recorded in workflow history and in the Redis stream; a run lasts minutes, so a route change mid-run is not a concern. Turn and speaker appear in both `clips` and `lines`, accepted for a self-contained clip. The URLs are published from step 9 but answer `404` until step 12 builds the endpoint. They are not storage URLs: the bucket stays private and the server serves the audio.
 
 **Status:** accepted — explicit user choice on 2026-10-09.
+
+## D038 — No stand-in lines for choice generation
+
+**Decision:** If the language model cannot produce a turn's three lines, the workflow keeps retrying for a bounded time (two minutes by default) and then fails the performance. It never substitutes lines of its own.
+
+**Context / requirement:** The product brief said choice generation "uses bounded retries and a simple valid fallback", and D017, the system design, and the implementation plan repeated it as "falls back to valid lines". Before step 11 the user asked what those lines would be. Nothing had defined them. The only reading was canned text held in the worker, "valid" only in passing the format checks.
+
+**Chosen approach:** Choice generation is retried with growing pauses (1, 2, 4, 8, then every 15 seconds) until `CHOICES_RETRY_WINDOW` has passed since the first attempt. Browsers stay on the "writing the next lines" state throughout. If the window runs out, the run takes the same failure path as a speech failure: the row is marked `failed` with reason `choices_failed`, and browsers are told. An error that retrying cannot fix, such as a rejected API key, fails the run at once. An answer that fails validation counts as a failed attempt. Tagging keeps its fallback, because there the fallback is the real line spoken plainly.
+
+**Why it fits:** Canned lines know nothing of the scene, the characters, or what has been said. The audience would vote on filler; the winning filler would enter the dialogue history sent to the model for every later turn; and it would be voiced and played at the premiere as part of the show. A language-model outage is usually either brief, which a longer retry absorbs, or prolonged, in which case tagging would be failing too and the show is not worth finishing. Failing is also honest: the brief already requires that an unrecoverable failure be shown and not passed off as a completed performance.
+
+**Alternatives considered:** The canned fallback as written: the run always finishes, but with a visibly broken turn in the recording. Failing after the original three attempts: simple, but a few seconds of trouble would end a performance, and D007 gives the director no way to retry. A template filled with the character's name: still filler.
+
+**Tradeoffs and consequences:** A long outage ends the performance, two minutes later than it would have with three attempts, and the room cannot be run again (D005). The audience may wait up to two minutes on one turn. The brief's sentence and the S9 test were reworded; the failure path gained a second way in.
+
+**Status:** accepted — explicit user choice on 2026-10-10.

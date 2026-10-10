@@ -73,7 +73,7 @@ Note: `.gitignore` excludes `*.mp3` and `*.wav`, so audio fixtures are generated
 | S6 | A second Start returns the same performance and does not create another | 9 |
 | S7 | A second vote from the same voter, a vote for an unknown choice, and a vote after the window closes are all ignored | 10 |
 | S8 | Speech failing past its retry limit ends the run as `failed`, and browsers are told | 11 |
-| S9 | Choice generation failing past its limit falls back to valid lines; tagging failing falls back to the untagged line; the run still completes | 11 |
+| S9 | Choice generation that fails briefly is retried and the run completes; failing past its retry window it ends the run as `failed` (D038); tagging failing falls back to the untagged line and the run still completes | 11 |
 | S10 | Audio is not served before the performance completes, or to someone outside the room | 12 |
 | S11 | A browser connecting while the worker is down is told the performance is recovering, then succeeds once the worker returns | 13 |
 | S12 | A browser that misses an update sends `resync` and receives a fresh snapshot | 13 |
@@ -109,7 +109,7 @@ Versions were checked against the Go module proxy, the npm registry, and Docker 
 | `github.com/aws/aws-sdk-go-v2/config` | v1.33.7 | AWS credential and region loading |
 | `github.com/aws/aws-sdk-go-v2/service/s3` | v1.114.1 | S3 implementation of the object store |
 | `golang.org/x/crypto` | v0.57.0 | Password hashing (argon2id) |
-| `github.com/anthropics/anthropic-sdk-go` | v1.79.0 | First real implementation of the language-model adapter |
+| `github.com/anthropics/anthropic-sdk-go` | v1.80.0 | First real implementation of the language-model adapter |
 | `github.com/stretchr/testify` | v1.12.1 | Test assertions; also used by the Temporal test suite |
 
 Deliberately not added: a web framework (the standard library router is enough), an ORM (plain SQL through pgx), and an ElevenLabs SDK (one HTTP request through the standard library).
@@ -288,6 +288,8 @@ Makefile           dev, test, e2e, migrate
 - Unit tests cover majority, tie, and empty rounds.
 
 ### Step 11 — Real providers, fallbacks, and failure
+
+**Done 2026-10-10, except the manual run with real providers**, which is waiting on a working Anthropic API key (the first attempt got `401 invalid x-api-key`). One rule changed: choice generation has no canned fallback; it is retried for a retry window and then the run fails (D038). So "the two fallbacks" below became one, for tagging. The default model is `claude-sonnet-5-5`. Added beyond the list: a `failure_reason` column, and `tagsApplied` in the script.
 
 **What to build**
 - The language-model adapter interface with the Anthropic implementation: prompts for choice generation and tag enhancement, validation of three distinct bounded lines, and the check that tagging preserved the words.

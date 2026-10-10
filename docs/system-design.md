@@ -90,9 +90,9 @@ For prototyping, everything runs locally: the Temporal dev server, Redis, and Po
 | `director_sessions` | Session ID, director, credential hash, expiry. Same pattern as audience sessions | At login |
 | `rooms` | Owner (director ID), scene topic/description/genre, character A and B (name, brief, voice ID, portrait key), and `audience_count`. Nothing about the share link is stored (D034) | Once, at creation; `audience_count` goes up by one per new audience session |
 | `audience_sessions` | Session ID, room, credential hash, timestamps. See [Audience session](audience-session.md) | When someone enters; `last_seen_at` on reconnect |
-| `performances` | Performance ID, room (unique, so one per room), status (`running`, `completed`, `failed`), and on completion the final script and the eight audio keys, each a `jsonb` column (Aurora DSQL has no stored array type) | A row at Start; one update at the end |
+| `performances` | Performance ID, room (unique, so one per room), status (`running`, `completed`, `failed`), the failure reason on a failed run, and on completion the final script and the eight audio keys, each a `jsonb` column (Aurora DSQL has no stored array type) | A row at Start; one update at the end |
 
-The final script is one JSON document: for each turn the speaker, beat, three choices, vote counts, winner, how it was decided (majority, tie, no votes), the tagged text, and the model used.
+The final script is one JSON document: for each turn the speaker, beat, three choices, vote counts, winner, how it was decided (majority, tie, no votes), the tagged text, whether tags were applied (false when tagging failed and the plain line was spoken), and the model that wrote the choices.
 
 There are no snapshot, event, or vote tables. While a performance is running, its state exists only in the workflow.
 
@@ -150,8 +150,9 @@ Notes on each part:
 - **Collecting votes.** A vote arrives as a signal carrying a voter ID (an audience session ID or the director's ID), turn number, and choice ID. The signal also carries the time the server received the vote. The workflow records the first vote from each voter for the current turn and ignores repeats, unknown choices, wrong turn numbers, and late votes.
 - **Deciding lateness.** A vote is in time if the server's receipt time is at or before the deadline, and not before the round opened. (Choice IDs are the same every turn, so without the second half a vote sent before the choices were shown would count.) The workflow does not rely on whether it saw the vote before or after the timer: the step 2 spike showed that after a worker outage those arrive together and their order is lost (D033). When the timer is delivered, the workflow first handles every vote still buffered, then closes the round. A vote that reaches the workflow after the round has closed is ignored whatever its stamp says.
 - **Picking the winner.** Done in workflow code: most votes wins; a tie or an empty round is settled with Temporal's replay-safe random source, so a replay after a crash reaches the same answer.
-- **Fallbacks.** Choice generation retries, then falls back to simple valid lines. Tag enhancement retries, then falls back to the untagged line. Text to speech retries; if it still fails the run fails.
-- **Failure.** If the workflow cannot continue, it runs one last activity to mark the performance row `failed` and publishes a `failed` update. A workflow run timeout bounds a run that hangs.
+- **When a provider fails.** Choice generation is retried with growing pauses for a whole retry window (two minutes by default), which rides out a brief outage; if the window runs out, the run fails. There is no stand-in for lines the model did not write (D038). Tag enhancement retries, then falls back to the untagged line, which is still the real line. Text to speech retries; if it still fails the run fails. An error that retrying cannot fix, such as a rejected API key, stops at once.
+- **Checking what the model returns.** Whichever model is configured, its answers are checked before they are used. Choices must be exactly three, each non-empty, at most 300 characters, on one line, without square brackets, and all different. A tagged line, with its square-bracket tags removed, must be the original line word for word. An answer that fails its check is a failed attempt, retried like any other.
+- **Failure.** If the workflow cannot continue, it runs one last activity to mark the performance row `failed` with the reason, then publishes a `failed` update carrying that reason, and ends as a failed workflow so the operator sees it in Temporal. The row is marked first, so a browser told of the failure finds the row agreeing. Reasons: `choices_failed`, `speech_failed`, and `internal_error` for anything else. A workflow run timeout bounds a run that hangs; a run ended that way cannot mark its own row, which the connect-time rule in section 6 handles.
 - **A failed publish does not stop the run.** Publishing retries briefly and then the workflow carries on. A browser that receives an update whose revision skips a number knows it missed one and asks for a fresh snapshot.
 - **Query handler.** The workflow answers a `state` query with its current turn, phase, choices, deadline, votes, winners so far, and revision. The answer has the same shape as a published update's state, so the server passes it on as the snapshot unchanged.
 - **Settings.** The vote window and the premiere countdown are the worker's settings (`VOTE_WINDOW`, `PREMIERE_COUNTDOWN`). The first activity returns them with the room context, so the values a run used are recorded in its history and a replay sees the same ones.
@@ -166,7 +167,7 @@ Every publish moves the performance into a new phase and increases the revision 
 | Three choices are ready | `voting` | The choices and the deadline | The three choices and a countdown |
 | The timer has fired and the winner is picked | `preparing_line` | The winner, vote counts, and how it was decided | The winning line while it is tagged and voiced |
 | All eight turns are saved | `premiere` | Start time five seconds ahead and the ordered clip list, each clip with its URL | Countdown, then playback |
-| The run cannot continue | `failed` | A short reason | A failure message |
+| The run cannot continue | `failed` | `failure`: a reason code and a sentence for the audience | A failure message |
 
 Before Start there is one more phase, `waiting`, which is never published: with no performance there is no workflow to publish it. It appears only in the snapshot the server builds for a room that has not started, at revision 0, so the first published update is always newer.
 
@@ -178,7 +179,7 @@ Proposed starting values, to tune while building:
 
 | Activity | Timeout per attempt | Attempts | Then |
 | --- | --- | --- | --- |
-| Generate choices | 30 s | 3 | Fallback lines |
+| Generate choices | 30 s | As many as fit in the retry window (`CHOICES_RETRY_WINDOW`, default 2 min), pausing 1 s, 2 s, 4 s, 8 s, then 15 s between them | Run fails |
 | Enhance tags | 20 s | 2 | Untagged line |
 | Text to speech | 60 s | 3 | Run fails |
 | Publish update | 5 s | 3 | Continue without it |
@@ -261,6 +262,7 @@ The state of a running performance. A field is absent in the phases that do not 
 | `yourVote` | Snapshots only, in `voting` and `preparing_line` | The choice ID this browser's voter has made in the current turn. Absent if they have not voted. Never in an update, which every browser in the room receives alike |
 | `lines` | From the first winner on | The winning lines so far, in order |
 | `premiere` | `premiere` | `startsAt` and the ordered `clips`. Each clip is `{turn, speaker, url}`, where `url` is a path on the server such as `/api/v1/performances/{id}/turns/1/audio` (D037) |
+| `failure` | `failed` | `{code, message}`. `code` is `choices_failed`, `speech_failed`, or `internal_error`; `message` is a sentence for the audience |
 
 The winning line with its audio tags is not sent to browsers. It goes to the speech service and into the final script.
 

@@ -289,7 +289,7 @@ Makefile           dev, test, e2e, migrate
 
 ### Step 11 — Real providers, fallbacks, and failure
 
-**Done 2026-10-10, except the manual run with real providers**, which is waiting on a working Anthropic API key (the first attempt got `401 invalid x-api-key`). One rule changed: choice generation has no canned fallback; it is retried for a retry window and then the run fails (D038). So "the two fallbacks" below became one, for tagging. The default model is `claude-sonnet-5-5`. Added beyond the list: a `failure_reason` column, and `tagsApplied` in the script.
+**Done 2026-10-10.** The manual run with real providers completed on the third attempt, after two rejected API keys: eight turns, every line tagged with its words unchanged, eight MP3 recordings of 11 to 17 seconds; listening to them is the user's check. One rule changed: choice generation has no canned fallback; it is retried for a retry window and then the run fails (D038). So "the two fallbacks" below became one, for tagging. The default model is `claude-sonnet-5-5`. Added beyond the list: a `failure_reason` column, and `tagsApplied` in the script.
 
 **What to build**
 - The language-model adapter interface with the Anthropic implementation: prompts for choice generation and tag enhancement, validation of three distinct bounded lines, and the check that tagging preserved the words.

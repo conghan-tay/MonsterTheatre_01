@@ -242,10 +242,24 @@ func TestPerformanceRunsEightTurnsWithoutVotes(t *testing.T) {
 		require.Equal(t, "fake", turn.Model)
 	}
 
-	// Step 10: the voting is over, and a vote now is refused.
-	reply, err := directorConn.Vote(ctx, turns, "c1")
-	require.NoError(t, err)
-	require.Equal(t, client.TypeError, reply.Type, "reply: %s", reply.Raw)
+	// Step 10: once the run has closed, a vote is refused. The workflow
+	// stays open for a moment after its last update, and a vote sent in that
+	// moment is accepted and ignored, so this waits for the refusal. Each
+	// try uses a new connection, because a connection passes on only one
+	// vote per turn and would answer a second try itself.
+	var reply client.Message
+	require.Eventually(t, func() bool {
+		conn, err := director.ConnectRoom(ctx, room.RoomID)
+		if err != nil {
+			return false
+		}
+		defer conn.Close()
+		if _, err := conn.Snapshot(ctx); err != nil {
+			return false
+		}
+		reply, err = conn.Vote(ctx, turns, "c1")
+		return err == nil && reply.Type == client.TypeError
+	}, 5*time.Second, 100*time.Millisecond, "a vote after the run has closed is refused; last reply: %s", reply.Raw)
 	require.Equal(t, "vote_not_delivered", reply.Code, "reply: %s", reply.Raw)
 
 	var audioKeys []string

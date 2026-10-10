@@ -322,7 +322,7 @@ Built so far (step 9): the first and third branches of the diagram, and the seco
 ### Voting
 
 1. The browser sends `vote` on its WebSocket.
-2. The server notes the time, reads the performance row (no row or a finished run gets `error`), signals the workflow with the voter ID, turn, choice, and that receipt time, then replies `vote_received`. A connection passes on one vote per turn: a repeat on the same connection is answered with the vote already passed on and is not signalled again, so a stuck or hostile browser cannot fill the workflow's history.
+2. The server notes the time, signals the workflow with the voter ID, turn, choice, and that receipt time, then replies `vote_received`. The room's performance is looked up in the database once per connection, when a vote first needs it; after that a vote is one call to Temporal. A room with no performance yet, or a signal Temporal refuses because the workflow has finished, gets `error`. A vote sent between rounds, or in the moment after the last update while the workflow is still closing, is acknowledged and then ignored by the workflow. A connection passes on one vote per turn: a repeat on the same connection is answered with the vote already passed on and is not signalled again, so a stuck or hostile browser cannot fill the workflow's history.
 3. The workflow keeps the vote if it is for the current turn and one of its three choices, is that voter's first for the turn, was received between the round's opening and its deadline, and the round has not yet closed. Anything else is dropped silently.
 4. When the timer fires, the workflow picks the winner and publishes it. Every browser receives the winner and the counts.
 

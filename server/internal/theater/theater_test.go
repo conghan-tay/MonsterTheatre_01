@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -169,11 +170,14 @@ type fakePerformances struct {
 	mu  sync.Mutex
 	row *performance.Performance
 	err error
+	// calls counts lookups.
+	calls int
 }
 
 func (f *fakePerformances) ByRoom(context.Context, string) (performance.Performance, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.calls++
 	if f.err != nil {
 		return performance.Performance{}, f.err
 	}
@@ -734,19 +738,23 @@ func TestAVoteBeforeStartIsNotDeliveredThenWorksOnceStarted(t *testing.T) {
 	require.Equal(t, []string{"perf-1"}, votes.performances)
 }
 
-func TestAVoteAfterThePerformanceHasFinishedIsNotDelivered(t *testing.T) {
+func TestAConnectionLooksItsPerformanceUpOnce(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	svc, votes, ws := votingRoom(t, ctx)
 	rows := svc.Performances.(*fakePerformances)
+	rows.mu.Lock()
+	rows.calls = 0 // connecting read the row once, for the snapshot
+	rows.mu.Unlock()
 
-	for _, finished := range []string{performance.StatusCompleted, performance.StatusFailed} {
-		rows.mu.Lock()
-		rows.row = &performance.Performance{ID: "perf-1", RoomID: "room", Status: finished}
-		rows.mu.Unlock()
-		reply := say(t, ctx, ws, `{"type":"vote","turn":8,"choiceId":"c1"}`)
-		require.Equal(t, "error", reply["type"], finished)
-		require.Equal(t, "vote_not_delivered", reply["code"], finished)
+	for turn := 1; turn <= performance.Turns; turn++ {
+		reply := say(t, ctx, ws, fmt.Sprintf(`{"type":"vote","turn":%d,"choiceId":"c1"}`, turn))
+		require.Equal(t, "vote_received", reply["type"], "turn %d", turn)
 	}
-	require.Empty(t, votes.all(), "the workflow is not signalled once the row says the run is over")
+	require.Len(t, votes.all(), performance.Turns)
+
+	rows.mu.Lock()
+	defer rows.mu.Unlock()
+	require.Equal(t, 1, rows.calls,
+		"a vote is one call to Temporal and nothing else: the database is read for the first vote only")
 }

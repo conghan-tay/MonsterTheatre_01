@@ -34,6 +34,12 @@ type inbox struct {
 	voterID string
 	log     *slog.Logger
 
+	// performanceID is the room's performance, once known. Most browsers
+	// connect before Start, so it is looked up when a vote first needs it
+	// and then kept: a room has one performance and its ID never changes.
+	// After that a vote is one call to Temporal and no database read
+	// (docs/system-design.md, section 1).
+	performanceID string
 	// passed is what this connection has already handed to the workflow,
 	// by turn.
 	passed map[int]string
@@ -66,7 +72,9 @@ func (in *inbox) handle(ctx context.Context, data []byte) []byte {
 //
 // The confirmation means "passed on", not "counted": only the workflow knows
 // whether a vote was in time, for a real choice, and the voter's first, and
-// it says so in the next snapshot. The voter is this connection's, whatever
+// it says so in the next snapshot. A vote sent between rounds, or in the
+// moment after the last update while the workflow is still closing, is
+// confirmed and then ignored. The voter is this connection's, whatever
 // the message claims.
 //
 // A connection passes on one vote per turn. A repeat is confirmed with the
@@ -80,33 +88,31 @@ func (in *inbox) vote(ctx context.Context, msg incoming, receivedAt time.Time) [
 		return voteReceived(msg.Turn, already)
 	}
 
-	// Read on every vote, not remembered: most browsers connect before
-	// Start, and the row is what says for certain that the voting is over.
-	// (The workflow lingers for a moment after its last update, and would
-	// accept a signal it will never read.) One indexed read per vote, for at
-	// most eleven voters, is cheap.
-	p, err := in.service.Performances.ByRoom(ctx, in.roomID)
-	switch {
-	case errors.Is(err, performance.ErrNotFound):
-		return errorMessage(codeVoteNotDelivered, "The performance has not started.")
-	case err != nil:
-		in.failed("find the performance", err)
-		return errorMessage(codeVoteNotDelivered, "Your vote could not be delivered. Try again.")
-	case p.Status != performance.StatusRunning:
-		return errorMessage(codeVoteNotDelivered, "The voting is over.")
+	if in.performanceID == "" {
+		p, err := in.service.Performances.ByRoom(ctx, in.roomID)
+		if errors.Is(err, performance.ErrNotFound) {
+			return errorMessage(codeVoteNotDelivered, "The performance has not started.")
+		}
+		if err != nil {
+			in.failed("find the performance", err)
+			return errorMessage(codeVoteNotDelivered, "Your vote could not be delivered. Try again.")
+		}
+		in.performanceID = p.ID
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, signalTimeout)
 	defer cancel()
-	err = in.service.Votes.Vote(ctx, p.ID, performance.Vote{
+	err := in.service.Votes.Vote(ctx, in.performanceID, performance.Vote{
 		VoterID:    in.voterID,
 		Turn:       msg.Turn,
 		ChoiceID:   msg.ChoiceID,
 		ReceivedAt: receivedAt,
 	})
 	if err != nil {
+		// Temporal refuses a signal to a workflow that has finished, so this
+		// is the usual answer to a vote after the performance has ended.
 		in.failed("signal the vote", err)
-		return errorMessage(codeVoteNotDelivered, "Your vote could not be delivered. Try again.")
+		return errorMessage(codeVoteNotDelivered, "Your vote could not be delivered. The performance may have ended.")
 	}
 
 	if in.passed == nil {

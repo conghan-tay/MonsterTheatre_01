@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
 
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/activities"
@@ -17,8 +18,9 @@ import (
 )
 
 const (
-	testWindow    = 10 * time.Second
-	testCountdown = 5 * time.Second
+	testWindow      = 10 * time.Second
+	testCountdown   = 5 * time.Second
+	testRetryWindow = 2 * time.Minute
 )
 
 var testInput = performance.WorkflowInput{PerformanceID: "perf-1", RoomID: "room-1"}
@@ -37,8 +39,21 @@ type recorder struct {
 	publishes  []published
 	publishErr error
 	choices    []activities.ChoicesInput
+	tags       []activities.TagsInput
 	speech     []activities.SpeechInput
 	completed  []activities.CompleteInput
+	failed     []activities.FailInput
+	// failedAfterPublishes is how many publishes had been made when the
+	// performance was marked failed.
+	failedAfterPublishes int
+
+	// failTurn is the turn on which choicesErr, tagsErr, or speechErr is
+	// returned, on every attempt. failErr is returned by Fail itself.
+	failTurn   int
+	choicesErr error
+	tagsErr    error
+	speechErr  error
+	failErr    error
 }
 
 // newRun returns a test environment with every activity mocked.
@@ -50,25 +65,37 @@ func newRun(t *testing.T) (*testsuite.TestWorkflowEnvironment, *recorder) {
 	var a *activities.Activities
 
 	env.OnActivity(a.FetchContext, mock.Anything, "room-1").Return(activities.RoomContext{
-		Scene:             providers.Scene{Topic: "A biscuit"},
-		CharacterA:        activities.Character{Name: "Grumble", VoiceID: "voice-a"},
-		CharacterB:        activities.Character{Name: "Fizz", VoiceID: "voice-b"},
-		Model:             "test-model",
-		VoteWindow:        testWindow,
-		PremiereCountdown: testCountdown,
+		Scene:              providers.Scene{Topic: "A biscuit"},
+		CharacterA:         activities.Character{Name: "Grumble", VoiceID: "voice-a"},
+		CharacterB:         activities.Character{Name: "Fizz", VoiceID: "voice-b"},
+		VoteWindow:         testWindow,
+		PremiereCountdown:  testCountdown,
+		ChoicesRetryWindow: testRetryWindow,
 	}, nil)
 	env.OnActivity(a.GenerateChoices, mock.Anything, mock.Anything).Return(
-		func(_ context.Context, in activities.ChoicesInput) ([]string, error) {
+		func(_ context.Context, in activities.ChoicesInput) (activities.ChoicesResult, error) {
 			rec.choices = append(rec.choices, in)
-			return []string{
+			if rec.choicesErr != nil && in.Turn == rec.failTurn {
+				return activities.ChoicesResult{}, rec.choicesErr
+			}
+			return activities.ChoicesResult{Model: "test-model", Lines: []string{
 				fmt.Sprintf("turn %d one", in.Turn), fmt.Sprintf("turn %d two", in.Turn), fmt.Sprintf("turn %d three", in.Turn),
-			}, nil
+			}}, nil
 		})
 	env.OnActivity(a.EnhanceTags, mock.Anything, mock.Anything).Return(
-		func(_ context.Context, in activities.TagsInput) (string, error) { return "[tag] " + in.Text, nil })
+		func(_ context.Context, in activities.TagsInput) (string, error) {
+			rec.tags = append(rec.tags, in)
+			if rec.tagsErr != nil && in.Turn == rec.failTurn {
+				return "", rec.tagsErr
+			}
+			return "[tag] " + in.Text, nil
+		})
 	env.OnActivity(a.Synthesize, mock.Anything, mock.Anything).Return(
 		func(_ context.Context, in activities.SpeechInput) (string, error) {
 			rec.speech = append(rec.speech, in)
+			if rec.speechErr != nil && in.Turn == rec.failTurn {
+				return "", rec.speechErr
+			}
 			return activities.AudioKey(in.PerformanceID, in.Turn), nil
 		})
 	env.OnActivity(a.Publish, mock.Anything, mock.Anything).Return(
@@ -80,6 +107,12 @@ func newRun(t *testing.T) (*testsuite.TestWorkflowEnvironment, *recorder) {
 		func(_ context.Context, in activities.CompleteInput) error {
 			rec.completed = append(rec.completed, in)
 			return nil
+		})
+	env.OnActivity(a.Fail, mock.Anything, mock.Anything).Return(
+		func(_ context.Context, in activities.FailInput) error {
+			rec.failed = append(rec.failed, in)
+			rec.failedAfterPublishes = len(rec.publishes)
+			return rec.failErr
 		})
 	return env, rec
 }
@@ -170,10 +203,14 @@ func TestWinningLinesFeedTheNextTurnAndTheScript(t *testing.T) {
 		require.Equal(t, lines, preparing.update.State.Lines)
 
 		// The tagged line is spoken in the speaker's own voice.
-		voice := "voice-a"
+		voice, name := "voice-a", "Grumble"
 		if Schedule[turn-1].Speaker == "B" {
-			voice = "voice-b"
+			voice, name = "voice-b", "Fizz"
 		}
+		// Tagging is told who is speaking and to what beat.
+		require.Equal(t, name, rec.tags[turn-1].Character.Name)
+		require.Equal(t, Schedule[turn-1].Beat, rec.tags[turn-1].Beat)
+		require.Equal(t, winner.Text, rec.tags[turn-1].Text)
 		require.Equal(t, activities.SpeechInput{
 			PerformanceID: "perf-1", RoomID: "room-1", Turn: turn, VoiceID: voice, Text: "[tag] " + winner.Text,
 		}, rec.speech[turn-1])
@@ -190,6 +227,7 @@ func TestWinningLinesFeedTheNextTurnAndTheScript(t *testing.T) {
 		require.Len(t, turn.Choices, 3)
 		require.Equal(t, lines[i].Text, turn.Winner.Text)
 		require.Equal(t, "[tag] "+lines[i].Text, turn.TaggedText)
+		require.True(t, turn.TagsApplied)
 		require.Equal(t, performance.DecidedByNoVotes, turn.DecidedBy)
 		require.Equal(t, "test-model", turn.Model)
 		require.Equal(t, activities.AudioKey("perf-1", i+1), saved.AudioKeys[i])
@@ -272,11 +310,12 @@ func TestTheRunFailsIfTheModelReturnsTheWrongNumberOfChoices(t *testing.T) {
 	var a *activities.Activities
 	env.OnActivity(a.FetchContext, mock.Anything, mock.Anything).Return(activities.RoomContext{VoteWindow: testWindow}, nil)
 	env.OnActivity(a.Publish, mock.Anything, mock.Anything).Return(nil)
-	env.OnActivity(a.GenerateChoices, mock.Anything, mock.Anything).Return([]string{"only", "two"}, nil)
+	env.OnActivity(a.Fail, mock.Anything, mock.Anything).Return(nil)
+	env.OnActivity(a.GenerateChoices, mock.Anything, mock.Anything).Return(activities.ChoicesResult{Lines: []string{"only", "two"}}, nil)
 
 	env.ExecuteWorkflow(Performance, testInput)
 	require.True(t, env.IsWorkflowCompleted())
-	require.ErrorContains(t, env.GetWorkflowError(), "returned 2 choices")
+	require.ErrorContains(t, env.GetWorkflowError(), "2 choices, not 3")
 }
 
 // castAt sends a vote signal at a moment of workflow time, stamped as
@@ -443,5 +482,160 @@ func TestUpdatesNeverCarryAnyonesVote(t *testing.T) {
 	require.NoError(t, env.GetWorkflowError())
 	for _, p := range rec.publishes {
 		require.Empty(t, p.update.State.YourVote, "revision %d", p.update.Revision)
+	}
+}
+
+// requireFailedRun checks a run that stopped: the workflow failed, the row
+// was marked first with the right reason, then browsers were told, in an
+// update one revision after the last, on the turn it stopped at.
+func requireFailedRun(t *testing.T, env *testsuite.TestWorkflowEnvironment, rec *recorder, code string, turn, lastGoodRevision int) performance.State {
+	t.Helper()
+	require.True(t, env.IsWorkflowCompleted())
+	require.Error(t, env.GetWorkflowError(), "the workflow ends as failed, so the operator sees it in Temporal")
+
+	require.Equal(t, []activities.FailInput{{PerformanceID: "perf-1", Reason: code}}, rec.failed)
+	require.Empty(t, rec.completed, "a failed run is not saved as completed")
+
+	last := rec.publishes[len(rec.publishes)-1].update
+	require.Equal(t, lastGoodRevision+1, last.Revision)
+	require.Equal(t, lastGoodRevision, rec.failedAfterPublishes, "the row is marked before browsers are told")
+	require.Equal(t, performance.PhaseFailed, last.State.Phase)
+	require.Equal(t, turn, last.State.Turn)
+	require.Equal(t, "perf-1", last.State.PerformanceID)
+	require.Equal(t, code, last.State.Failure.Code)
+	require.NotEmpty(t, last.State.Failure.Message)
+	require.Empty(t, last.State.Choices)
+	require.Nil(t, last.State.Winner)
+	return last.State
+}
+
+func TestChoiceGenerationIsRetriedForTheWholeWindowThenTheRunFails(t *testing.T) {
+	env, rec := newRun(t)
+	rec.failTurn, rec.choicesErr = 3, errors.New("the model is overloaded")
+	began := env.Now()
+
+	env.ExecuteWorkflow(Performance, testInput)
+
+	// Turns 1 and 2 published six updates; turn 3 published "generating".
+	state := requireFailedRun(t, env, rec, performance.FailureChoices, 3, 7)
+	require.Len(t, state.Lines, 2)
+
+	attempts := 0
+	for _, asked := range rec.choices {
+		if asked.Turn == 3 {
+			attempts++
+		}
+	}
+	require.Greater(t, attempts, 5, "many attempts, not three: it retries on time, not on a count")
+
+	// It gave up within the window, and not at the first failure. The two
+	// earlier rounds account for two vote windows.
+	spent := env.Now().Sub(began) - 2*testWindow
+	require.LessOrEqual(t, spent, testRetryWindow)
+	require.Greater(t, spent, testRetryWindow/2)
+}
+
+func TestChoiceGenerationThatRecoversCarriesOn(t *testing.T) {
+	env, rec := newRun(t)
+	var a *activities.Activities
+	calls := 0
+	env.OnActivity(a.GenerateChoices, mock.Anything, mock.Anything).Return(
+		func(_ context.Context, in activities.ChoicesInput) (activities.ChoicesResult, error) {
+			if in.Turn == 2 {
+				if calls++; calls <= 4 {
+					return activities.ChoicesResult{}, errors.New("a brief outage")
+				}
+			}
+			return activities.ChoicesResult{Model: "test-model", Lines: []string{"one", "two", "three"}}, nil
+		})
+
+	env.ExecuteWorkflow(Performance, testInput)
+	require.NoError(t, env.GetWorkflowError())
+	require.Empty(t, rec.failed)
+	require.Len(t, rec.completed, 1)
+	require.Len(t, rec.publishes, 3*performance.Turns+1, "no extra updates were published while it retried")
+}
+
+func TestAnErrorNotWorthRetryingFailsTheRunAtOnce(t *testing.T) {
+	env, rec := newRun(t)
+	rec.failTurn = 1
+	rec.choicesErr = temporal.NewNonRetryableApplicationError("invalid API key", "ProviderRejected", nil)
+	began := env.Now()
+
+	env.ExecuteWorkflow(Performance, testInput)
+
+	requireFailedRun(t, env, rec, performance.FailureChoices, 1, 1)
+	require.Len(t, rec.choices, 1, "one attempt")
+	require.Less(t, env.Now().Sub(began), time.Second, "and no waiting out the retry window")
+}
+
+func TestSpeechFailingThreeTimesFailsTheRun(t *testing.T) {
+	env, rec := newRun(t)
+	rec.failTurn, rec.speechErr = 2, errors.New("the speech service is down")
+
+	env.ExecuteWorkflow(Performance, testInput)
+
+	// Turn 2's winner was announced (revision 6) before its speech failed.
+	state := requireFailedRun(t, env, rec, performance.FailureSpeech, 2, 6)
+	require.Len(t, state.Lines, 2, "turn 2's line was chosen, though never voiced")
+
+	attempts := 0
+	for _, asked := range rec.speech {
+		if asked.Turn == 2 {
+			attempts++
+		}
+	}
+	require.Equal(t, 3, attempts)
+}
+
+func TestTaggingFailureSpeaksTheLineAsChosen(t *testing.T) {
+	env, rec := newRun(t)
+	rec.failTurn, rec.tagsErr = 4, errors.New("the tagged line does not keep the original words")
+
+	env.ExecuteWorkflow(Performance, testInput)
+	require.NoError(t, env.GetWorkflowError(), "the run completes")
+	require.Empty(t, rec.failed)
+
+	attempts := 0
+	for _, asked := range rec.tags {
+		if asked.Turn == 4 {
+			attempts++
+		}
+	}
+	require.Equal(t, 2, attempts, "tagging is tried twice")
+
+	turn4 := rec.completed[0].Script.Turns[3]
+	require.Equal(t, turn4.Winner.Text, turn4.TaggedText)
+	require.False(t, turn4.TagsApplied)
+	require.True(t, rec.completed[0].Script.Turns[2].TagsApplied, "other turns are unaffected")
+
+	// The plain line is what was sent to speech.
+	for _, spoken := range rec.speech {
+		if spoken.Turn == 4 {
+			require.Equal(t, turn4.Winner.Text, spoken.Text)
+		}
+	}
+}
+
+func TestBrowsersAreStillToldWhenTheRowCannotBeMarked(t *testing.T) {
+	env, rec := newRun(t)
+	rec.failTurn, rec.speechErr = 1, errors.New("the speech service is down")
+	rec.failErr = temporal.NewNonRetryableApplicationError("database unreachable", "Database", nil)
+
+	env.ExecuteWorkflow(Performance, testInput)
+
+	require.ErrorContains(t, env.GetWorkflowError(), "the speech service is down",
+		"the workflow reports why the run stopped, not the trouble recording it")
+	last := rec.publishes[len(rec.publishes)-1].update.State
+	require.Equal(t, performance.PhaseFailed, last.Phase)
+	require.Equal(t, performance.FailureSpeech, last.Failure.Code)
+}
+
+func TestTheScriptRecordsTheModelThatWroteEachTurn(t *testing.T) {
+	env, rec := newRun(t)
+	env.ExecuteWorkflow(Performance, testInput)
+	require.NoError(t, env.GetWorkflowError())
+	for _, turn := range rec.completed[0].Script.Turns {
+		require.Equal(t, "test-model", turn.Model)
 	}
 }

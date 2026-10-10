@@ -26,7 +26,10 @@ func TestDialogueDefaultsWhenRoomHasNoScript(t *testing.T) {
 	} {
 		lines, err := Dialogue{Scripts: scripts}.GenerateChoices(ctx, providers.ChoicesRequest{RoomID: "room1", Turn: 3, Attempt: 1})
 		require.NoError(t, err, name)
-		require.Equal(t, []string{"Turn 3, first option.", "Turn 3, second option.", "Turn 3, third option."}, lines, name)
+		require.Equal(t, providers.Choices{
+			Lines: []string{"Turn 3, first option.", "Turn 3, second option.", "Turn 3, third option."},
+			Model: "fake",
+		}, lines, name)
 	}
 }
 
@@ -36,21 +39,21 @@ func TestDialogueReturnsScriptedChoicesForThatRoomAndTurnOnly(t *testing.T) {
 
 	scripted, err := d.GenerateChoices(ctx, providers.ChoicesRequest{RoomID: "room1", Turn: 2, Attempt: 1})
 	require.NoError(t, err)
-	require.Equal(t, []string{"a", "b", "c"}, scripted)
+	require.Equal(t, []string{"a", "b", "c"}, scripted.Lines)
 
 	otherTurn, err := d.GenerateChoices(ctx, providers.ChoicesRequest{RoomID: "room1", Turn: 3, Attempt: 1})
 	require.NoError(t, err)
-	require.Equal(t, "Turn 3, first option.", otherTurn[0])
+	require.Equal(t, "Turn 3, first option.", otherTurn.Lines[0])
 
 	otherRoom, err := d.GenerateChoices(ctx, providers.ChoicesRequest{RoomID: "room2", Turn: 2, Attempt: 1})
 	require.NoError(t, err)
-	require.Equal(t, "Turn 2, first option.", otherRoom[0])
+	require.Equal(t, "Turn 2, first option.", otherRoom.Lines[0])
 }
 
 func TestEnhanceTagsKeepsTheWords(t *testing.T) {
 	tagged, err := Dialogue{}.EnhanceTags(context.Background(), providers.TagsRequest{RoomID: "room1", Turn: 1, Attempt: 1, Text: "Hello there."})
 	require.NoError(t, err)
-	require.Equal(t, "[excited] Hello there.", tagged)
+	require.Equal(t, providers.Tagged{Text: "[excited] Hello there.", Model: "fake"}, tagged)
 }
 
 func TestScriptedFailureLastsForTheGivenAttemptsOnThatOperationAndTurn(t *testing.T) {

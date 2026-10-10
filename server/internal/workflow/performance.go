@@ -9,6 +9,7 @@
 package workflow
 
 import (
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"time"
@@ -39,10 +40,6 @@ var Schedule = [performance.Turns]turnPlan{
 
 // Activity options, from the table in docs/system-design.md, section 4.
 var (
-	choicesOptions = workflow.ActivityOptions{
-		StartToCloseTimeout: 30 * time.Second,
-		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 3},
-	}
 	tagsOptions = workflow.ActivityOptions{
 		StartToCloseTimeout: 20 * time.Second,
 		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 2},
@@ -61,6 +58,34 @@ var (
 	}
 )
 
+// choicesOptions bounds choice generation by time, not by a count of
+// attempts: it is retried with growing pauses for the whole retry window,
+// which rides out a brief outage of the language model. If the window runs
+// out the run fails. There is no stand-in for lines the model did not write:
+// the audience would vote on filler, the model would build on it, and the
+// premiere would play it (docs/decisions.md, D038).
+func choicesOptions(retryWindow time.Duration) workflow.ActivityOptions {
+	return workflow.ActivityOptions{
+		StartToCloseTimeout:    30 * time.Second,
+		ScheduleToCloseTimeout: retryWindow,
+		RetryPolicy: &temporal.RetryPolicy{
+			InitialInterval:    time.Second,
+			BackoffCoefficient: 2,
+			MaximumInterval:    15 * time.Second,
+		},
+	}
+}
+
+// stopped is an error that ends the run, with the reason browsers and the
+// performance row are given.
+type stopped struct {
+	code string
+	err  error
+}
+
+func (s *stopped) Error() string { return s.code + ": " + s.err.Error() }
+func (s *stopped) Unwrap() error { return s.err }
+
 // run is one performance's state. It exists only in the workflow.
 type run struct {
 	in performance.WorkflowInput
@@ -76,9 +101,48 @@ type run struct {
 	counts map[string]int
 }
 
-// Performance runs one performance from Start to the premiere.
+// Performance runs one performance from Start to the premiere. If it cannot
+// continue, it marks the performance failed and tells browsers before
+// ending as a failed workflow.
 func Performance(ctx workflow.Context, in performance.WorkflowInput) error {
 	r := &run{in: in, state: performance.State{Phase: performance.PhaseWaiting, PerformanceID: in.PerformanceID}}
+	err := r.play(ctx)
+	if err != nil {
+		r.fail(ctx, err)
+	}
+	return err
+}
+
+// fail records that the run cannot continue: first on the performance row,
+// then to browsers. The row comes first so that a browser told of the
+// failure, or one connecting just after, finds the row agreeing.
+//
+// The original error is what the workflow returns, whatever happens here.
+func (r *run) fail(ctx workflow.Context, cause error) {
+	code := performance.FailureInternal
+	var s *stopped
+	if errors.As(cause, &s) {
+		code = s.code
+	}
+	// A cancelled workflow can still do this much.
+	ctx, cancel := workflow.NewDisconnectedContext(ctx)
+	defer cancel()
+
+	var a *activities.Activities
+	err := workflow.ExecuteActivity(workflow.WithActivityOptions(ctx, databaseOptions), a.Fail, activities.FailInput{
+		PerformanceID: r.in.PerformanceID, Reason: code,
+	}).Get(ctx, nil)
+	if err != nil {
+		workflow.GetLogger(ctx).Error("could not mark the performance failed", "error", err)
+	}
+	r.publish(ctx, performance.State{
+		Phase: performance.PhaseFailed, Turn: r.state.Turn, Failure: performance.NewFailure(code),
+	})
+}
+
+// play is the performance itself.
+func (r *run) play(ctx workflow.Context) error {
+	in := r.in
 	// Registered before anything else, so a browser connecting at any moment
 	// of the run can be answered.
 	err := workflow.SetQueryHandler(ctx, performance.QueryState, func(voterID string) (performance.Snapshot, error) {
@@ -115,8 +179,8 @@ func Performance(ctx workflow.Context, in performance.WorkflowInput) error {
 			Phase: performance.PhaseGenerating, Turn: turn, Speaker: plan.Speaker, Beat: plan.Beat,
 		})
 
-		var texts []string
-		err := workflow.ExecuteActivity(workflow.WithActivityOptions(ctx, choicesOptions), a.GenerateChoices, activities.ChoicesInput{
+		var generated activities.ChoicesResult
+		err := workflow.ExecuteActivity(workflow.WithActivityOptions(ctx, choicesOptions(room.ChoicesRetryWindow)), a.GenerateChoices, activities.ChoicesInput{
 			RoomID:         in.RoomID,
 			Turn:           turn,
 			Speaker:        plan.Speaker,
@@ -126,17 +190,18 @@ func Performance(ctx workflow.Context, in performance.WorkflowInput) error {
 			CharacterB:     room.CharacterB,
 			History:        history,
 			TurnsRemaining: performance.Turns - turn,
-		}).Get(ctx, &texts)
+		}).Get(ctx, &generated)
 		if err != nil {
-			return err
+			return &stopped{code: performance.FailureChoices, err: err}
 		}
-		if len(texts) != choicesPerTurn {
-			return temporal.NewApplicationError(
-				fmt.Sprintf("turn %d: the language model returned %d choices, not %d", turn, len(texts), choicesPerTurn),
-				"BadChoices")
+		// The activity has already checked the lines; this guards the
+		// indexing below against a worker running different code.
+		if len(generated.Lines) != choicesPerTurn {
+			return &stopped{code: performance.FailureChoices, err: temporal.NewApplicationError(
+				fmt.Sprintf("turn %d: %d choices, not %d", turn, len(generated.Lines), choicesPerTurn), "BadChoices")}
 		}
 		choices := make([]performance.Choice, choicesPerTurn)
-		for i, text := range texts {
+		for i, text := range generated.Lines {
 			choices[i] = performance.Choice{ID: fmt.Sprintf("c%d", i+1), Text: text}
 		}
 
@@ -171,26 +236,31 @@ func Performance(ctx workflow.Context, in performance.WorkflowInput) error {
 
 		// Tagging and speech publish nothing: browsers stay on the winning
 		// line until the next turn begins.
+		//
+		// If tagging fails, the line is spoken as chosen. That is still the
+		// real line, only delivered plainly.
 		var tagged string
 		err = workflow.ExecuteActivity(workflow.WithActivityOptions(ctx, tagsOptions), a.EnhanceTags, activities.TagsInput{
-			RoomID: in.RoomID, Turn: turn, Speaker: plan.Speaker, Text: winner.Text,
+			RoomID: in.RoomID, Turn: turn, Speaker: plan.Speaker, Beat: plan.Beat, Character: speaker, Text: winner.Text,
 		}).Get(ctx, &tagged)
+		tagsApplied := err == nil
 		if err != nil {
-			return err
+			workflow.GetLogger(ctx).Warn("tagging failed; speaking the line without tags", "turn", turn, "error", err)
+			tagged = winner.Text
 		}
 		var audioKey string
 		err = workflow.ExecuteActivity(workflow.WithActivityOptions(ctx, speechOptions), a.Synthesize, activities.SpeechInput{
 			PerformanceID: in.PerformanceID, RoomID: in.RoomID, Turn: turn, VoiceID: speaker.VoiceID, Text: tagged,
 		}).Get(ctx, &audioKey)
 		if err != nil {
-			return err
+			return &stopped{code: performance.FailureSpeech, err: err}
 		}
 
 		audioKeys = append(audioKeys, audioKey)
 		script.Turns = append(script.Turns, performance.ScriptTurn{
 			Turn: turn, Speaker: plan.Speaker, Beat: plan.Beat,
 			Choices: choices, Counts: counts, Winner: winner, DecidedBy: decidedBy,
-			TaggedText: tagged, Model: room.Model,
+			TaggedText: tagged, TagsApplied: tagsApplied, Model: generated.Model,
 		})
 	}
 

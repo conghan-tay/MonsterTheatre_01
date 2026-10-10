@@ -131,13 +131,43 @@ ws.send(JSON.stringify({type: "vote", turn: 1, choiceId: "c2"}))
 
 The reply is `{"type":"vote_received","turn":1,"choiceId":"c2"}`. The director and each audience member get one vote per turn, and the first one stands. The result arrives in that turn's `preparing_line` update as `winner`, with each choice's count and `decidedBy` (`majority`, `tie`, or `no_votes`).
 
-The language model and speech service are stand-ins until real ones are added: lines read "Turn 1, first option." and the recordings are silent. Settings, all optional:
+By default the language model and speech service are stand-ins: lines read "Turn 1, first option." and the recordings are silent. Nothing is spent unless you ask for the real ones.
+
+### With real providers
+
+Claude writes the lines and the audio tags, and ElevenLabs voices them. Put these in `.env` (never committed):
+
+```sh
+ANTHROPIC_API_KEY=...
+ELEVENLABS_API_KEY=...
+VOICE_ID_A=...   # ElevenLabs voice for character A
+VOICE_ID_B=...   # and for character B; use two different voices
+```
+
+Then start the stack with the real providers selected:
+
+```sh
+LLM_PROVIDER=anthropic TTS_PROVIDER=elevenlabs make dev
+```
+
+The worker's `worker started` log line shows which providers it is using, and it refuses to start if a key is missing. A room records its two voice IDs when it is created, so set them before creating the room. Each performance makes 16 calls to Claude and 8 to ElevenLabs.
+
+If a provider keeps failing, the performance fails and browsers are told why: the lines are retried for two minutes, speech three times. Only the audio tags have a fallback, which is to speak the line without them.
+
+### Settings
+
+All optional, read by the worker:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `VOTE_WINDOW` | `10s` | How long each round stays open |
 | `PREMIERE_COUNTDOWN` | `5s` | How far ahead the premiere's start time is set |
-| `LLM_PROVIDER`, `TTS_PROVIDER` | `fake` | Only `fake` exists so far |
+| `LLM_PROVIDER` | `fake` | `fake` or `anthropic` |
+| `LLM_MODEL` | `claude-sonnet-5-5` | The Claude model, when `LLM_PROVIDER` is `anthropic` |
+| `TTS_PROVIDER` | `fake` | `fake` or `elevenlabs` |
+| `TTS_MODEL` | `eleven_v4_turbo` | The ElevenLabs model, when `TTS_PROVIDER` is `elevenlabs` |
+| `CHOICES_RETRY_WINDOW` | `2m` | How long writing a turn's lines is retried before the run fails |
+| `MAX_LINE_LENGTH` | `160` | The longest a generated line may be, in characters. May be set from 60 to 300. About 13 characters are spoken per second, so 160 is roughly 12 seconds a line |
 | `FAKE_SCRIPT_DIR` | unset | A directory of `<roomId>.json` scripts for the stand-ins |
 
 ## End-to-end tests

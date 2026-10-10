@@ -26,6 +26,9 @@ import (
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/logging"
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/objectstore"
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/performance"
+	"github.com/conghan-tay/MonsterTheatre_01/server/internal/providers"
+	"github.com/conghan-tay/MonsterTheatre_01/server/internal/providers/anthropic"
+	"github.com/conghan-tay/MonsterTheatre_01/server/internal/providers/elevenlabs"
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/providers/fake"
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/rooms"
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/workflow"
@@ -76,7 +79,11 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		"task_queue", cfg.TemporalTaskQueue,
 		"llm_provider", cfg.LLMProvider,
 		"tts_provider", cfg.TTSProvider,
+		"llm_model", cfg.LLMModel,
+		"tts_model", cfg.TTSModel,
 		"vote_window", cfg.VoteWindow.String(),
+		"choices_retry_window", cfg.ChoicesRetryWindow.String(),
+		"max_line_length", cfg.MaxLineLength,
 	)
 
 	<-ctx.Done()
@@ -97,14 +104,19 @@ func buildActivities(ctx context.Context, cfg config.Config) (*activities.Activi
 	if cfg.PremiereCountdown <= 0 {
 		return nil, nil, errors.New(`PREMIERE_COUNTDOWN must be a positive duration such as "5s"`)
 	}
-	// Real providers arrive in step 11.
-	if cfg.LLMProvider != "fake" {
-		return nil, nil, fmt.Errorf("LLM_PROVIDER %q is not supported; only \"fake\" exists so far", cfg.LLMProvider)
+	if cfg.ChoicesRetryWindow <= 0 {
+		return nil, nil, errors.New(`CHOICES_RETRY_WINDOW must be a positive duration such as "2m"`)
 	}
-	if cfg.TTSProvider != "fake" {
-		return nil, nil, fmt.Errorf("TTS_PROVIDER %q is not supported; only \"fake\" exists so far", cfg.TTSProvider)
+	// Checked before any provider is built: the limit is enforced on what
+	// the model returns, and a little less is what the model is asked for.
+	lineLength, err := providers.LineLimit(cfg.MaxLineLength)
+	if err != nil {
+		return nil, nil, err
 	}
-	scripts := fake.Scripts{Dir: cfg.FakeScriptDir}
+	dialogue, speech, err := buildProviders(cfg, lineLength)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	objects, err := objectstore.NewFS(cfg.ObjectStoreDir)
 	if err != nil {
@@ -121,19 +133,61 @@ func buildActivities(ctx context.Context, cfg config.Config) (*activities.Activi
 	redisClient := redis.NewClient(redisOpts)
 
 	acts := &activities.Activities{
-		Rooms:             &rooms.PGStore{Pool: pool},
-		Performances:      &performance.PGStore{Pool: pool},
-		Stream:            redisClient,
-		Objects:           objects,
-		Dialogue:          fake.Dialogue{Scripts: scripts},
-		Speech:            fake.Speech{Scripts: scripts},
-		Model:             cfg.LLMProvider,
-		VoteWindow:        cfg.VoteWindow,
-		PremiereCountdown: cfg.PremiereCountdown,
-		Now:               time.Now,
+		Rooms:              &rooms.PGStore{Pool: pool},
+		Performances:       &performance.PGStore{Pool: pool},
+		Stream:             redisClient,
+		Objects:            objects,
+		Dialogue:           dialogue,
+		Speech:             speech,
+		VoteWindow:         cfg.VoteWindow,
+		PremiereCountdown:  cfg.PremiereCountdown,
+		ChoicesRetryWindow: cfg.ChoicesRetryWindow,
+		LineLimit:          cfg.MaxLineLength,
+		Now:                time.Now,
 	}
 	return acts, func() {
 		redisClient.Close()
 		pool.Close()
 	}, nil
+}
+
+// buildProviders chooses the language model and the speech service.
+//
+// The API keys are read here and nowhere else: only the worker holds them
+// (docs/system-design.md, section 7), and they are never logged. Asking for
+// a real provider without its key stops the worker now, with the name of
+// what is missing, and not at the first turn of a performance.
+//
+// lineLength is how long a line the language model is asked to write.
+func buildProviders(cfg config.Config, lineLength int) (providers.DialogueModel, providers.Speech, error) {
+	scripts := fake.Scripts{Dir: cfg.FakeScriptDir}
+
+	var dialogue providers.DialogueModel
+	switch cfg.LLMProvider {
+	case "fake":
+		dialogue = fake.Dialogue{Scripts: scripts}
+	case "anthropic":
+		key := os.Getenv("ANTHROPIC_API_KEY")
+		if key == "" {
+			return nil, nil, errors.New("LLM_PROVIDER is anthropic but ANTHROPIC_API_KEY is not set")
+		}
+		dialogue = anthropic.New(key, cfg.LLMModel, lineLength)
+	default:
+		return nil, nil, fmt.Errorf(`LLM_PROVIDER %q is not supported; use "fake" or "anthropic"`, cfg.LLMProvider)
+	}
+
+	var speech providers.Speech
+	switch cfg.TTSProvider {
+	case "fake":
+		speech = fake.Speech{Scripts: scripts}
+	case "elevenlabs":
+		key := os.Getenv("ELEVENLABS_API_KEY")
+		if key == "" {
+			return nil, nil, errors.New("TTS_PROVIDER is elevenlabs but ELEVENLABS_API_KEY is not set")
+		}
+		speech = &elevenlabs.Speech{APIKey: key, Model: cfg.TTSModel}
+	default:
+		return nil, nil, fmt.Errorf(`TTS_PROVIDER %q is not supported; use "fake" or "elevenlabs"`, cfg.TTSProvider)
+	}
+	return dialogue, speech, nil
 }

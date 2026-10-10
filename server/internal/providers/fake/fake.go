@@ -8,6 +8,9 @@ import (
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/providers"
 )
 
+// ModelName is what the fake language model calls itself in a saved script.
+const ModelName = "fake"
+
 // Dialogue is a scripted providers.DialogueModel.
 type Dialogue struct {
 	Scripts Scripts
@@ -17,34 +20,34 @@ var _ providers.DialogueModel = Dialogue{}
 
 // GenerateChoices returns the scripted lines for the turn, or three
 // predictable defaults.
-func (d Dialogue) GenerateChoices(_ context.Context, req providers.ChoicesRequest) ([]string, error) {
+func (d Dialogue) GenerateChoices(_ context.Context, req providers.ChoicesRequest) (providers.Choices, error) {
 	script, err := d.Scripts.For(req.RoomID)
 	if err != nil {
-		return nil, err
+		return providers.Choices{}, err
 	}
 	if script.fails(OpChoices, req.Turn, req.Attempt) {
-		return nil, ErrInjected
+		return providers.Choices{}, ErrInjected
 	}
 	if lines, ok := script.Choices[req.Turn]; ok {
-		return lines, nil
+		return providers.Choices{Lines: lines, Model: ModelName}, nil
 	}
-	return []string{
+	return providers.Choices{Model: ModelName, Lines: []string{
 		fmt.Sprintf("Turn %d, first option.", req.Turn),
 		fmt.Sprintf("Turn %d, second option.", req.Turn),
 		fmt.Sprintf("Turn %d, third option.", req.Turn),
-	}, nil
+	}}, nil
 }
 
 // EnhanceTags prefixes one fixed tag and leaves the words unchanged.
-func (d Dialogue) EnhanceTags(_ context.Context, req providers.TagsRequest) (string, error) {
+func (d Dialogue) EnhanceTags(_ context.Context, req providers.TagsRequest) (providers.Tagged, error) {
 	script, err := d.Scripts.For(req.RoomID)
 	if err != nil {
-		return "", err
+		return providers.Tagged{}, err
 	}
 	if script.fails(OpTags, req.Turn, req.Attempt) {
-		return "", ErrInjected
+		return providers.Tagged{}, ErrInjected
 	}
-	return "[excited] " + req.Text, nil
+	return providers.Tagged{Text: "[excited] " + req.Text, Model: ModelName}, nil
 }
 
 // Speech is a scripted providers.Speech that returns silence.

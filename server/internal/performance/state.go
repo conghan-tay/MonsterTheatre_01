@@ -64,6 +64,40 @@ type State struct {
 	// Lines are the winning lines so far, in turn order.
 	Lines    []Line    `json:"lines,omitempty"`
 	Premiere *Premiere `json:"premiere,omitempty"`
+	// Failure is set in the failed phase.
+	Failure *Failure `json:"failure,omitempty"`
+}
+
+// Failure is why a performance ended early. Code is stable and is what the
+// performance row records; Message is a sentence for the audience.
+type Failure struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+// Failure codes.
+const (
+	// FailureChoices: the next lines could not be written, after retrying
+	// for the whole retry window. There is no stand-in for lines the model
+	// did not write (docs/decisions.md, D038).
+	FailureChoices = "choices_failed"
+	// FailureSpeech: a line could not be voiced.
+	FailureSpeech = "speech_failed"
+	// FailureInternal: anything else that stopped the run.
+	FailureInternal = "internal_error"
+)
+
+// NewFailure returns the failure for a code, with its message.
+func NewFailure(code string) *Failure {
+	messages := map[string]string{
+		FailureChoices: "The next lines could not be written.",
+		FailureSpeech:  "The line could not be turned into speech.",
+	}
+	message, ok := messages[code]
+	if !ok {
+		code, message = FailureInternal, "Something went wrong and the performance could not continue."
+	}
+	return &Failure{Code: code, Message: message}
 }
 
 // Choice is one of a turn's three candidate lines.
@@ -162,8 +196,11 @@ type ScriptTurn struct {
 	Counts    map[string]int `json:"counts"`
 	Winner    Choice         `json:"winner"`
 	DecidedBy string         `json:"decidedBy"`
-	// TaggedText is the winning line with audio tags added: what was spoken.
+	// TaggedText is what was spoken: the winning line with audio tags
+	// added, or the winning line itself if tagging failed.
 	TaggedText string `json:"taggedText"`
+	// TagsApplied is false when tagging failed and the plain line was spoken.
+	TagsApplied bool `json:"tagsApplied"`
 	// Model is the language model that wrote the choices and the tags.
 	Model string `json:"model"`
 }

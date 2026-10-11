@@ -34,7 +34,7 @@ type RoomReader interface {
 
 // Finisher records how a performance ended. *performance.PGStore implements it.
 type Finisher interface {
-	Complete(ctx context.Context, id string, script performance.Script, audioKeys []string, now time.Time) error
+	Complete(ctx context.Context, id string, script performance.Script, audioKeys []string, premiereStartsAt, now time.Time) error
 	Fail(ctx context.Context, id, reason string, now time.Time) error
 }
 
@@ -253,12 +253,15 @@ type CompleteInput struct {
 	PerformanceID string
 	Script        performance.Script
 	AudioKeys     []string
+	// PremiereStartsAt is when playback starts. It is saved so that a
+	// browser connecting later can be told the same time as everyone else.
+	PremiereStartsAt time.Time
 }
 
-// Complete saves the final script and audio keys and marks the performance
-// completed.
+// Complete saves the final script, the audio keys, and the premiere's start
+// time, and marks the performance completed.
 func (a *Activities) Complete(ctx context.Context, in CompleteInput) error {
-	return a.Performances.Complete(ctx, in.PerformanceID, in.Script, in.AudioKeys, a.Now())
+	return a.Performances.Complete(ctx, in.PerformanceID, in.Script, in.AudioKeys, in.PremiereStartsAt, a.Now())
 }
 
 // FailInput is a performance that cannot continue.

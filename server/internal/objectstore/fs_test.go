@@ -95,3 +95,25 @@ func TestFSPutLeavesNoTemporaryFiles(t *testing.T) {
 	}
 	require.ElementsMatch(t, []string{"b", "b.contenttype"}, names)
 }
+
+// A range request is answered by seeking: to the end for the size, then to
+// the first byte asked for.
+func TestFSGetReturnsABodyThatSeeks(t *testing.T) {
+	store := newStore(t)
+	ctx := context.Background()
+	require.NoError(t, store.Put(ctx, "performances/p1/turn-1.mp3", strings.NewReader("0123456789"), "audio/mpeg"))
+
+	obj, err := store.Get(ctx, "performances/p1/turn-1.mp3")
+	require.NoError(t, err)
+	defer obj.Body.Close()
+
+	end, err := obj.Body.Seek(0, io.SeekEnd)
+	require.NoError(t, err)
+	require.Equal(t, obj.Size, end)
+
+	_, err = obj.Body.Seek(6, io.SeekStart)
+	require.NoError(t, err)
+	rest, err := io.ReadAll(obj.Body)
+	require.NoError(t, err)
+	require.Equal(t, "6789", string(rest))
+}

@@ -130,3 +130,19 @@ func (d *DirectorClient) ListRooms(ctx context.Context) (*Response, error) {
 func (c *Client) FetchPortrait(ctx context.Context, roomID, slot string) (*Response, error) {
 	return c.Get(ctx, "/api/v1/rooms/"+roomID+"/portraits/"+slot)
 }
+
+// FetchAudio reads a turn's recording from the URL a premiere clip carries.
+func (c *Client) FetchAudio(ctx context.Context, url string) (*Response, error) {
+	return c.Get(ctx, url)
+}
+
+// FetchAudioRange reads part of a recording, as an audio element does when
+// it seeks. byteRange is the Range header's value, for example "bytes=0-99".
+func (c *Client) FetchAudioRange(ctx context.Context, url, byteRange string) (*Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Range", byteRange)
+	return c.do(req)
+}

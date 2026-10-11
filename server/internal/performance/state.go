@@ -16,17 +16,23 @@ import (
 // Turns is how many voted turns a performance has.
 const Turns = 8
 
-// Phases. Waiting, Completed, and Failed appear only in snapshots the server
-// builds itself; the others are published by the workflow.
+// Phases. Waiting appears only in the snapshot the server builds for a room
+// that has not started; the others are published by the workflow. A finished
+// performance stays in its last phase, premiere or failed, and the server
+// rebuilds that state from the performance row (PremiereState, FailedState).
 const (
 	PhaseWaiting       = "waiting"
 	PhaseGenerating    = "generating"
 	PhaseVoting        = "voting"
 	PhasePreparingLine = "preparing_line"
 	PhasePremiere      = "premiere"
-	PhaseCompleted     = "completed"
 	PhaseFailed        = "failed"
 )
+
+// LastRevision is the revision of the premiere, the last update of every
+// completed run: three updates a turn, then one. The revision goes up with
+// each publish whether or not it reached Redis, so this needs no storing.
+const LastRevision = 3*Turns + 1
 
 // How a round's winner was decided.
 const (
@@ -203,4 +209,33 @@ type ScriptTurn struct {
 	TagsApplied bool `json:"tagsApplied"`
 	// Model is the language model that wrote the choices and the tags.
 	Model string `json:"model"`
+}
+
+// PremiereState is the state of a completed performance, rebuilt from its
+// row. It is the state the premiere update carried, at LastRevision, so a
+// browser that connects after the run holds what those who watched it hold
+// (docs/decisions.md, D039). The start time is then in the past, which is
+// how a browser knows to offer the recording from the beginning.
+func PremiereState(p Performance) State {
+	lines := make([]Line, len(p.Script.Turns))
+	clips := make([]Clip, len(p.Script.Turns))
+	for i, turn := range p.Script.Turns {
+		lines[i] = Line{Turn: turn.Turn, Speaker: turn.Speaker, Text: turn.Winner.Text}
+		clips[i] = Clip{Turn: turn.Turn, Speaker: turn.Speaker, URL: AudioURL(p.ID, turn.Turn)}
+	}
+	return State{
+		Phase:         PhasePremiere,
+		Turn:          Turns,
+		PerformanceID: p.ID,
+		Lines:         lines,
+		Premiere:      &Premiere{StartsAt: p.PremiereStartsAt, Clips: clips},
+	}
+}
+
+// FailedState is the state of a failed performance, rebuilt from its row.
+// The row records why the run failed but not where it had got to, so unlike
+// the failed update this has no turn and no lines. A row with no reason
+// reads as an internal error.
+func FailedState(p Performance) State {
+	return State{Phase: PhaseFailed, PerformanceID: p.ID, Failure: NewFailure(p.FailureReason)}
 }

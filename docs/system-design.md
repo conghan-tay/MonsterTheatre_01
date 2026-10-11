@@ -90,7 +90,7 @@ For prototyping, everything runs locally: the Temporal dev server, Redis, and Po
 | `director_sessions` | Session ID, director, credential hash, expiry. Same pattern as audience sessions | At login |
 | `rooms` | Owner (director ID), scene topic/description/genre, character A and B (name, brief, voice ID, portrait key), and `audience_count`. Nothing about the share link is stored (D034) | Once, at creation; `audience_count` goes up by one per new audience session |
 | `audience_sessions` | Session ID, room, credential hash, timestamps. See [Audience session](audience-session.md) | When someone enters; `last_seen_at` on reconnect |
-| `performances` | Performance ID, room (unique, so one per room), status (`running`, `completed`, `failed`), the failure reason on a failed run, and on completion the final script and the eight audio keys, each a `jsonb` column (Aurora DSQL has no stored array type) | A row at Start; one update at the end |
+| `performances` | Performance ID, room (unique, so one per room), status (`running`, `completed`, `failed`), the failure reason on a failed run, and on completion the final script and the eight audio keys, each a `jsonb` column (Aurora DSQL has no stored array type), and the time the premiere starts | A row at Start; one update at the end |
 
 The final script is one JSON document: for each turn the speaker, beat, three choices, vote counts, winner, how it was decided (majority, tie, no votes), the tagged text, whether tags were applied (false when tagging failed and the plain line was spoken), and the model that wrote the choices.
 
@@ -138,8 +138,9 @@ flowchart TD
     Won --> Tag[Activity: enhance winning line with audio tags]
     Tag --> Speak[Activity: text to speech, save audio to S3]
     Speak --> Loop
-    Loop -->|No| Save[Activity: save script and audio keys, mark completed]
-    Save --> Prem[Publish: premiere, start time 5 s ahead]
+    Loop -->|No| Fix[Fix the premiere's start time, 5 s ahead]
+    Fix --> Save[Activity: save script, audio keys and start time, mark completed]
+    Save --> Prem[Publish: premiere, with that start time]
     Prem --> End([End])
 ```
 
@@ -152,6 +153,7 @@ Notes on each part:
 - **Picking the winner.** Done in workflow code: most votes wins; a tie or an empty round is settled with Temporal's replay-safe random source, so a replay after a crash reaches the same answer.
 - **When a provider fails.** Choice generation is retried with growing pauses for a whole retry window (two minutes by default), which rides out a brief outage; if the window runs out, the run fails. There is no stand-in for lines the model did not write (D038). Tag enhancement retries, then falls back to the untagged line, which is still the real line. Text to speech retries; if it still fails the run fails. An error that retrying cannot fix, such as a rejected API key, stops at once.
 - **Checking what the model returns.** Whichever model is configured, its answers are checked before they are used. Choices must be exactly three, each non-empty, at most `MAX_LINE_LENGTH` characters (160 by default), on one line, without square brackets, and all different. A tagged line, with its square-bracket tags removed, must be the original line word for word. An answer that fails its check is a failed attempt, retried like any other.
+- **The premiere's start time.** The workflow fixes it (its current time plus the countdown) before the save, and the one write that marks the row `completed` stores it with the script. The premiere update then carries the same value, so a browser that connects later is told the same time as those who were watching (D039). The save therefore comes out of the countdown: milliseconds normally, more if the database is being retried.
 - **Failure.** If the workflow cannot continue, it runs one last activity to mark the performance row `failed` with the reason, then publishes a `failed` update carrying that reason, and ends as a failed workflow so the operator sees it in Temporal. The row is marked first, so a browser told of the failure finds the row agreeing. Reasons: `choices_failed`, `speech_failed`, and `internal_error` for anything else. A workflow run timeout bounds a run that hangs; a run ended that way cannot mark its own row, which the connect-time rule in section 6 handles.
 - **A failed publish does not stop the run.** Publishing retries briefly and then the workflow carries on. A browser that receives an update whose revision skips a number knows it missed one and asks for a fresh snapshot.
 - **Query handler.** The workflow answers a `state` query with its current turn, phase, choices, deadline, votes, winners so far, and revision. The answer has the same shape as a published update's state, so the server passes it on as the snapshot unchanged.
@@ -166,10 +168,12 @@ Every publish moves the performance into a new phase and increases the revision 
 | A turn begins | `generating` | Turn number, speaker, story beat | "Writing the next lines…" |
 | Three choices are ready | `voting` | The choices and the deadline | The three choices and a countdown |
 | The timer has fired and the winner is picked | `preparing_line` | The winner, vote counts, and how it was decided | The winning line while it is tagged and voiced |
-| All eight turns are saved | `premiere` | Start time five seconds ahead and the ordered clip list, each clip with its URL | Countdown, then playback |
+| All eight turns are saved | `premiere` | The start time, fixed five seconds ahead just before the save, and the ordered clip list, each clip with its URL | Countdown, then playback; or, once the start time has passed, the recording ready to play from the beginning |
 | The run cannot continue | `failed` | `failure`: a reason code and a sentence for the audience | A failure message |
 
 Before Start there is one more phase, `waiting`, which is never published: with no performance there is no workflow to publish it. It appears only in the snapshot the server builds for a room that has not started, at revision 0, so the first published update is always newer.
+
+There is no phase for "finished". A performance stays in its last phase, `premiere` or `failed`, for good, and the row's status (`completed` or `failed`) is what tells the server to answer from the row instead of the workflow (section 6).
 
 A normal run publishes three updates per turn and one for the premiere: revisions 1 to 25. Tagging, text to speech, and saving to the database publish nothing of their own; the browser stays in `preparing_line` until the next turn's `generating` arrives (or `premiere` after turn eight).
 
@@ -204,14 +208,14 @@ A possible later improvement: since nothing is played until the premiere, taggin
 | `POST /api/v1/rooms/{roomId}/performance` | Director | The body is an empty JSON object. Insert the performance row, then start the workflow. Returns `{performanceId, roomId, status}`: `201` the first time, `200` for a repeated Start, which returns the existing performance. `503` if the workflow could not be started; pressing again repairs it |
 | `POST /api/v1/audience-sessions` | Anyone with the share link | Takes the link's room ID and token. `201` and a cookie for a new session; `200` with `restored: true` for a browser that already has one; `403` for any invalid link; `409` when the room has ten. See [Audience session](audience-session.md) |
 | `GET /api/v1/rooms/{roomId}/portraits/{slot}` | Director or audience session | Portrait bytes, read from S3 by the server |
-| `GET /api/v1/performances/{id}/turns/{n}/audio` | Director or audience session | Turn recording as `audio/mpeg`, read from S3 by the server. Supports range requests. Available once the performance is completed |
+| `GET /api/v1/performances/{id}/turns/{n}/audio` | Director or audience session of the performance's room | Turn recording as `audio/mpeg`, piped from S3 by the server, never buffered. Supports range requests (section 6). The caller is checked first, with the same `401` and `403` as reading the room. Then `404` for a turn outside 1 to 8, and `409` `performance_not_completed` while the performance is running or if it failed: no recording is served before the premiere, and a failed run's are never served. An unknown performance gets `401` without a director login and `404` with one, as an unknown room does. Responses carry `Cache-Control: private, max-age=604800, immutable`, as portraits do: a recording never changes, and only the room's people may keep one |
 | `GET /api/v1/rooms/{roomId}/ws` | Director or audience session of that room | Upgrades to the WebSocket described below. Refusals are ordinary JSON errors sent before the upgrade: `403` `origin_not_allowed` for a page on another origin, then the same `401`, `403`, and `404` as reading the room |
 
 Start is safe to retry: the unique room constraint stops a second row, and starting a workflow whose ID already exists is treated as success. While the row says `running`, every Start asks Temporal to start the workflow; a running one is left alone and a finished one is never run again. A row that is `completed` or `failed` is returned as it is.
 
 Every error response has the same shape, `{"error": {"code": "...", "message": "..."}}`, where the code is stable and the message is for people.
 
-Error outcomes: `401` not logged in or no session; `403` not your room; `404` unknown room or performance; `409` room already has ten sessions, or a conflicting Start; `413` upload too large; `422` invalid fields or image; `429` too many login attempts.
+Error outcomes: `401` not logged in or no session; `403` not your room; `404` unknown room, performance, or turn; `409` room already has ten sessions, a conflicting Start, or audio asked for from a performance that has not completed; `413` upload too large; `422` invalid fields or image; `429` too many login attempts.
 
 Validation bounds (unchanged): portraits JPEG, PNG, or WebP up to 5 MiB; names up to 80 characters; briefs up to 400; scene topic up to 200; description up to 1000; genre up to 80; generated lines up to `MAX_LINE_LENGTH`, a worker setting: 160 by default, and settable from 60 to 300. The model is asked for five sixths of that (130 by default), so an answer that runs a little long still passes.
 
@@ -261,7 +265,7 @@ The state of a running performance. A field is absent in the phases that do not 
 | `winner` | `preparing_line` | The chosen line, each choice's count, and `decidedBy`: `majority` (the most votes, not necessarily more than half), `tie`, or `no_votes` |
 | `yourVote` | Snapshots only, in `voting` and `preparing_line` | The choice ID this browser's voter has made in the current turn. Absent if they have not voted. Never in an update, which every browser in the room receives alike |
 | `lines` | From the first winner on | The winning lines so far, in order |
-| `premiere` | `premiere` | `startsAt` and the ordered `clips`. Each clip is `{turn, speaker, url}`, where `url` is a path on the server such as `/api/v1/performances/{id}/turns/1/audio` (D037) |
+| `premiere` | `premiere` | `startsAt` and the ordered `clips`. Each clip is `{turn, speaker, url}`, where `url` is a path on the server such as `/api/v1/performances/{id}/turns/1/audio` (D037). `startsAt` is in the future for a browser there at the time and in the past for one that connects afterwards; the browser counts down or offers the recording accordingly |
 | `failure` | `failed` | `{code, message}`. `code` is `choices_failed`, `speech_failed`, or `internal_error`; `message` is a sentence for the audience |
 
 The winning line with its audio tags is not sent to browsers. It goes to the speech service and into the final script.
@@ -307,6 +311,15 @@ sequenceDiagram
 
 The browser replaces its state with each `snapshot` and applies an `update` only if its revision is higher than what it already has. That one rule covers first connection, reconnection, and duplicate delivery.
 
+A finished performance's snapshot is built from its row, with no worker needed (D039):
+
+| Row | Snapshot | Revision |
+| --- | --- | --- |
+| `completed` | The `premiere` state exactly as it was published: `turn` 8, the eight `lines`, and `premiere` with the stored `startsAt` and the clips. Lines and clips are rebuilt from the saved script | 25, the last revision of every completed run (three updates a turn, then the premiere), so nothing needs storing |
+| `failed` | `phase: failed` with `failure` built from the stored reason. No `turn` or `lines`: a failed run saves no script | 0, because the row does not record how far the run got. A `failed` update still on its way is therefore let through; it says the same, with the turn and lines added |
+
+The row is marked `completed` a moment before the premiere update is published. A browser that connects in between gets the premiere from the row at revision 25, and the update is then dropped for it as nothing new.
+
 If the performance row says `running` but the query fails, the server asks Temporal about the workflow and acts on the answer:
 
 | Temporal says | Meaning | Server does |
@@ -319,7 +332,7 @@ The server keeps an in-memory map of room to open connections. It reads each upd
 
 All performances share one stream, `performance-updates`. Each entry holds the room ID, the revision, and the message exactly as browsers receive it. The stream is trimmed to about a thousand entries. The reader notes the stream's last entry at startup and from then on always reads on from the last entry it has seen, including after a Redis outage; asking only for "what is new" on each read would lose an update that arrived between two reads.
 
-Built so far (step 9): the first and third branches of the diagram, and the second while a worker is running. Until steps 12 and 13, a room whose performance has finished gets a snapshot that only names the phase (`completed` or `failed`), and a query that fails closes the connection with code `1013` instead of following the table above.
+Built so far (steps 9 and 12): all three branches of the diagram, the second only while a worker is running. Until step 13, a query that fails closes the connection with code `1013` instead of following the table above.
 
 ### Voting
 
@@ -332,17 +345,17 @@ A browser that reconnects during a round gets its own vote back in the snapshot,
 
 ### Premiere
 
-1. After the eighth recording is saved, the workflow saves the final script and audio keys to the performance row and marks it `completed`.
-2. It publishes `premiere` with a start time five seconds ahead and the ordered clip list (turn, speaker, URL).
+1. After the eighth recording is saved, the workflow fixes the start time five seconds ahead, saves it with the final script and audio keys to the performance row, and marks the row `completed`.
+2. It publishes `premiere` with that start time and the ordered clip list (turn, speaker, URL).
 3. Each browser counts down to the start time, then plays the eight clips in order with a normal audio element, fetching each from the URL the clip carries, and highlights the portrait of the clip's speaker. The browser never builds an audio address itself.
-4. A browser that connects after the start time gets the completed snapshot and plays from the beginning.
+4. A browser that connects later gets the same `premiere` state as its snapshot, from the row. If the start time is still ahead it joins the countdown; if it has passed, the browser offers the recording from the beginning. This is also how a finished room is replayed, by anyone who can still enter it.
 
 Playback is not synchronised beyond the shared start time, which the brief accepts.
 
 Two delivery rules keep the premiere continuous and working across browsers:
 
 - **Preloading.** On receiving the `premiere` update, the browser starts fetching all eight clips during the five-second countdown, so each clip is ready before the previous one ends. If a clip is still loading when its turn comes, playback waits for it; nothing is skipped.
-- **Range requests.** The audio endpoint answers partial-content requests: it honours the `Range` header, replies `206` with `Accept-Ranges: bytes`, and passes the range through to S3. Safari's audio element expects this.
+- **Range requests.** The audio endpoint answers partial-content requests: it honours the `Range` header, replies `206` with `Accept-Ranges: bytes` (and `416` for a range past the end), and reads only the bytes asked for from S3. Safari's audio element expects this. The parsing and the replies are Go's `http.ServeContent`; the object store hands it a body that can seek, which over S3 means a ranged read from the offset sought (D040).
 
 ### Worker restart
 
@@ -379,6 +392,9 @@ Two delivery rules keep the premiere continuous and working across browsers:
 - No limit on how many performances run at once (D027).
 - A room creation that fails halfway can leave orphaned portraits in S3 until the lifecycle rule removes them.
 - An activity may publish the same update twice after a retry; the revision rule makes that harmless.
+- The premiere's countdown is shortened by however long the final save takes, since the start time is fixed before it. A database that is being retried can leave little or none.
+- Whether a late browser counts down or offers the recording is decided by its own clock against `startsAt`. One whose clock runs slow can show a countdown for a premiere that is already over, by the amount it is slow.
+- A browser may keep playing recordings it has cached for up to seven days without the server checking its session again, as with portraits.
 - The local and deployed databases behave differently under contention. Conflict retries only run for real on Aurora DSQL, so they are first exercised at deployment.
 
 ## 10. Next step

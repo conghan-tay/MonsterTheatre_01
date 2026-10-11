@@ -182,7 +182,7 @@ func (s *Service) ServeWS(w http.ResponseWriter, r *http.Request) {
 // snapshot returns the room's current state and its revision. Where it comes
 // from depends on the performance row (docs/system-design.md, section 6):
 // no row, the room is waiting; running, the workflow is asked; finished, the
-// row says how.
+// row says how, and no worker is needed.
 //
 // voterID is who is asking, so a running performance can include their own
 // vote in the answer.
@@ -201,10 +201,14 @@ func (s *Service) snapshot(ctx context.Context, roomID, voterID string) (int, pe
 		snapshot, err := s.Workflows.State(ctx, p.ID, voterID)
 		return snapshot.Revision, snapshot.State, err
 	case performance.StatusCompleted:
-		// The script and clips are added to this snapshot in step 12.
-		return 0, performance.State{Phase: performance.PhaseCompleted, PerformanceID: p.ID}, nil
+		// The premiere as it was published. The row is marked a moment
+		// before that update goes out; a browser that connects in between
+		// is sent this, and the update is then dropped as nothing new.
+		return performance.LastRevision, performance.PremiereState(p), nil
 	default:
-		return 0, performance.State{Phase: performance.PhaseFailed, PerformanceID: p.ID}, nil
+		// The row does not record the revision a run failed at. Zero lets
+		// a failed update still on its way through, which says the same.
+		return 0, performance.FailedState(p), nil
 	}
 }
 

@@ -6,7 +6,9 @@ CREATE TABLE performances (
     script       jsonb,
     audio_keys   jsonb,
     created_at   timestamptz NOT NULL,
-    completed_at timestamptz
+    completed_at timestamptz,
+    -- When the premiere starts. Set with the script, when the run completes.
+    premiere_starts_at timestamptz
 );
 
 -- +goose Down

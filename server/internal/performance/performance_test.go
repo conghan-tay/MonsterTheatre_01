@@ -40,6 +40,8 @@ func (f fakeRooms) Get(_ context.Context, id string) (rooms.Room, error) {
 type memStore struct {
 	row     *Performance
 	creates int
+	// lookups counts reads by ID.
+	lookups int
 }
 
 func (m *memStore) CreateOrGet(_ context.Context, room string, now time.Time) (Performance, bool, error) {
@@ -49,6 +51,14 @@ func (m *memStore) CreateOrGet(_ context.Context, room string, now time.Time) (P
 	m.creates++
 	m.row = &Performance{ID: "perf-1", RoomID: room, Status: StatusRunning, CreatedAt: now}
 	return *m.row, true, nil
+}
+
+func (m *memStore) ByID(_ context.Context, id string) (Performance, error) {
+	m.lookups++
+	if m.row == nil || m.row.ID != id {
+		return Performance{}, ErrNotFound
+	}
+	return *m.row, nil
 }
 
 type fakeStarter struct {

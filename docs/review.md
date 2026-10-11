@@ -34,7 +34,7 @@ Scope: high-level issues in [the product brief](monster-theatre-product-brief.md
 
 ### Small design points
 
-Items 7 to 10 are decided. Items 11 to 17 are settled while building.
+Items 7 to 10 are decided. Items 11 to 17 are settled while building; 14, 15, and 16 have been.
 
 7. **Start the timer before publishing the deadline.** Decided 2026-10-08: the workflow starts the timer first, then publishes the deadline (system design, section 4).
 8. **What happens when a publish fails.** Decided 2026-10-08: publishing retries briefly, then the workflow continues; a browser that sees a revision gap sends `resync` (system design, sections 4 and 5).
@@ -43,9 +43,9 @@ Items 7 to 10 are decided. Items 11 to 17 are settled while building.
 11. **Recovery status.** The brief no longer requires a visible "recovering" state. Connected browsers just see updates pause. If you want a message, the server can show one when no worker answers a query.
 12. **Waiting between rounds.** After each vote come tagging, speech, and the next generation, with nothing to listen to. The page should show the winning line and a "preparing the next line" state. Running tagging and speech in the background during the next round is a later improvement noted in the system design.
 13. **Database cleanup.** S3 objects expire after seven days; nothing removes old database rows. Not urgent for a demo.
-14. **Audio pass-through or buffer.** Whether the server pipes the S3 body straight to the response or loads the clip first. Suggested: pipe it through.
+14. **Audio pass-through or buffer.** Decided 2026-10-11: piped. The server streams the object to the response and reads only the bytes a range request asks for (D040).
 15. **Clip URLs.** Decided 2026-10-09: the `premiere` clip list carries URLs; the browser does not build them (D037).
-16. **Audio caching.** Whether clip responses are cacheable for replays. Suggested: private caching, since a recording never changes once saved.
+16. **Audio caching.** Decided 2026-10-11: `Cache-Control: private, max-age=604800, immutable`, the same as portraits. Only a completed run's recordings are served, and they never change (system design, section 5).
 17. **Migrations on Aurora DSQL.** Whether goose runs unmodified against DSQL is not confirmed. Check at deployment; the fallback is applying the same SQL files with a small script (D032).
 
 ## What happened to the earlier findings

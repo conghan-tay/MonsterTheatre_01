@@ -224,6 +224,8 @@ type PerformanceRow struct {
 	AudioKeys []byte
 	// FailureReason is set on a failed run.
 	FailureReason string
+	// PremiereStartsAt is set on a completed run.
+	PremiereStartsAt *time.Time
 }
 
 // PerformanceRow reads a room's performance straight from the database, for
@@ -235,8 +237,8 @@ func (s *Stack) PerformanceRow(ctx context.Context, roomID string) (row Performa
 	}
 	defer conn.Close(ctx)
 	err = conn.QueryRow(ctx,
-		"SELECT id::text, status, script::text, audio_keys::text, coalesce(failure_reason, '') FROM performances WHERE room_id = $1", roomID,
-	).Scan(&row.ID, &row.Status, &row.Script, &row.AudioKeys, &row.FailureReason)
+		"SELECT id::text, status, script::text, audio_keys::text, coalesce(failure_reason, ''), premiere_starts_at FROM performances WHERE room_id = $1", roomID,
+	).Scan(&row.ID, &row.Status, &row.Script, &row.AudioKeys, &row.FailureReason, &row.PremiereStartsAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return row, false, nil
 	}

@@ -131,6 +131,15 @@ ws.send(JSON.stringify({type: "vote", turn: 1, choiceId: "c2"}))
 
 The reply is `{"type":"vote_received","turn":1,"choiceId":"c2"}`. The director and each audience member get one vote per turn, and the first one stands. The result arrives in that turn's `preparing_line` update as `winner`, with each choice's count and `decidedBy` (`majority`, `tie`, or `no_votes`).
 
+Once the run has completed, each recording can be fetched by the room's director or an audience member, at the URL its clip carries in the `premiere` update:
+
+```sh
+curl -b cookies.txt -o turn-1.mp3 localhost:8080/api/v1/performances/PERFORMANCE_ID/turns/1/audio
+curl -b cookies.txt -H 'Range: bytes=0-99' -o first-100-bytes localhost:8080/api/v1/performances/PERFORMANCE_ID/turns/1/audio
+```
+
+Before that the answer is `409`: nothing is heard before the premiere. A room WebSocket opened after the run gets the same `premiere` state as its snapshot, at revision 25, read from the database; its `startsAt` is then in the past, which is how a page knows to offer the recording from the beginning. No page plays it yet.
+
 By default the language model and speech service are stand-ins: lines read "Turn 1, first option." and the recordings are silent. Nothing is spent unless you ask for the real ones.
 
 ### With real providers
@@ -202,3 +211,11 @@ The deployed database is Aurora DSQL, which restricts schema changes. Every migr
 - one schema statement per file;
 - never mix schema and data changes in one file;
 - no column drops or type changes without recreating the table.
+
+One exception was made while every database was still a local test one: step 12 added `premiere_starts_at` to the `performances` create-table migration (`00006`) instead of adding a migration. Goose does not re-run a migration it has recorded, so a database migrated before that needs the table recreated, which deletes its performance rows:
+
+```sh
+cd server && go run ./cmd/migrate down && go run ./cmd/migrate down && go run ./cmd/migrate up
+```
+
+For the end-to-end tests' database, drop it and let the next run recreate it: `docker compose exec postgres dropdb -U monster monstertheatre_e2e`.

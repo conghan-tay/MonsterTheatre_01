@@ -332,7 +332,7 @@ If the performance row says `running`, the workflow is asked for its state, on o
 
 The condition matters. Without it Temporal has a worker rebuild a closed run and answer with the state it stopped in, so a run that died mid-round would be shown as a round still open, for ever.
 
-Marking changes only a row that is still `running`. A run that finished properly in the moment between the row being read and the workflow being asked is therefore answered as it finished, and nothing is announced.
+Marking changes only a row that is still `running`, and the room is told only when this was the call that marked it. A run that ended properly in the moment between the row being read and the workflow being asked, by completing or by failing and marking its own row, is therefore answered as it ended, and nothing is announced: the room gets the workflow's own update.
 
 A browser sent `recovering` stays in the room. It asks again with `resync` every few seconds, and it is sent the next update like everyone else as soon as the worker is back; either one puts it right.
 

@@ -40,19 +40,21 @@ func (f *scriptedWorkflow) asked() int {
 
 // fakeFailer marks the fake row as PGStore.Fail marks a real one: only if
 // it is still running. If finishedFirst is set, the run is found to have
-// completed by the time it is marked, as when it finishes at that moment.
+// completed by the time it is marked, as when it finishes at that moment;
+// if failedFirst is set, to have failed for that reason, marking its own row.
 type fakeFailer struct {
 	rows          *fakePerformances
 	finishedFirst bool
+	failedFirst   string
 	err           error
 
 	mu      sync.Mutex
 	reasons []string
 }
 
-func (f *fakeFailer) Fail(_ context.Context, _, reason string, _ time.Time) error {
+func (f *fakeFailer) Fail(_ context.Context, _, reason string, _ time.Time) (bool, error) {
 	if f.err != nil {
-		return f.err
+		return false, f.err
 	}
 	f.mu.Lock()
 	f.reasons = append(f.reasons, reason)
@@ -63,11 +65,16 @@ func (f *fakeFailer) Fail(_ context.Context, _, reason string, _ time.Time) erro
 	if f.finishedFirst {
 		f.rows.row.Status = performance.StatusCompleted
 	}
-	if f.rows.row.Status == performance.StatusRunning {
+	if f.failedFirst != "" {
 		f.rows.row.Status = performance.StatusFailed
-		f.rows.row.FailureReason = reason
+		f.rows.row.FailureReason = f.failedFirst
 	}
-	return nil
+	if f.rows.row.Status != performance.StatusRunning {
+		return false, nil
+	}
+	f.rows.row.Status = performance.StatusFailed
+	f.rows.row.FailureReason = reason
+	return true, nil
 }
 
 func (f *fakeFailer) marked() []string {
@@ -183,6 +190,38 @@ func TestARunThatFinishedAsItWasFoundClosedIsAnsweredAsItFinished(t *testing.T) 
 	next := readMessage(t, ctx, waiting)
 	require.Equal(t, "update", next.Type)
 	require.Equal(t, performance.LastRevision, next.Revision)
+}
+
+func TestARunThatFailedProperlyAsItWasFoundClosedIsNotAnnounced(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	svc, _, url := served(t, 0, 0)
+	rows := runningRow()
+	svc.Performances, svc.Failures = rows, &fakeFailer{rows: rows, failedFirst: performance.FailureSpeech}
+	svc.Workflows = &scriptedWorkflow{answer: func(call int) (performance.Snapshot, error) {
+		if call == 1 {
+			return votingAtTwo, nil
+		}
+		return performance.Snapshot{}, performance.ErrWorkflowClosed
+	}}
+
+	waiting := dial(t, ctx, url)
+	require.Equal(t, 2, readMessage(t, ctx, waiting).Revision)
+
+	// The row said running when it was read, and the workflow was closed
+	// when it was asked: in between, the run failed and marked its own row.
+	late := dial(t, ctx, url)
+	snapshot := readMessage(t, ctx, late)
+	require.Equal(t, performance.PhaseFailed, snapshot.State.Phase)
+	require.Equal(t, performance.FailureSpeech, snapshot.State.Failure.Code, "the reason the run gave, not one of ours")
+
+	// The room is not sent a snapshot: the workflow's own failed update,
+	// which has the turn and the lines, is on its way to them and would be
+	// replaced by one that has neither.
+	svc.Hub.Broadcast("room", 7, updateJSON(7))
+	next := readMessage(t, ctx, waiting)
+	require.Equal(t, "update", next.Type)
+	require.Equal(t, 7, next.Revision)
 }
 
 func TestServeWSClosesWhenThePerformanceCannotBeRead(t *testing.T) {

@@ -158,13 +158,16 @@ func (s *PGStore) Complete(ctx context.Context, id string, script Script, audioK
 
 // Fail marks the performance failed and records why. Only a running row
 // changes, so repeating it does nothing and a completed run is never undone.
-func (s *PGStore) Fail(ctx context.Context, id, reason string, now time.Time) error {
-	return db.WithTx(ctx, s.Pool, func(tx pgx.Tx) error {
-		_, err := tx.Exec(ctx, `
+// changed says whether this call was the one that marked it.
+func (s *PGStore) Fail(ctx context.Context, id, reason string, now time.Time) (changed bool, err error) {
+	err = db.WithTx(ctx, s.Pool, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `
 			UPDATE performances
 			   SET status = $2, failure_reason = $3, completed_at = $4
 			 WHERE id = $1 AND status = $5`,
 			id, StatusFailed, reason, now, StatusRunning)
+		changed = tag.RowsAffected() > 0
 		return err
 	})
+	return changed && err == nil, err
 }

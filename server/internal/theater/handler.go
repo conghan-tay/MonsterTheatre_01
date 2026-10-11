@@ -57,10 +57,10 @@ type StateQuerier interface {
 	State(ctx context.Context, performanceID, voterID string) (performance.Snapshot, error)
 }
 
-// Failer marks a performance failed, if it is still running.
-// *performance.PGStore implements it.
+// Failer marks a performance failed, if it is still running, and says
+// whether it did. *performance.PGStore implements it.
 type Failer interface {
-	Fail(ctx context.Context, id, reason string, now time.Time) error
+	Fail(ctx context.Context, id, reason string, now time.Time) (changed bool, err error)
 }
 
 // VoteSignaller hands a vote to a performance's workflow.
@@ -261,29 +261,37 @@ func finished(p performance.Performance) (int, performance.State) {
 	return 0, performance.FailedState(p)
 }
 
-// dead deals with a performance whose row says running and whose workflow
-// has ended: a run stopped by its timeout, or from outside, which could not
-// mark its own row. The row is marked failed and everyone in the room is
-// told, since they would otherwise wait on a round that will never close
-// (docs/decisions.md, D042).
+// dead deals with a performance whose row said running a moment ago and
+// whose workflow has ended. It marks the row failed, which changes only a
+// row still running, reads the row again, and answers from that. What it
+// finds says which of three things happened:
 //
-// Marking changes only a row that is still running, and the row is read
-// again afterwards. So a run that finished properly in the moment between
-// the first read and the query is answered as it finished, and nothing is
-// announced.
+//   - This call marked it. The run was stopped by its timeout, or from
+//     outside, and could not mark its own row. Everyone else in the room is
+//     sent the failed snapshot too, since they would otherwise wait on a
+//     round that will never close (docs/decisions.md, D042).
+//   - The row is completed. The run finished properly in the moment between
+//     the first read and the query, and is answered as the premiere.
+//   - The row is failed, but not by this call. The run failed properly in
+//     that same moment and marked its own row, with the real reason.
+//
+// In the last two the room is told nothing here: the workflow's own update
+// reaches them in the ordinary way. A failed update carries the turn and
+// the lines so far, which a snapshot built from the row cannot.
 func (s *Service) dead(ctx context.Context, v *viewing, p performance.Performance) (int, performance.State, error) {
-	if err := s.Failures.Fail(ctx, p.ID, performance.FailureInternal, s.Now()); err != nil {
-		return 0, performance.State{}, err
-	}
-	p, err := s.Performances.ByRoom(ctx, v.roomID)
+	marked, err := s.Failures.Fail(ctx, p.ID, performance.FailureInternal, s.Now())
 	if err != nil {
 		return 0, performance.State{}, err
 	}
-	if p.Status == performance.StatusRunning {
-		return 0, performance.RecoveringState(p), nil // cannot happen: Fail has just marked it
+	now, err := s.Performances.ByRoom(ctx, v.roomID)
+	if err != nil {
+		return 0, performance.State{}, err
 	}
-	revision, state := finished(p)
-	if p.Status == performance.StatusFailed {
+	if now.Status == performance.StatusRunning {
+		return 0, performance.RecoveringState(now), nil // cannot happen: the row was marked, by this call or before it
+	}
+	revision, state := finished(now)
+	if marked {
 		v.log.Warn("theater: the workflow ended without marking its performance; marked failed", "performance_id", p.ID)
 		s.Hub.announce(v.roomID, v.conn, snapshotMessage(revision, state))
 	}

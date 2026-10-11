@@ -149,7 +149,9 @@ func TestServeWSMarksADeadRunFailedAndTellsTheRoom(t *testing.T) {
 	// holds. The one that found out is not told twice.
 	require.Equal(t, failed, readMessage(t, ctx, waiting), "the browser that was waiting")
 	svc.Hub.Broadcast("room", 9, updateJSON(9))
-	require.Equal(t, performance.Message{Type: "update", Revision: 9}.Type, readMessage(t, ctx, late).Type)
+	next := readMessage(t, ctx, late)
+	require.Equal(t, "update", next.Type)
+	require.Equal(t, 9, next.Revision)
 }
 
 func TestARunThatFinishedAsItWasFoundClosedIsAnsweredAsItFinished(t *testing.T) {

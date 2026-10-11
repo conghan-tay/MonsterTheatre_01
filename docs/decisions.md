@@ -36,6 +36,9 @@ The log below is kept in full, including entries that were later replaced. These
 | D038 | Choice generation has no stand-in lines: retry for a window, then fail the run |
 | D039 | A finished room's snapshot comes from its row: the premiere as published, at revision 25, with its start time stored |
 | D040 | Stored objects are read through a body that can seek, so the standard library answers range requests |
+| D041 | A browser that cannot be given the state is sent a `recovering` snapshot and kept; it asks again with `resync` |
+| D042 | A run found dead is detected by a refused query, marked failed, and announced to its whole room |
+| D043 | A connecting browser never starts a workflow; only Start does |
 
 Superseded or withdrawn: D002, D004, D006, D010, D011, D012, D014, D016, D019, D020, D021, and the data-lake half of D003.
 
@@ -750,3 +753,51 @@ This algorithm was run through the spike's three scenarios and was correct in ev
 **Tradeoffs and consequences:** The S3 store needs a small reader that turns a seek and a read into a ranged request, and a request against it costs one call for the size and one for the bytes. That reader does not exist yet, so range requests have only been exercised against the filesystem store.
 
 **Status:** accepted — explicit user choice on 2026-10-11, in the step 12 plan.
+
+## D041 — Recovering is a snapshot, and the browser stays
+
+**Decision:** When a performance is running but its workflow cannot be asked for its state, the browser's snapshot is `{"phase": "recovering", "turn": 0, "performanceId": "…"}` at revision 0. The connection is kept and stays in the room. The browser asks again by sending `resync`.
+
+**Context / requirement:** A snapshot of a running performance comes from a workflow query, and a query needs a worker. Until step 13 a failed query closed the socket with code `1013` and said nothing. The system design said the browser should be told the performance is recovering and retry; review item 11 left open whether there should be a message at all.
+
+**Chosen approach:** `recovering` is a phase the server alone produces, like `waiting`. It is sent when the query is not answered within five seconds, or fails for any reason other than the workflow having closed (D042). The same snapshot function answers `resync`, so asking again is the retry, with no reconnection. Because the connection is already registered for the room, the first update published after the worker returns reaches it too, and every update carries the whole state (D036); `resync` then adds the browser's own vote. `resync` is passed on once a second per connection.
+
+**Why it fits:** The first message is still always a snapshot. A retry costs one query and no handshake or session lookups. The browser cannot miss the moment the run resumes, because it is in the room when it does.
+
+**Alternatives considered:** An `error` message and a `1013` close, with the browser reconnecting on a backoff: nothing held open and no new phase, but each retry is a new handshake and the browser is absent when updates resume. The same snapshot with the server itself retrying the query and pushing the answer: no retry logic in the page, at the cost of a timer per waiting connection and a departure from "the browser retries".
+
+**Tradeoffs and consequences:** One more phase in the contract, which the pages must handle (step 14). A browser waits up to five seconds for `recovering`, the query's timeout; shortening it would call a busy worker "recovering". "Recovering" also covers causes that will not mend by themselves: Temporal unreachable, and a workflow that was never started (D043). Close code `1013` now means only that the database could not be read.
+
+**Status:** accepted — explicit user choice on 2026-10-11, in the step 13 plan.
+
+## D042 — A dead run is found by a refused query and announced to its room
+
+**Decision:** The connect-time state query is sent on the condition that the workflow is open. If Temporal refuses it because the workflow has closed while the row still says `running`, the server marks the row `failed` with `internal_error` and sends the failed snapshot to every connection in the room.
+
+**Context / requirement:** A run stopped by its 30-minute timeout, or terminated from outside, cannot mark its own row. The system design said that when a browser connects and the query fails, the server asks Temporal about the workflow and, finding it closed, marks the row failed. Building it showed the rule would not fire: with a worker up, a closed workflow still answers a query, with the state it stopped in. The end-to-end test saw exactly that, a terminated run answering `voting`.
+
+**Chosen approach:** `QueryWorkflowWithOptions` with the reject condition "not open": one call that is answered, refused as closed, or fails. On a refusal the server calls `Fail`, which changes only a row still `running` and reports whether it did, reads the row again, and answers from it. If this call was the one that marked the row, the same snapshot is queued for every other connection in the room, marked so that no browser drops it as older than what it holds.
+
+**Why it fits:** One call where the design had two, and it catches the case the rule exists for. Reading the row again makes the race harmless: a run that completed between the row read and the query is answered as the premiere, and one that failed properly in that moment is answered with the reason it recorded. Neither is announced: the room gets the workflow's own update, and a failed update carries the turn and lines that a snapshot built from the row cannot. Telling the room matches every other failure, where all browsers are told; otherwise the browsers already connected would wait on a round that will never close.
+
+**Alternatives considered:** Describing the workflow only after a failed query, as designed: misses a closed run whenever a worker is up. Describing it before every query: correct, but two calls on every connection. Telling only the browser that connected, as designed: the smallest change, and leaves the rest of the room looking at a paused screen.
+
+**Tradeoffs and consequences:** A snapshot can now arrive unasked. A dead run is noticed only when someone connects or resyncs; nothing sweeps for them (D027). The reason recorded is always `internal_error`, whatever ended the run. Verified by terminating a workflow, not by waiting out a real timeout.
+
+**Status:** accepted — the room-wide announcement is an explicit user choice on 2026-10-11; the reject condition was proposed in the step 13 plan and approved with it.
+
+## D043 — A connecting browser never starts a workflow
+
+**Decision:** If the performance row says `running` and Temporal has no such workflow, the server does not start one when a browser connects. The browser is sent `recovering` (D041). The workflow is started only by the director pressing Start, which already starts it whenever the row says `running`.
+
+**Context / requirement:** Review item 9, decided on 2026-10-08, said a connecting browser should start a missing workflow, to repair a Start that wrote the row and then failed to start the workflow. Planning step 13, the user asked what conditions leave a row without a workflow. There are two kinds. During Start: Temporal unreachable or erroring (the director sees `503`), the server dying between the two steps, or the director's browser dropping the request between them. Long after Start: a run that timed out without marking its row and whose workflow Temporal has since deleted at the end of its retention period; the server pointed at a different Temporal; or, locally, a deleted dev database.
+
+**Chosen approach:** Not-found is treated like any other unanswered query. Nothing else changes: Start is safe to repeat and repairs the first kind.
+
+**Why it fits:** The server cannot tell the two kinds apart. Starting on connect would repair the first and, for the second, begin a fresh performance in an old, dead room the moment someone opened its link, with nobody expecting it. Start is a deliberate act by the one person allowed to make it (D007).
+
+**Alternatives considered:** Always starting, as item 9 said. Starting only when the row is younger than the run timeout and marking older ones failed: repairs the common case automatically, but a failed Start would still come to life from an audience member reloading, without the director pressing anything.
+
+**Tradeoffs and consequences:** After a Start that answered `503` or was cut off, the room says `recovering` until the director presses Start again; a director who walks away leaves it so. A row whose workflow Temporal has forgotten says `recovering` for good and is never marked failed. The first row of the table in the system design, section 6, and review item 9 were rewritten.
+
+**Status:** accepted — explicit user choice on 2026-10-11, reversing review item 9.

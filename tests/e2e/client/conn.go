@@ -20,8 +20,11 @@ const (
 	TypeError        = "error"
 )
 
-// TypeVote is the message a browser sends to vote.
-const TypeVote = "vote"
+// Messages a browser sends: a vote, and a request for a fresh snapshot.
+const (
+	TypeVote   = "vote"
+	TypeResync = "resync"
+)
 
 // Message is one WebSocket message from the server. Snapshots and updates
 // carry a revision and the state they describe.
@@ -46,6 +49,7 @@ const (
 	PhaseVoting        = "voting"
 	PhasePreparingLine = "preparing_line"
 	PhasePremiere      = "premiere"
+	PhaseRecovering    = "recovering"
 	PhaseFailed        = "failed"
 )
 
@@ -269,6 +273,24 @@ func (c *Conn) Reply(ctx context.Context) (Message, error) {
 			return msg, nil
 		}
 		c.pending = append(c.pending, msg)
+	}
+}
+
+// Resync asks for a fresh snapshot and returns it. Whatever arrived before
+// the snapshot is dropped, as a browser replacing its state would drop it.
+func (c *Conn) Resync(ctx context.Context) (Message, error) {
+	if err := c.Send(ctx, map[string]any{"type": TypeResync}); err != nil {
+		return Message{}, err
+	}
+	c.pending = nil
+	for {
+		msg, err := c.read(ctx)
+		if err != nil {
+			return msg, fmt.Errorf("waiting for the snapshot: %w", err)
+		}
+		if msg.Type == TypeSnapshot {
+			return msg, nil
+		}
 	}
 }
 

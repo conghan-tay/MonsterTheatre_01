@@ -16,12 +16,15 @@ import (
 // Turns is how many voted turns a performance has.
 const Turns = 8
 
-// Phases. Waiting appears only in the snapshot the server builds for a room
-// that has not started; the others are published by the workflow. A finished
-// performance stays in its last phase, premiere or failed, and the server
-// rebuilds that state from the performance row (PremiereState, FailedState).
+// Phases. Waiting and Recovering appear only in snapshots the server builds
+// itself, for a room that has not started and for a performance whose
+// workflow cannot be asked; the others are published by the workflow. A
+// finished performance stays in its last phase, premiere or failed, and the
+// server rebuilds that state from the performance row (PremiereState,
+// FailedState).
 const (
 	PhaseWaiting       = "waiting"
+	PhaseRecovering    = "recovering"
 	PhaseGenerating    = "generating"
 	PhaseVoting        = "voting"
 	PhasePreparingLine = "preparing_line"
@@ -42,13 +45,14 @@ const (
 )
 
 // Message types on the WebSocket (docs/system-design.md, section 5). The
-// first four are sent by the server; a browser sends vote.
+// first four are sent by the server; a browser sends vote and resync.
 const (
 	TypeSnapshot     = "snapshot"
 	TypeUpdate       = "update"
 	TypeVoteReceived = "vote_received"
 	TypeError        = "error"
 	TypeVote         = "vote"
+	TypeResync       = "resync"
 )
 
 // State is everything a browser is shown about a performance. Snapshots and
@@ -238,4 +242,13 @@ func PremiereState(p Performance) State {
 // reads as an internal error.
 func FailedState(p Performance) State {
 	return State{Phase: PhaseFailed, PerformanceID: p.ID, Failure: NewFailure(p.FailureReason)}
+}
+
+// RecoveringState is what a browser is told when a performance is running
+// but its workflow cannot be asked for its state: usually because no worker
+// is up to answer. It says only which performance; the browser asks again
+// with resync, and is sent the next update like everyone else in the room
+// (docs/decisions.md, D041).
+func RecoveringState(p Performance) State {
+	return State{Phase: PhaseRecovering, PerformanceID: p.ID}
 }

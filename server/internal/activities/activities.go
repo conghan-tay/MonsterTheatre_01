@@ -35,7 +35,7 @@ type RoomReader interface {
 // Finisher records how a performance ended. *performance.PGStore implements it.
 type Finisher interface {
 	Complete(ctx context.Context, id string, script performance.Script, audioKeys []string, premiereStartsAt, now time.Time) error
-	Fail(ctx context.Context, id, reason string, now time.Time) error
+	Fail(ctx context.Context, id, reason string, now time.Time) (changed bool, err error)
 }
 
 // StreamAdder appends to a Redis stream. *redis.Client implements it.
@@ -273,5 +273,6 @@ type FailInput struct {
 
 // Fail marks the performance failed and records the reason.
 func (a *Activities) Fail(ctx context.Context, in FailInput) error {
-	return a.Performances.Fail(ctx, in.PerformanceID, in.Reason, a.Now())
+	_, err := a.Performances.Fail(ctx, in.PerformanceID, in.Reason, a.Now())
+	return err
 }

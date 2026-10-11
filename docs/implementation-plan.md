@@ -313,6 +313,8 @@ Makefile           dev, test, e2e, migrate
 
 ### Step 13 — Recovery
 
+**Done 2026-10-11.** One rule below was reversed: a missing workflow is **not** started when a browser connects. It is reported as `recovering` and only Start repairs it (D043). "Recovering" is a snapshot phase on a connection that is kept, and the browser asks again with `resync` (D041). A closed workflow is found by sending the query on condition that the workflow is open, in one call, because a closed workflow otherwise answers with its last state; the row is then marked failed and the whole room is told (D042). `resync` is limited to one a second per connection. The harness could already stop and start the worker (step 10); it gained helpers to write a row with no workflow and to terminate a workflow. H8 passed before any change, as it should: Temporal does that work. The rehearsal by hand in the Temporal UI is the user's, with steps in the pull request's review guide.
+
 **What to build**
 - The connect-time rule when a query fails: start a missing workflow, mark a closed one failed, otherwise report recovering.
 - The `resync` message.
@@ -325,6 +327,7 @@ Makefile           dev, test, e2e, migrate
 ### Step 14 — Theatre web pages
 
 **What to build**
+- On a `recovering` snapshot, show that the performance is recovering and send `resync` every few seconds (no more than one a second is answered) until the phase changes.
 - The audience page: Enter theatre (which unlocks audio), waiting state, the three choices with a countdown, the winning line and "preparing" state, reconnection with backoff, and the failure message.
 - The premiere player: countdown, preloading, eight clips in order with the speaker's portrait highlighted, the **Tap to hear audio** fallback, and replay for a finished room. A finished room arrives as the `premiere` state with a `startsAt` that has passed (D039); there is no separate phase for it.
 - The director's room page wired to Start, with the same live view and voting.
@@ -357,7 +360,7 @@ These are items 11 to 16 in [the review](review.md), placed where they come up:
 
 | Item | Settle in |
 | --- | --- |
-| Whether to show a "recovering" message | Steps 13 and 14 |
+| Whether to show a "recovering" message | Server half settled in step 13: a `recovering` snapshot (D041). What the page shows: step 14 |
 | What the page shows between rounds | Step 14 |
 | Database cleanup | Step 15, or defer |
 | Whether goose runs unmodified against Aurora DSQL | Step 15 |

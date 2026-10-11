@@ -16,6 +16,9 @@ const (
 	// maxChoiceIDLength bounds what a browser can make the workflow store.
 	// Real choice IDs are "c1" to "c3".
 	maxChoiceIDLength = 16
+	// resyncInterval is how often one connection may ask for a fresh
+	// snapshot. Each one is a query a worker has to answer.
+	resyncInterval = time.Second
 )
 
 // Error codes sent to a browser in an error message.
@@ -43,6 +46,11 @@ type inbox struct {
 	// passed is what this connection has already handed to the workflow,
 	// by turn.
 	passed map[int]string
+
+	// resync is where a request for a fresh snapshot is left for the
+	// connection's writer loop, and lastResync when one was last left.
+	resync     chan<- struct{}
+	lastResync time.Time
 }
 
 type incoming struct {
@@ -62,10 +70,31 @@ func (in *inbox) handle(ctx context.Context, data []byte) []byte {
 	if err := json.Unmarshal(data, &msg); err != nil {
 		return errorMessage(codeInvalidMessage, "That message could not be read.")
 	}
-	if msg.Type != performance.TypeVote {
-		return nil
+	switch msg.Type {
+	case performance.TypeVote:
+		return in.vote(ctx, msg, receivedAt)
+	case performance.TypeResync:
+		in.askForSnapshot(receivedAt)
 	}
-	return in.vote(ctx, msg, receivedAt)
+	return nil
+}
+
+// askForSnapshot passes on a browser's request for a fresh snapshot, which
+// it sends when it sees a revision skip a number, or to ask again while the
+// performance is recovering. The writer loop answers it with a snapshot.
+//
+// One a second is passed on. Another inside that second is dropped, and
+// nothing is lost by it: the browser has just been sent a snapshot, and
+// every update after it carries the whole state (docs/decisions.md, D036).
+func (in *inbox) askForSnapshot(receivedAt time.Time) {
+	if !in.lastResync.IsZero() && receivedAt.Sub(in.lastResync) < resyncInterval {
+		return
+	}
+	in.lastResync = receivedAt
+	select {
+	case in.resync <- struct{}{}:
+	default: // one is already waiting to be answered
+	}
 }
 
 // vote hands a vote to the workflow and confirms that it did.

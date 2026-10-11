@@ -131,6 +131,10 @@ ws.send(JSON.stringify({type: "vote", turn: 1, choiceId: "c2"}))
 
 The reply is `{"type":"vote_received","turn":1,"choiceId":"c2"}`. The director and each audience member get one vote per turn, and the first one stands. The result arrives in that turn's `preparing_line` update as `winner`, with each choice's count and `decidedBy` (`majority`, `tie`, or `no_votes`).
 
+If a message was missed, or just to check, ask for a fresh snapshot: `ws.send(JSON.stringify({type: "resync"}))`. The reply is a `snapshot` with the current state and your own vote. One a second is answered.
+
+The run survives the worker. Stop the worker mid-run and the browsers already connected see updates pause; a browser that connects meanwhile gets a snapshot with phase `recovering`. Start the worker again and the run carries on from where it was, with votes cast in the meantime judged by when they were received. With `make dev` running, `pkill -f bin/worker` stops it, and `./bin/worker` from the repository root starts it again with the default settings; if your `.env` changes any the worker reads, export the same ones first.
+
 Once the run has completed, each recording can be fetched by the room's director or an audience member, at the URL its clip carries in the `premiere` update:
 
 ```sh

@@ -173,6 +173,8 @@ Every publish moves the performance into a new phase and increases the revision 
 
 Before Start there is one more phase, `waiting`, which is never published: with no performance there is no workflow to publish it. It appears only in the snapshot the server builds for a room that has not started, at revision 0, so the first published update is always newer.
 
+One more phase is never published: `recovering`, which the server sends in a snapshot, at revision 0, when a performance is running but its workflow cannot be asked for its state (section 6).
+
 There is no phase for "finished". A performance stays in its last phase, `premiere` or `failed`, for good, and the row's status (`completed` or `failed`) is what tells the server to answer from the row instead of the workflow (section 6).
 
 A normal run publishes three updates per turn and one for the premiere: revisions 1 to 25. Tagging, text to speech, and saving to the database publish nothing of their own; the browser stays in `preparing_line` until the next turn's `generating` arrives (or `premiere` after turn eight).
@@ -205,7 +207,7 @@ A possible later improvement: since nothing is played until the premiere, taggin
 | `POST /api/v1/rooms` | Director | One multipart request with scene/character JSON and two portraits. Validate, upload portraits to S3 under a new room ID, insert the room row, return the room ID and share link. Invalid input gets `422` naming each field; an oversize portrait gets `413`. On failure the director resubmits (D025) |
 | `GET /api/v1/rooms` | Director | The director's own rooms, newest first, so a director who closed the tab can find a room again |
 | `GET /api/v1/rooms/{roomId}` | Director or audience session of that room | Scene and characters. The director's view adds the share link and `audienceCount`; the audience's view has neither. `401` with no credentials, `403` for a director who does not own the room |
-| `POST /api/v1/rooms/{roomId}/performance` | Director | The body is an empty JSON object. Insert the performance row, then start the workflow. Returns `{performanceId, roomId, status}`: `201` the first time, `200` for a repeated Start, which returns the existing performance. `503` if the workflow could not be started; pressing again repairs it |
+| `POST /api/v1/rooms/{roomId}/performance` | Director | The body is an empty JSON object. Insert the performance row, then start the workflow. Returns `{performanceId, roomId, status}`: `201` the first time, `200` for a repeated Start, which returns the existing performance. `503` if the workflow could not be started; pressing again repairs it, and nothing else does: until then the row says `running` with nothing running it, and browsers in the room are told it is recovering (D043) |
 | `POST /api/v1/audience-sessions` | Anyone with the share link | Takes the link's room ID and token. `201` and a cookie for a new session; `200` with `restored: true` for a browser that already has one; `403` for any invalid link; `409` when the room has ten. See [Audience session](audience-session.md) |
 | `GET /api/v1/rooms/{roomId}/portraits/{slot}` | Director or audience session | Portrait bytes, read from S3 by the server |
 | `GET /api/v1/performances/{id}/turns/{n}/audio` | Director or audience session of the performance's room | Turn recording as `audio/mpeg`, piped from S3 by the server, never buffered. Supports range requests (section 6). The caller is checked first, with the same `401` and `403` as reading the room. Then `404` for a turn outside 1 to 8, and `409` `performance_not_completed` while the performance is running or if it failed: no recording is served before the premiere, and a failed run's are never served. An unknown performance gets `401` without a director login and `404` with one, as an unknown room does. Responses carry `Cache-Control: private, max-age=604800, immutable`, as portraits do: a recording never changes, and only the room's people may keep one |
@@ -227,7 +229,7 @@ Server to browser:
 
 | Message | Contents |
 | --- | --- |
-| `snapshot` | Full current state and its revision. Always the first message after connecting |
+| `snapshot` | Full current state and its revision. Always the first message after connecting. Also the reply to `resync`, and sent unasked to a whole room in one case: when a run is found dead (section 6) |
 | `update` | One published change with its revision. It carries the whole state as it now stands, in the same shape as a snapshot, not only what changed (D036) |
 | `vote_received` | Confirms the server passed this browser's vote to the workflow, and names it: `{"type": "vote_received", "turn": 1, "choiceId": "c2"}`. It does not say the vote counted; only the workflow knows that, and a browser sees what counted as `yourVote` in its next snapshot |
 | `error` | Something this browser sent could not be acted on: `{"type": "error", "code": "…", "message": "…"}`. Codes: `vote_not_delivered` (the performance has not started, has ended, or the workflow could not be reached) and `invalid_message` (not a readable message, or a vote without a turn from 1 to 8 and a choice) |
@@ -243,7 +245,7 @@ Browser to server:
 | Message | Contents |
 | --- | --- |
 | `vote` | Turn number and choice ID: `{"type": "vote", "turn": 1, "choiceId": "c2"}`. The voter (audience session or director) comes from the connection, never from the message |
-| `resync` | Asks for a fresh `snapshot`. Sent when the browser sees a gap in revision numbers |
+| `resync` | `{"type": "resync"}`. Asks for a fresh `snapshot`, which is the reply: taken exactly as the first one was, with the browser's own `yourVote`. Sent when the browser sees a gap in revision numbers, and every few seconds while the phase is `recovering`. One a second is answered per connection; another inside that second is ignored, which loses nothing, since the browser has just had a snapshot and every update carries the whole state |
 
 The state of a running performance. A field is absent in the phases that do not have it:
 
@@ -257,7 +259,7 @@ The state of a running performance. A field is absent in the phases that do not 
 
 | Field | Present in | Meaning |
 | --- | --- | --- |
-| `phase`, `turn` | Always | `turn` is 0 before the first turn |
+| `phase`, `turn` | Always | `turn` is 0 before the first turn, and in a `recovering` snapshot, which carries only the `performanceId` besides |
 | `performanceId` | Once started | Needed to fetch the recordings |
 | `speaker`, `beat` | `generating`, `voting`, `preparing_line` | `A` or `B`, and the turn's story beat |
 | `choices` | `voting`, `preparing_line` | The three lines, with IDs `c1` to `c3` |
@@ -272,7 +274,7 @@ The winning line with its audio tags is not sent to browsers. It goes to the spe
 
 **Heartbeat.** The server pings each connection every 25 seconds and drops one that has not answered within 10. Browsers answer pings by themselves. This keeps a quiet connection alive through the load balancer's idle timeout and clears dead ones from the server's map.
 
-**Closing.** The server closes a connection with code `1001` when it shuts down, with `1008` when a browser has fallen so far behind that its queue of unsent messages is full, and with `1013` when it could not get a snapshot from the workflow. In each case the browser reconnects and gets a fresh snapshot.
+**Closing.** The server closes a connection with code `1001` when it shuts down, with `1008` when a browser has fallen so far behind that its queue of unsent messages is full, and with `1013` when it could not read the performance from the database, so has no snapshot to send. In each case the browser reconnects and gets a fresh snapshot. A workflow that cannot be asked is not a reason to close: the browser is sent `recovering` and kept.
 
 ## 6. Flows
 
@@ -320,19 +322,25 @@ A finished performance's snapshot is built from its row, with no worker needed (
 
 The row is marked `completed` a moment before the premiere update is published. A browser that connects in between gets the premiere from the row at revision 25, and the update is then dropped for it as nothing new.
 
-If the performance row says `running` but the query fails, the server asks Temporal about the workflow and acts on the answer:
+If the performance row says `running`, the workflow is asked for its state, on one condition: that it is still open. Temporal refuses the query otherwise. That gives three outcomes from one call:
 
-| Temporal says | Meaning | Server does |
+| Outcome | Meaning | Server does |
 | --- | --- | --- |
-| Workflow not found | Start wrote the row but never started the workflow | Starts it with the same ID, which is safe to repeat |
-| Workflow closed | The run ended without updating its row, for example by timeout | Marks the row `failed` and sends that snapshot |
-| Workflow running | No worker is available to answer | Tells the browser the performance is recovering; the browser retries |
+| Answered | The run is alive and a worker is up | Sends the answer as the snapshot |
+| Refused: the workflow has closed | The run ended without updating its row: stopped by its timeout, or from outside | Marks the row `failed` with `internal_error`, reads the row again, and sends that snapshot, to this browser and to every other connection in the room (D042) |
+| Anything else: no answer in five seconds, no such workflow, Temporal unreachable | Usually no worker is up. Or Start wrote the row and never started the workflow | Sends a snapshot with phase `recovering` at revision 0, and keeps the connection (D041) |
+
+The condition matters. Without it Temporal has a worker rebuild a closed run and answer with the state it stopped in, so a run that died mid-round would be shown as a round still open, for ever.
+
+Marking changes only a row that is still `running`, and the room is told only when this was the call that marked it. A run that ended properly in the moment between the row being read and the workflow being asked, by completing or by failing and marking its own row, is therefore answered as it ended, and nothing is announced: the room gets the workflow's own update.
+
+A browser sent `recovering` stays in the room. It asks again with `resync` every few seconds, and it is sent the next update like everyone else as soon as the worker is back; either one puts it right.
+
+A missing workflow is not started by a connecting browser (D043). The server cannot tell a Start that has not finished from a workflow Temporal has forgotten, and starting the second kind would bring an old room to life when someone opened it. The director pressing Start again starts it; until then the room says `recovering`.
 
 The server keeps an in-memory map of room to open connections. It reads each update from Redis once and writes it to every connection for that room. The server reads the stream from "now" at startup; history is not needed because snapshots come from the workflow.
 
 All performances share one stream, `performance-updates`. Each entry holds the room ID, the revision, and the message exactly as browsers receive it. The stream is trimmed to about a thousand entries. The reader notes the stream's last entry at startup and from then on always reads on from the last entry it has seen, including after a Redis outage; asking only for "what is new" on each read would lose an update that arrived between two reads.
-
-Built so far (steps 9 and 12): all three branches of the diagram, the second only while a worker is running. Until step 13, a query that fails closes the connection with code `1013` instead of following the table above.
 
 ### Voting
 
@@ -362,7 +370,7 @@ Two delivery rules keep the premiere continuous and working across browsers:
 - The workflow resumes from its history when a worker is back: completed activities are not repeated, and the timer keeps its original deadline.
 - Votes signalled while the worker is down are stored by Temporal. On return the workflow counts those whose receipt time is not after the deadline, and rejects the rest (D033).
 - Browsers stay connected to the server throughout and see updates pause, then continue.
-- A browser that connects while the worker is down cannot get a snapshot, because a query needs a worker. The server tells it the performance is recovering and the browser retries.
+- A browser that connects while the worker is down cannot get the performance's state, because a query needs a worker. Its snapshot says `recovering`; it stays connected, asks again with `resync`, and is sent the next update with everyone else once the worker is back.
 
 ## 7. Security
 
@@ -386,7 +394,9 @@ Two delivery rules keep the premiere continuous and working across browsers:
 
 ## 9. Limits accepted for the prototype
 
-- No state reads for new connections while the worker is down.
+- No state for new connections while the worker is down: they are told the performance is recovering, up to five seconds after connecting, and wait.
+- A performance whose Start never started its workflow says `recovering` until the director presses Start again; nothing else repairs it. One whose workflow Temporal has since forgotten says `recovering` for good.
+- A run found dead is marked failed only when a browser next connects or resyncs; nothing sweeps for them (D027).
 - No history of individual votes after a run; only counts are kept in the final script.
 - No single assembled recording; the premiere is eight clips.
 - No limit on how many performances run at once (D027).

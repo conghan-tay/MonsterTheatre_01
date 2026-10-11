@@ -50,9 +50,10 @@ type Stack struct {
 	env            []string
 	startedCompose bool
 
-	temporal *process
-	server   *process
-	worker   *process
+	temporal        *process
+	temporalAddress string
+	server          *process
+	worker          *process
 }
 
 // Start brings the whole stack up. On failure it tears down whatever it
@@ -116,6 +117,7 @@ func StartWith(ctx context.Context, opts Options) (stack *Stack, err error) {
 		return nil, err
 	}
 	temporalAddress := fmt.Sprintf("127.0.0.1:%d", temporalPort)
+	s.temporalAddress = temporalAddress
 	s.temporal, err = startProcess("temporal", s.LogDir, os.Environ(), "temporal",
 		"server", "start-dev", "--headless", "--ip", "127.0.0.1",
 		"--port", fmt.Sprint(temporalPort), "--log-level", "error")
@@ -255,6 +257,37 @@ func (s *Stack) PerformanceCount(ctx context.Context, roomID string) (int, error
 	var n int
 	err = conn.QueryRow(ctx, "SELECT count(*) FROM performances WHERE room_id = $1", roomID).Scan(&n)
 	return n, err
+}
+
+// InsertPerformance writes a running performance row for a room without
+// starting a workflow, and returns its ID. That is what a Start leaves behind
+// when it dies between its two steps, which the endpoint itself cannot be
+// made to do.
+func (s *Stack) InsertPerformance(ctx context.Context, roomID string) (string, error) {
+	conn, err := pgx.Connect(ctx, e2eDatabaseURL)
+	if err != nil {
+		return "", err
+	}
+	defer conn.Close(ctx)
+	var id string
+	err = conn.QueryRow(ctx, `
+		INSERT INTO performances (id, room_id, status, created_at)
+		VALUES (gen_random_uuid(), $1, 'running', now())
+		RETURNING id::text`, roomID).Scan(&id)
+	return id, err
+}
+
+// TerminateWorkflow ends a performance's workflow from outside, as an
+// operator could. The workflow gets no chance to mark its row, which is
+// also how a run ended by its timeout leaves things.
+func (s *Stack) TerminateWorkflow(ctx context.Context, performanceID string) error {
+	out, err := exec.CommandContext(ctx, "temporal", "workflow", "terminate",
+		"--address", s.temporalAddress, "--namespace", "default",
+		"--workflow-id", "performance/"+performanceID, "--reason", "e2e test").CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("terminate workflow of %s: %w\n%s", performanceID, err, out)
+	}
+	return nil
 }
 
 // StoredObject reads an object the stack has stored, such as a turn's

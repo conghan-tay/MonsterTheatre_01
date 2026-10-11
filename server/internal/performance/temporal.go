@@ -3,6 +3,7 @@ package performance
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	enumspb "go.temporal.io/api/enums/v1"
@@ -77,14 +78,32 @@ func (w *Workflows) Vote(ctx context.Context, performanceID string, vote Vote) e
 	return w.Client.SignalWorkflow(ctx, WorkflowID(performanceID), "", SignalVote, vote)
 }
 
+// ErrWorkflowClosed means the performance's workflow has ended: completed,
+// failed, timed out, or terminated.
+var ErrWorkflowClosed = errors.New("performance workflow is closed")
+
 // State asks a running performance's workflow for its current state, as
 // seen by one voter. It needs a worker to answer, so it fails while none is
 // running.
+//
+// A workflow that has ended is not asked. Left to itself, Temporal would
+// have a worker rebuild the ended run and answer with the state it stopped
+// in, and a run that died mid-round would look like a round still open. The
+// query is sent on condition that the workflow is open, and ErrWorkflowClosed
+// is returned if it is not.
 func (w *Workflows) State(ctx context.Context, performanceID, voterID string) (Snapshot, error) {
 	var snapshot Snapshot
-	value, err := w.Client.QueryWorkflow(ctx, WorkflowID(performanceID), "", QueryState, voterID)
+	resp, err := w.Client.QueryWorkflowWithOptions(ctx, &client.QueryWorkflowWithOptionsRequest{
+		WorkflowID:           WorkflowID(performanceID),
+		QueryType:            QueryState,
+		Args:                 []any{voterID},
+		QueryRejectCondition: enumspb.QUERY_REJECT_CONDITION_NOT_OPEN,
+	})
 	if err != nil {
 		return snapshot, err
 	}
-	return snapshot, value.Get(&snapshot)
+	if resp.QueryRejected != nil {
+		return snapshot, fmt.Errorf("%w (%s)", ErrWorkflowClosed, resp.QueryRejected.GetStatus())
+	}
+	return snapshot, resp.QueryResult.Get(&snapshot)
 }

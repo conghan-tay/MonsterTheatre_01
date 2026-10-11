@@ -40,6 +40,10 @@ const (
 type Stack struct {
 	// BaseURL is the server's address, for example "http://127.0.0.1:54321".
 	BaseURL string
+	// SecondBaseURL is the address of a second server process: the same
+	// program, with the same database, Redis, and Temporal, on another port.
+	// Tests use it to check that people on different servers share a room.
+	SecondBaseURL string
 	// ScriptDir is where tests write per-room scripts for the fake providers.
 	ScriptDir string
 	// LogDir holds one log file per child process.
@@ -53,6 +57,7 @@ type Stack struct {
 	temporal        *process
 	temporalAddress string
 	server          *process
+	secondServer    *process
 	worker          *process
 }
 
@@ -186,11 +191,34 @@ func StartWith(ctx context.Context, opts Options) (stack *Stack, err error) {
 	if s.server, err = startProcess("server", s.LogDir, s.env, s.bin("server")); err != nil {
 		return nil, err
 	}
+	secondPort, err := freePort()
+	if err != nil {
+		return nil, err
+	}
+	s.SecondBaseURL = fmt.Sprintf("http://127.0.0.1:%d", secondPort)
+	// A later entry overrides an earlier one with the same name.
+	secondEnv := append(append([]string{}, s.env...), fmt.Sprintf("HTTP_ADDR=127.0.0.1:%d", secondPort))
+	if s.secondServer, err = startProcess("server-2", s.LogDir, secondEnv, s.bin("server")); err != nil {
+		return nil, err
+	}
 	if err := s.StartWorker(); err != nil {
 		return nil, err
 	}
 	if err := waitFor(ctx, "server /healthz", s.server, func() error {
 		resp, err := http.Get(s.BaseURL + "/healthz")
+		if err != nil {
+			return err
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("status %d", resp.StatusCode)
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	if err := waitFor(ctx, "second server /healthz", s.secondServer, func() error {
+		resp, err := http.Get(s.SecondBaseURL + "/healthz")
 		if err != nil {
 			return err
 		}
@@ -213,6 +241,7 @@ func (s *Stack) Stop() {
 	}
 	s.worker.kill()
 	s.server.kill()
+	s.secondServer.kill()
 	s.temporal.kill()
 	if s.startedCompose {
 		cmd := exec.Command("docker", "compose", "stop")
@@ -384,7 +413,7 @@ func (s *Stack) bin(name string) string {
 func (s *Stack) logTails() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "logs: %s\n", s.LogDir)
-	for _, p := range []*process{s.temporal, s.server, s.worker} {
+	for _, p := range []*process{s.temporal, s.server, s.secondServer, s.worker} {
 		if p != nil {
 			fmt.Fprintf(&b, "--- last lines of %s\n%s\n", p.name, p.logTail(15))
 		}

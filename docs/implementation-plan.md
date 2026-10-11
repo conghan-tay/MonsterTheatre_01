@@ -350,7 +350,13 @@ Makefile           dev, test, e2e, migrate
 
 Tests added: three Go end-to-end tests and one browser test, a pure test of the script rule, and more assertions in the full-performance browser test.
 
+### After step 14 — room messages through Redis
+
+**Done 2026-10-11.** Not one of the fifteen steps. The two messages a server originates, the `audience` message and the failed snapshot for a dead run, now reach browsers through a second Redis stream, `room-notices`, read by every server, so a room's director and audience can be connected to different server instances (D046). One server is still deployed. No page, message, schema, or workflow changed. The test stack runs two servers, and three end-to-end tests put a room's people on both.
+
 ### Step 15 — AWS deployment
+
+One server instance is deployed, but nothing on the live path requires that: the load balancer needs no sticky routing for WebSockets (D046). Before a second instance is added, move the failed-login lock out of server memory (system design, section 9).
 
 **What to build**
 - A CDK app: network, load balancer with HTTPS, three Fargate services (web, server, worker), an Aurora DSQL cluster, ElastiCache, the private encrypted S3 bucket with a seven-day lifecycle rule, and secrets for the provider keys and Temporal Cloud credentials.

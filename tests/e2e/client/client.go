@@ -35,6 +35,13 @@ func New(baseURL string) *Client {
 	}
 }
 
+// On returns the same browser pointed at another server: the same cookie
+// jar, so the same logins and sessions, at a different address. It is how a
+// test puts two people in one room on two servers.
+func (c *Client) On(baseURL string) *Client {
+	return &Client{BaseURL: baseURL, HTTP: c.HTTP}
+}
+
 // Response is a completed HTTP response with its body read.
 type Response struct {
 	Status int

@@ -160,6 +160,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		Failures:     performances,
 		Votes:        workflows,
 		Hub:          hub,
+		Notices:      redisClient,
 		Origins:      origins,
 		Logger:       logger,
 		Now:          time.Now,
@@ -168,7 +169,8 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	audienceService.Watcher = theaterService
 	// Updates the worker publishes are read from Redis here and forwarded to
 	// each room's connections, from startup until the process stops.
-	go (&theater.StreamReader{Redis: redisClient, Hub: hub, Logger: logger}).Run(ctx)
+	// Notices, the servers' own news for one another, arrive the same way.
+	go (&theater.StreamReader{Redis: redisClient, Hub: hub, Notices: theaterService, Logger: logger}).Run(ctx)
 	mux.HandleFunc("GET /api/v1/rooms/{roomId}/ws", theaterService.ServeWS)
 	// Open to anyone holding a valid share link.
 	mux.HandleFunc("POST /api/v1/audience-sessions", audienceService.Join)

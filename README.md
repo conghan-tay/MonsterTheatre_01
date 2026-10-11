@@ -104,6 +104,8 @@ Share links are derived from `SHARE_LINK_SECRET`, not stored. `make dev` keeps a
 {"type":"snapshot","revision":0,"state":{"phase":"waiting","turn":0}}
 ```
 
+Which server a browser is connected to does not matter. Everything it is sent reaches the servers through two Redis streams that each of them reads whole: `performance-updates`, written by the worker, and `room-notices`, written by a server with news for the others (someone joined; a run was found dead). One server is what `make dev` and the deployment run; the end-to-end tests run two.
+
 The theatre pages open it themselves. To watch it by hand, log in at http://localhost:3000, open a room, and run this in the browser console on that page:
 
 ```js

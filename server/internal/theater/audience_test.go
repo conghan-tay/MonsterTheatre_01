@@ -29,12 +29,21 @@ func (doorByCookie) Authorize(_ http.ResponseWriter, r *http.Request) (rooms.Vie
 type fakeMembers struct {
 	mu        sync.Mutex
 	nicknames []string
+	calls     int
 }
 
 func (f *fakeMembers) Nicknames(context.Context, string) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.calls++
 	return append([]string(nil), f.nicknames...), nil
+}
+
+// asked is how many times the audience has been read.
+func (f *fakeMembers) asked() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
 }
 
 func (f *fakeMembers) set(nicknames ...string) {

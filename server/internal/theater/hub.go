@@ -24,6 +24,9 @@ type outbound struct {
 
 // conn is one browser's connection as the hub sees it.
 type conn struct {
+	// id names this connection among all servers' connections, so that a
+	// notice can say which one not to tell.
+	id string
 	// send holds updates waiting to be written. Only the connection's own
 	// writer loop receives from it.
 	send chan outbound
@@ -97,10 +100,23 @@ func (h *Hub) Broadcast(roomID string, revision int, msg []byte) {
 }
 
 // announce queues a snapshot for every connection in the room but one: the
-// connection whose request brought the news, which is answered directly. No
-// browser drops it as something it already has.
-func (h *Hub) announce(roomID string, except *conn, msg []byte) {
-	h.queue(roomID, func(c *conn) bool { return c != except }, outbound{data: msg, always: true})
+// connection whose request brought the news, which is answered directly. It
+// is named by its ID, and may be on another server. No browser drops the
+// snapshot as something it already has.
+func (h *Hub) announce(roomID, exceptID string, msg []byte) {
+	h.queue(roomID, func(c *conn) bool { return c.id != exceptID }, outbound{data: msg, always: true})
+}
+
+// hasDirector reports whether the room's director has a connection here.
+func (h *Hub) hasDirector(roomID string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for c := range h.rooms[roomID] {
+		if c.director {
+			return true
+		}
+	}
+	return false
 }
 
 // tellDirectors queues a message for the room's director, on however many

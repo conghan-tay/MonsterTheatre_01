@@ -326,6 +326,44 @@ func (s *Stack) TerminateWorkflow(ctx context.Context, performanceID string) err
 	return nil
 }
 
+// IndexDefinition returns the definition of a named index in the test
+// database, as PostgreSQL records it, or "" if there is no such index.
+func (s *Stack) IndexDefinition(ctx context.Context, name string) (string, error) {
+	conn, err := pgx.Connect(ctx, e2eDatabaseURL)
+	if err != nil {
+		return "", err
+	}
+	defer conn.Close(ctx)
+	var definition string
+	err = conn.QueryRow(ctx, "SELECT indexdef FROM pg_indexes WHERE schemaname = 'public' AND indexname = $1", name).Scan(&definition)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	return definition, err
+}
+
+// PlanWithoutScanning returns how PostgreSQL would run a query if it were
+// not allowed to read a whole table. The test tables hold a few rows, and
+// for those a full read is the sensible plan whatever indexes exist; with
+// that ruled out, the plan shows whether an index can serve the query.
+func (s *Stack) PlanWithoutScanning(ctx context.Context, query string, args ...any) (string, error) {
+	conn, err := pgx.Connect(ctx, e2eDatabaseURL)
+	if err != nil {
+		return "", err
+	}
+	defer conn.Close(ctx)
+	// For this connection only, which is closed when this returns.
+	if _, err := conn.Exec(ctx, "SET enable_seqscan = off"); err != nil {
+		return "", err
+	}
+	rows, err := conn.Query(ctx, "EXPLAIN "+query, args...)
+	if err != nil {
+		return "", err
+	}
+	lines, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	return strings.Join(lines, "\n"), err
+}
+
 // StoredObject reads an object the stack has stored, such as a turn's
 // recording, from the filesystem object store.
 func (s *Stack) StoredObject(key string) ([]byte, error) {

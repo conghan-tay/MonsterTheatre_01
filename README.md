@@ -218,7 +218,8 @@ The deployed database is Aurora DSQL, which restricts schema changes. Every migr
 
 - one schema statement per file;
 - never mix schema and data changes in one file;
-- no column drops or type changes without recreating the table.
+- no column drops or type changes without recreating the table;
+- an index goes in a file of its own. The two that exist (`00008`, `00009`) use plain `CREATE INDEX`; Aurora DSQL needs `CREATE INDEX ASYNC`, which is for the AWS step to deal with.
 
 One exception was made while every database was still a local test one: step 12 added `premiere_starts_at` to the `performances` create-table migration (`00006`) instead of adding a migration. Goose does not re-run a migration it has recorded, so a database migrated before that needs the table recreated, which deletes its performance rows:
 

@@ -362,6 +362,7 @@ One server instance is deployed, but nothing on the live path requires that: the
 - A CDK app: network, load balancer with HTTPS, three Fargate services (web, server, worker), an Aurora DSQL cluster, ElastiCache, the private encrypted S3 bucket with a seven-day lifecycle rule, and secrets for the provider keys and Temporal Cloud credentials.
 - The S3 implementation of the object store and its smoke test against a real bucket.
 - A Temporal Cloud namespace and the worker's connection to it.
+- The two index migrations, `00008` and `00009`, are plain `CREATE INDEX`. DSQL is documented as needing `CREATE INDEX ASYNC`, so these two statements must be issued in that form there, by the script if goose cannot. Confirm the syntax against the DSQL documentation first; it has not been checked.
 - The Aurora DSQL connection path: the connector, a scoped database role mapped to the task roles, and the migrations applied to the cluster. If goose does not run unmodified against DSQL, apply the same SQL files with a small script.
 
 Before starting this step, load the relevant AWS skills as the project's instructions require, including `aurora-dsql`, and confirm that Aurora DSQL is available in the chosen region and which Redis engine version ElastiCache offers.

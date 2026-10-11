@@ -40,6 +40,7 @@ The log below is kept in full, including entries that were later replaced. These
 | D042 | A run found dead is detected by a refused query, marked failed, and announced to its whole room |
 | D043 | A connecting browser never starts a workflow; only Start does |
 | D044 | The audience page always asks for a click; sound goes through one audio element started in it; clips are preloaded whole |
+| D045 | Audience members give a nickname, which only the director sees; the director's page is told who is in the audience over the WebSocket |
 
 Superseded or withdrawn: D002, D004, D006, D010, D011, D012, D014, D016, D019, D020, D021, and the data-lake half of D003.
 
@@ -818,3 +819,19 @@ This algorithm was run through the spike's three scenarios and was correct in ev
 **Tradeoffs and consequences:** The pages make whole-file requests, so the range support built in step 12 is not exercised by them; it remains for a browser or player that asks. About 1.2 MB of audio is held in memory during a premiere. A director who reloads mid-run has not clicked, and gets Tap to hear audio at the premiere. The Safari half of this reasoning is from documentation: nothing has been run in Safari.
 
 **Status:** accepted — proposed in the step 14 plan as judgment calls and approved with it on 2026-10-11.
+
+## D045 — Nicknames, seen by the director, pushed as people join
+
+**Decision:** An audience member must give a nickname to enter. It is stored on their session and shown to the room's director only. The director's page is told who is in the audience by a WebSocket message, `{"type": "audience", "count", "nicknames"}`, sent to the director's connections alone: after the snapshot, and whenever the audience changes.
+
+**Context / requirement:** After step 14 the user asked for a mandatory nickname on the join page, and for the audience count on the director's page to change as people join; it was read once, with the room, and went stale until a reload. Nothing said who should see nicknames.
+
+**Chosen approach:** `audience_sessions` has a `nickname` column, added to the table's original migration because only local data existed. The join endpoint requires it (trimmed, 1 to 30 characters, duplicates allowed) and answers `422` naming the field otherwise. A browser that enters again keeps its seat and takes the nickname it gives that time. After admitting or renaming, the audience service tells the theatre, which reads the room's nicknames in joining order and queues the message for the room's director connections; the same message is queued behind a director's snapshot when they connect. Reading the list and queueing it is one step under a lock, so two changes close together cannot arrive in the wrong order.
+
+**Why it fits:** The count is live without polling, and a reconnect corrects the page by itself, because the list comes with every connection. Sending it to the director alone keeps a rule the design already had: an audience member's view of a room has never included how many others there are. A nickname is a label and nothing more: votes are counted by session, so renaming, or sharing a name with someone, changes no count.
+
+**Alternatives considered:** Showing the names to everyone in the room: chosen against by the user. Fixing the name at first entry: no renaming, but a typo would stay, and the page must ask on every load anyway (D044). Polling the room endpoint from the director's page: no new message, but late by the polling interval and a request every few seconds per director. Putting the audience into the performance state: it would reach every browser, and it is not part of a performance.
+
+**Tradeoffs and consequences:** A fifth server message type, with no revision: each replaces the last. Someone can change their name at any time, including mid-performance. The push goes through the server's in-memory connection map, as updates do, which is right for the single server instance the design specifies. The page remembers the last name typed in the browser's own storage, per room; a browser with storage switched off starts with an empty field each time. Names are whatever people type: there is no filter on them.
+
+**Status:** accepted — explicit user choices on 2026-10-11 (who sees nicknames; renaming on re-entry; the migration), with the message and the nickname rules proposed in the plan and approved with it.

@@ -10,11 +10,14 @@ import (
 // AudienceClient is an audience member's browser.
 type AudienceClient struct {
 	*Client
+	// Nickname is what this person types before entering. It has a default
+	// because most tests do not care what anyone is called.
+	Nickname string
 }
 
 // NewAudience returns an audience member's browser with no session yet.
 func NewAudience(baseURL string) *AudienceClient {
-	return &AudienceClient{Client: New(baseURL)}
+	return &AudienceClient{Client: New(baseURL), Nickname: "Guest"}
 }
 
 // AudienceSessionCookie is the name of the session cookie for a room. It is
@@ -55,10 +58,24 @@ func (a *AudienceClient) Enter(ctx context.Context, shareLink string) (*Response
 	return a.EnterWith(ctx, roomID, token)
 }
 
+// EnterAs is Enter under a given nickname. Entering again as someone who is
+// already in the room keeps their seat and changes their name.
+func (a *AudienceClient) EnterAs(ctx context.Context, shareLink, nickname string) (*Response, error) {
+	a.Nickname = nickname
+	return a.Enter(ctx, shareLink)
+}
+
 // EnterWith presents a room ID and token directly, for testing bad links.
 func (a *AudienceClient) EnterWith(ctx context.Context, roomID, token string) (*Response, error) {
 	return a.PostJSON(ctx, "/api/v1/audience-sessions", map[string]string{
-		"roomId": roomID,
-		"token":  token,
+		"roomId":   roomID,
+		"token":    token,
+		"nickname": a.Nickname,
 	})
+}
+
+// EnterRaw posts exactly the given body, for testing what the server makes
+// of a nickname that is missing or not allowed.
+func (a *AudienceClient) EnterRaw(ctx context.Context, body map[string]any) (*Response, error) {
+	return a.PostJSON(ctx, "/api/v1/audience-sessions", body)
 }

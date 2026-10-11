@@ -18,6 +18,9 @@ const (
 	TypeUpdate       = "update"
 	TypeVoteReceived = "vote_received"
 	TypeError        = "error"
+	// TypeAudience tells a director who is in the audience. It is not part
+	// of the performance, so Conn keeps it apart: see Audience.
+	TypeAudience = "audience"
 )
 
 // Messages a browser sends: a vote, and a request for a fresh snapshot.
@@ -38,6 +41,10 @@ type Message struct {
 	// Code and Text are set on error.
 	Code string `json:"code"`
 	Text string `json:"message"`
+	// Count and Nicknames are set on audience: how many have joined, and
+	// what they are called, in the order they joined.
+	Count     int      `json:"count"`
+	Nicknames []string `json:"nicknames"`
 	// Raw is the whole message, for tests that need fields not modelled here.
 	Raw json.RawMessage `json:"-"`
 }
@@ -119,6 +126,10 @@ type Conn struct {
 	// pending holds messages read while waiting for something else, in the
 	// order they arrived. Next returns these before reading more.
 	pending []Message
+	// audience holds audience messages not yet asked for, and audienceSeen
+	// counts every one that has arrived.
+	audience     []Message
+	audienceSeen int
 }
 
 // HandshakeError is a WebSocket handshake the server answered with an
@@ -197,7 +208,20 @@ func (c *Conn) Next(ctx context.Context) (Message, error) {
 	return c.read(ctx)
 }
 
+// read returns the next message about the performance. Audience messages
+// that arrive first are set aside for Audience, as a page hands them to a
+// different part of itself.
 func (c *Conn) read(ctx context.Context) (Message, error) {
+	for {
+		msg, err := c.readAny(ctx)
+		if err != nil || msg.Type != TypeAudience {
+			return msg, err
+		}
+		c.audience = append(c.audience, msg)
+	}
+}
+
+func (c *Conn) readAny(ctx context.Context) (Message, error) {
 	var msg Message
 	_, data, err := c.ws.Read(ctx)
 	if err != nil {
@@ -207,7 +231,36 @@ func (c *Conn) read(ctx context.Context) (Message, error) {
 		return msg, fmt.Errorf("decode message %q: %w", data, err)
 	}
 	msg.Raw = data
+	if msg.Type == TypeAudience {
+		c.audienceSeen++
+	}
 	return msg, nil
+}
+
+// Audience returns the next audience message: who is in the room, as the
+// director's page is told. Messages about the performance that arrive first
+// are kept, in order, for the next call to Next.
+func (c *Conn) Audience(ctx context.Context) (Message, error) {
+	if len(c.audience) > 0 {
+		msg := c.audience[0]
+		c.audience = c.audience[1:]
+		return msg, nil
+	}
+	for {
+		msg, err := c.readAny(ctx)
+		if err != nil {
+			return msg, fmt.Errorf("waiting for an audience message: %w", err)
+		}
+		if msg.Type == TypeAudience {
+			return msg, nil
+		}
+		c.pending = append(c.pending, msg)
+	}
+}
+
+// AudienceSeen is how many audience messages this connection has been sent.
+func (c *Conn) AudienceSeen() int {
+	return c.audienceSeen
 }
 
 // Snapshot reads the next message and requires it to be a snapshot, which

@@ -41,8 +41,13 @@ export type TheatreState = {
   failure?: Failure;
 };
 
+// Who is in the room's audience, in the order they joined. Only the
+// director's connection is sent this (D045).
+export type Audience = { count: number; nicknames: string[] };
+
 export type ServerMessage =
   | { type: "snapshot" | "update"; revision: number; state: TheatreState }
+  | ({ type: "audience" } & Audience)
   | { type: "vote_received"; turn: number; choiceId: string }
   | { type: "error"; code: string; message: string };
 

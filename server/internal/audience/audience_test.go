@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,10 +22,12 @@ type memStore struct {
 	sessions map[string]Session // by string(hash)
 }
 
-func (m *memStore) Admit(context.Context, string, []byte, time.Time, time.Time) (string, error) {
+func (m *memStore) Admit(context.Context, string, []byte, string, time.Time, time.Time) (string, error) {
 	panic("not used by these tests")
 }
-func (m *memStore) Touch(context.Context, string, time.Time) error { return nil }
+func (m *memStore) Touch(context.Context, string, time.Time) error          { return nil }
+func (m *memStore) Return(context.Context, string, string, time.Time) error { return nil }
+func (m *memStore) Nicknames(context.Context, string) ([]string, error)     { return nil, nil }
 func (m *memStore) SessionByHash(_ context.Context, hash []byte) (Session, error) {
 	s, ok := m.sessions[string(hash)]
 	if !ok {
@@ -103,4 +106,23 @@ func TestSessionForRefusesAnExpiredSession(t *testing.T) {
 func TestCookieNameIsPerRoom(t *testing.T) {
 	require.Equal(t, "mt_session_"+roomA, CookieName(roomA))
 	require.NotEqual(t, CookieName(roomA), CookieName(roomB))
+}
+
+func TestCleanNickname(t *testing.T) {
+	for raw, want := range map[string]string{
+		"Ana":                         "Ana",
+		"  Ana  ":                     "Ana",
+		"Ana María":                   "Ana María",
+		strings.Repeat("é", 30):       strings.Repeat("é", 30), // thirty characters, sixty bytes
+		" " + strings.Repeat("n", 30): strings.Repeat("n", 30),
+	} {
+		got, problem := cleanNickname(raw)
+		require.Empty(t, problem, "%q", raw)
+		require.Equal(t, want, got, "%q", raw)
+	}
+	for _, raw := range []string{"", "   ", "\t\n", strings.Repeat("n", 31), strings.Repeat("é", 31)} {
+		got, problem := cleanNickname(raw)
+		require.NotEmpty(t, problem, "%q", raw)
+		require.Empty(t, got, "%q", raw)
+	}
 }

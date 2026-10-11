@@ -111,3 +111,28 @@ test("two portraits just under the size limit are accepted", async ({ page }) =>
   await expect(page).toHaveURL(/\/rooms\/[0-9a-f-]{36}$/, { timeout: 20_000 });
   await expect(page.getByRole("heading", { name: "A very large portrait test" })).toBeVisible();
 });
+
+// Each text field says how long it may be and how much of that is used,
+// counted as the server counts it.
+test("the new-room form counts what is typed against each limit", async ({ page }) => {
+  await logIn(page);
+  await page.goto("/rooms/new");
+
+  const scene = page.getByRole("group", { name: "Scene" });
+  await expect(scene.getByText("0 / 200")).toBeVisible();
+  await expect(scene.getByText("0 / 1000")).toBeVisible();
+  await expect(scene.getByText("0 / 80")).toBeVisible();
+  for (const slot of ["A", "B"]) {
+    const character = page.getByRole("group", { name: `Character ${slot}` });
+    await expect(character.getByText("0 / 80")).toBeVisible();
+    await expect(character.getByText("0 / 400")).toBeVisible();
+  }
+
+  await page.getByLabel("Topic").fill("Hello");
+  await expect(scene.getByText("5 / 200")).toBeVisible();
+  // One character each, however many bytes it takes.
+  await page.getByLabel("Genre").fill("café 🎭");
+  await expect(scene.getByText("6 / 80")).toBeVisible();
+  await page.getByLabel("Topic").fill("");
+  await expect(scene.getByText("0 / 200")).toBeVisible();
+});

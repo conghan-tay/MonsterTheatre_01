@@ -154,6 +154,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	theaterService := &theater.Service{
 		Rooms:        roomService,
 		Audience:     audienceService,
+		Members:      audienceService,
 		Performances: performances,
 		Workflows:    workflows,
 		Failures:     performances,
@@ -163,6 +164,8 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		Logger:       logger,
 		Now:          time.Now,
 	}
+	// The director's page is told as people join.
+	audienceService.Watcher = theaterService
 	// Updates the worker publishes are read from Redis here and forwarded to
 	// each room's connections, from startup until the process stops.
 	go (&theater.StreamReader{Redis: redisClient, Hub: hub, Logger: logger}).Run(ctx)

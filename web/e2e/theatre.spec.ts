@@ -38,11 +38,13 @@ async function createRoom(page: Page, topic: string): Promise<string> {
   return page.url().split("/").pop()!;
 }
 
-// An audience member: their own browser, with no cookies but their own.
-async function audienceMember(browser: Browser, shareLink: string): Promise<Page> {
+// An audience member: their own browser, with no cookies but their own,
+// on the share link with a nickname typed and Enter theatre not yet pressed.
+async function audienceMember(browser: Browser, shareLink: string, nickname: string): Promise<Page> {
   const context = await browser.newContext();
   const page = await context.newPage();
   await page.goto(shareLink);
+  await page.getByLabel("Nickname").fill(nickname);
   return page;
 }
 
@@ -80,8 +82,17 @@ test.describe.serial("a performance, from the pages", () => {
       JSON.stringify({ failures: [{ op: "speech", turn: 1, attempts: 2 }] }),
     );
 
-    // Two people open the link. Nothing happens until they enter.
-    audience = [await audienceMember(browser, shareLink), await audienceMember(browser, shareLink)];
+    // Two people open the link. Nothing happens until they enter, and
+    // nobody enters without saying what to call them.
+    audience = [await audienceMember(browser, shareLink, ""), await audienceMember(browser, shareLink, "Ben")];
+    const ana = audience[0];
+    await expect(ana.getByText("0 / 30")).toBeVisible();
+    await ana.getByRole("button", { name: "Enter theatre" }).click();
+    await expect(ana.getByText("Enter a nickname.")).toBeVisible();
+    await expect(directorPage.getByText("0 of 10 joined")).toBeVisible();
+    await ana.getByLabel("Nickname").fill("Ana");
+    await expect(ana.getByText("3 / 30")).toBeVisible();
+
     for (const page of audience) {
       await expect(page.getByRole("heading", { name: /A biscuit goes missing/ })).toHaveCount(0);
       await page.getByRole("button", { name: "Enter theatre" }).click();
@@ -89,8 +100,9 @@ test.describe.serial("a performance, from the pages", () => {
       await expect(page.getByText("Waiting for the director to start the performance.")).toBeVisible();
       await expect(page.getByRole("img", { name: "Portrait of Grumble" })).toBeVisible();
     }
-    await directorPage.reload();
+    // The director's page shows them arrive, by name, without a reload.
     await expect(directorPage.getByText("2 of 10 joined")).toBeVisible();
+    await expect(directorPage.getByRole("list", { name: "Audience" }).getByRole("listitem")).toHaveText(["Ana", "Ben"]);
 
     await directorPage.getByRole("button", { name: "Start performance" }).click();
     const everyone = [directorPage, ...audience];
@@ -131,7 +143,16 @@ test.describe.serial("a performance, from the pages", () => {
       await expect(script(page)).toHaveText(["Grumble: Turn 1, second option."]);
     }
 
-    // The premiere: a countdown, then the eight recordings in order.
+    // Turn 3: the script has two lines now, the newest on top.
+    for (const page of everyone) {
+      await expect(choices(page).first()).toHaveText("Turn 3, first option.", { timeout: 15_000 });
+      await expect(script(page)).toHaveCount(2);
+      await expect(script(page).first()).toContainText("Fizz: Turn 2,");
+      await expect(script(page).last()).toHaveText("Grumble: Turn 1, second option.");
+    }
+
+    // The premiere: a countdown, then the eight recordings in order. Once
+    // they have played the script is whole again, and in reading order.
     await expect(directorPage.getByText(/The premiere starts in/)).toBeVisible({ timeout: 40_000 });
     for (const page of everyone) {
       await expectPlayedThrough(page);
@@ -145,7 +166,7 @@ test.describe.serial("a performance, from the pages", () => {
   test("a finished room is replayed, by a newcomer and after a reload", async ({ browser }) => {
     // Someone who opens the link only now sees the script and can play it.
     // There is no countdown: the premiere has been.
-    const newcomer = await audienceMember(browser, shareLink);
+    const newcomer = await audienceMember(browser, shareLink, "Cy");
     audience.push(newcomer);
     await newcomer.getByRole("button", { name: "Enter theatre" }).click();
     await expect(script(newcomer)).toHaveCount(TURNS);
@@ -159,15 +180,18 @@ test.describe.serial("a performance, from the pages", () => {
     await expect(premiere(newcomer)).toHaveAttribute("data-played", "0");
     await expectPlayedThrough(newcomer);
 
-    // Someone who was there reloads: they enter again, as the same person.
+    // Someone who was there reloads: the page remembers what they called
+    // themselves, and they enter again as the same person.
     const returning = audience[0];
     await returning.reload();
+    await expect(returning.getByLabel("Nickname")).toHaveValue("Ana");
     await returning.getByRole("button", { name: "Enter theatre" }).click();
     await returning.getByRole("button", { name: "Play performance" }).click();
     await expectPlayedThrough(returning);
 
     // The director's page shows the same thing without a click to enter,
     // and the reload above did not take another seat: two, plus the newcomer.
+    await expect(directorPage.getByRole("list", { name: "Audience" }).getByRole("listitem")).toHaveText(["Ana", "Ben", "Cy"]);
     await directorPage.reload();
     await expect(directorPage.getByText("3 of 10 joined")).toBeVisible();
     await directorPage.getByRole("button", { name: "Play performance" }).click();
@@ -175,7 +199,7 @@ test.describe.serial("a performance, from the pages", () => {
   });
 
   test("a link that is not valid says so", async ({ browser }) => {
-    const page = await audienceMember(browser, shareLink.replace(/[\w-]+$/, "not-the-token"));
+    const page = await audienceMember(browser, shareLink.replace(/[\w-]+$/, "not-the-token"), "Dee");
     audience.push(page);
     await page.getByRole("button", { name: "Enter theatre" }).click();
     await expect(page.getByRole("alert").filter({ hasText: "This link is not valid." })).toBeVisible();

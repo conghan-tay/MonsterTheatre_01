@@ -20,7 +20,8 @@ Two things are kept separate throughout:
 | `id` | `uuid`, primary key | The session ID. This is the voter ID sent with each vote signal. Safe to log. |
 | `room_id` | `uuid`, foreign key to `rooms` | The one room this session is scoped to. |
 | `credential_hash` | `bytea`, unique | SHA-256 of the secret in the cookie. The cookie holds the secret itself; the database holds only the hash, so a database leak does not leak usable credentials. |
-| `created_at` | `timestamptz` | When the session was admitted. |
+| `nickname` | `text`, required | What this person asked to be called: 1 to 30 characters, not unique. Shown to the room's director and to nobody else. It is not an identity: votes are counted by `id`. Replaced each time the same browser enters again. |
+| `created_at` | `timestamptz` | When the session was admitted. The director's list of names is in this order. |
 | `last_seen_at` | `timestamptz` | Updated on connect and reconnect. For inspection and any future slot cleanup. |
 | `expires_at` | `timestamptz` | When the credential stops working: seven days after creation, matching media retention. |
 
@@ -94,7 +95,7 @@ sequenceDiagram
     S-->>B: Page with Enter theatre button
     A->>B: Click Enter theatre
     Note over B: The click also unlocks audio for the premiere later
-    B->>S: POST /audience-sessions with room ID and link token, no cookie
+    B->>S: POST /audience-sessions with room ID, link token, and nickname, no cookie
     Note over S: Recompute the token from the room ID and the server secret, compare
     S->>DB: Load room by ID
     DB-->>S: Room found

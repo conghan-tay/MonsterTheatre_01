@@ -82,8 +82,10 @@ export const api = {
   // The browser sets the multipart boundary itself, so no Content-Type here.
   createRoom: (form: FormData) => request<Room>("/api/v1/rooms", { method: "POST", body: form }),
   // The Enter theatre click. Safe to repeat: a browser that already has a
-  // session for the room gets it back, and no seat is used.
-  join: (roomId: string, token: string) => request<Entered>("/api/v1/audience-sessions", json({ roomId, token })),
+  // session for the room gets it back, renamed to the nickname given this
+  // time, and no seat is used.
+  join: (roomId: string, token: string, nickname: string) =>
+    request<Entered>("/api/v1/audience-sessions", json({ roomId, token, nickname })),
   // The Start button. Safe to repeat: a room has one performance.
   start: (roomId: string) =>
     request<Performance>(`/api/v1/rooms/${encodeURIComponent(roomId)}/performance`, json({})),

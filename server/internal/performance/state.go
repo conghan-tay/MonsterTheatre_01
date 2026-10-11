@@ -45,12 +45,14 @@ const (
 )
 
 // Message types on the WebSocket (docs/system-design.md, section 5). The
-// first four are sent by the server; a browser sends vote and resync.
+// first five are sent by the server, audience only to a room's director; a
+// browser sends vote and resync.
 const (
 	TypeSnapshot     = "snapshot"
 	TypeUpdate       = "update"
 	TypeVoteReceived = "vote_received"
 	TypeError        = "error"
+	TypeAudience     = "audience"
 	TypeVote         = "vote"
 	TypeResync       = "resync"
 )

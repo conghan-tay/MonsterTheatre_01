@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { ServerMessage, TheatreState } from "./theatre";
+import type { Audience, ServerMessage, TheatreState } from "./theatre";
 
 export type Connection = "connecting" | "open" | "reconnecting";
 
@@ -28,6 +28,8 @@ export function useRoomSocket(roomId: string | null) {
   // clicked and withdrawn if the server says it could not be passed on.
   const [votes, setVotes] = useState<Record<number, string>>({});
   const [voteError, setVoteError] = useState<string | null>(null);
+  // Who has joined, as last told. Only a director's connection is told.
+  const [audience, setAudience] = useState<Audience | null>(null);
   const socket = useRef<WebSocket | null>(null);
   const pendingVote = useRef<number | null>(null);
 
@@ -72,6 +74,9 @@ export function useRoomSocket(roomId: string | null) {
             if (message.revision > held + 1) send(ws, { type: "resync" });
             held = message.revision;
             setState(message.state);
+            break;
+          case "audience":
+            setAudience({ count: message.count, nicknames: message.nicknames });
             break;
           case "vote_received":
             pendingVote.current = null;
@@ -136,5 +141,5 @@ export function useRoomSocket(roomId: string | null) {
     ws.send(JSON.stringify({ type: "vote", turn, choiceId }));
   }, []);
 
-  return { state, connection, votes, vote, voteError };
+  return { state, connection, votes, vote, voteError, audience };
 }

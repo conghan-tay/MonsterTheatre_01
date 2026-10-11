@@ -5,7 +5,8 @@ import { CharacterCard } from "@/components/CharacterCard";
 import { Button, ErrorNotice } from "@/components/ui";
 import type { RoomView } from "@/lib/api";
 import { unlockAudio } from "@/lib/audio";
-import { TURNS, type Choice, type Speaker, type Winner } from "@/lib/theatre";
+import { scriptToShow } from "@/lib/script";
+import { TURNS, type Audience, type Choice, type Speaker, type Winner } from "@/lib/theatre";
 import { usePremiere } from "@/lib/usePremiere";
 import { useRoomSocket } from "@/lib/useRoomSocket";
 
@@ -15,9 +16,26 @@ import { useRoomSocket } from "@/lib/useRoomSocket";
 //
 // beforeStart is what to show while the room waits for its performance: the
 // Start button for the director, a line of text for everyone else.
-export function Theatre({ room, beforeStart }: { room: RoomView; beforeStart: ReactNode }) {
-  const { state, connection, votes, vote, voteError } = useRoomSocket(room.roomId);
+//
+// onAudience is called with who has joined, each time the server says. Only
+// the director's page is told, so only it passes one.
+export function Theatre({
+  room,
+  beforeStart,
+  onAudience,
+}: {
+  room: RoomView;
+  beforeStart: ReactNode;
+  onAudience?: (audience: Audience) => void;
+}) {
+  const { state, connection, votes, vote, voteError, audience } = useRoomSocket(room.roomId);
   const premiere = usePremiere(state?.phase === "premiere" ? state.premiere : undefined);
+
+  useEffect(() => {
+    if (audience) onAudience?.(audience);
+  }, [audience, onAudience]);
+
+  const lines = state?.lines ? scriptToShow(state.lines, state.phase, premiere.current?.turn ?? null) : [];
 
   const name = (speaker: Speaker) => (speaker === "A" ? room.characterA.name : room.characterB.name);
   // Whose line it is: the clip being heard, or the turn being decided.
@@ -136,11 +154,14 @@ export function Theatre({ room, beforeStart }: { room: RoomView; beforeStart: Re
         )}
       </section>
 
-      {state?.lines && state.lines.length > 0 && (
+      {lines.length > 0 && (
         <section className="space-y-2">
-          <h2 className="text-sm font-semibold uppercase tracking-wide text-stone-500">Script</h2>
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-stone-500">
+            Script
+            {state?.phase !== "premiere" && <span className="font-normal normal-case tracking-normal">, newest first</span>}
+          </h2>
           <ol aria-label="Script" className="space-y-2">
-            {state.lines.map((line) => (
+            {lines.map((line) => (
               <li
                 key={line.turn}
                 className={

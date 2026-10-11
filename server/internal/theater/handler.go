@@ -45,6 +45,12 @@ type SessionToucher interface {
 	Seen(ctx context.Context, sessionID string) error
 }
 
+// AudienceLister lists a room's audience by nickname, in the order they
+// joined. *audience.Service implements it.
+type AudienceLister interface {
+	Nicknames(ctx context.Context, roomID string) ([]string, error)
+}
+
 // PerformanceReader finds a room's performance, or returns
 // performance.ErrNotFound. *performance.PGStore implements it.
 type PerformanceReader interface {
@@ -71,8 +77,10 @@ type VoteSignaller interface {
 
 // Service serves the room WebSocket.
 type Service struct {
-	Rooms        RoomAuthorizer
-	Audience     SessionToucher
+	Rooms    RoomAuthorizer
+	Audience SessionToucher
+	// Members is who is in a room's audience, for telling its director.
+	Members      AudienceLister
 	Performances PerformanceReader
 	Workflows    StateQuerier
 	// Failures is where a run found dead is marked failed.
@@ -87,6 +95,11 @@ type Service struct {
 	PongTimeout  time.Duration
 	// Now is the clock votes are stamped with.
 	Now func() time.Time
+
+	// audienceMu makes reading a room's audience and queueing it for the
+	// director one step, so two changes close together cannot reach the
+	// director's page in the wrong order and leave it showing the older.
+	audienceMu sync.Mutex
 }
 
 // ServeWS handles GET /api/v1/rooms/{roomId}/ws.
@@ -126,9 +139,10 @@ func (s *Service) ServeWS(w http.ResponseWriter, r *http.Request) {
 
 	var closeOnce sync.Once
 	c := &conn{
-		send:    make(chan outbound, sendBuffer),
-		replies: make(chan []byte),
-		resync:  make(chan struct{}, 1),
+		send:     make(chan outbound, sendBuffer),
+		replies:  make(chan []byte),
+		resync:   make(chan struct{}, 1),
+		director: viewer.AsDirector,
 		close: func(code websocket.StatusCode, reason string) {
 			closeOnce.Do(func() { _ = ws.Close(code, reason) })
 		},
@@ -151,6 +165,11 @@ func (s *Service) ServeWS(w http.ResponseWriter, r *http.Request) {
 	revision, ok := s.sendSnapshot(ctx, ws, v)
 	if !ok {
 		return
+	}
+	if viewer.AsDirector {
+		// Queued behind the snapshot. From here on the director's page is
+		// told again whenever the audience changes (AudienceChanged).
+		s.tellAudience(ctx, roomID, c)
 	}
 
 	// Reading is what notices the browser closing, and what lets pings be
@@ -178,6 +197,35 @@ func (s *Service) ServeWS(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	s.writeLoop(ctx, ws, v, revision)
+}
+
+// AudienceChanged tells the room's director who is in the audience now. The
+// audience service calls it when someone is admitted or changes their name.
+// Nobody else is told: an audience member's page is not shown who else is
+// there, or how many (docs/decisions.md, D045).
+func (s *Service) AudienceChanged(ctx context.Context, roomID string) {
+	s.tellAudience(ctx, roomID, nil)
+}
+
+// tellAudience reads the room's audience and queues it for only, or for
+// every director connection in the room if only is nil. A failure is logged
+// and nothing is sent; the next change, or the page reconnecting, sends it.
+func (s *Service) tellAudience(ctx context.Context, roomID string, only *conn) {
+	s.audienceMu.Lock()
+	defer s.audienceMu.Unlock()
+	nicknames, err := s.Members.Nicknames(ctx, roomID)
+	if err != nil {
+		if ctx.Err() == nil {
+			s.Logger.Warn("theater: could not list the audience", "room_id", roomID, "error", err)
+		}
+		return
+	}
+	msg := audienceMessage(nicknames)
+	if only != nil {
+		s.Hub.tell(roomID, only, msg)
+		return
+	}
+	s.Hub.tellDirectors(roomID, msg)
 }
 
 // viewing is one connection and who is on it.

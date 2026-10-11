@@ -6,6 +6,7 @@ import { Theatre } from "@/components/Theatre";
 import { Button, ErrorNotice } from "@/components/ui";
 import { ApiError, api, type Room } from "@/lib/api";
 import { unlockAudio } from "@/lib/audio";
+import type { Audience } from "@/lib/theatre";
 
 const MAX_AUDIENCE = 10;
 
@@ -15,6 +16,9 @@ export default function RoomPage() {
   const [room, setRoom] = useState<Room | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  // Who has joined, as the room's WebSocket says. Until it has spoken, the
+  // count that came with the room is shown.
+  const [audience, setAudience] = useState<Audience | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -70,13 +74,25 @@ export default function RoomPage() {
             {copied ? "Copied" : "Copy"}
           </Button>
         </div>
-        <p className="text-sm text-stone-600" aria-live="polite">
-          {room.audienceCount} of {MAX_AUDIENCE} joined
-        </p>
+        <div aria-live="polite" className="space-y-2">
+          <p className="text-sm text-stone-600">
+            {audience?.count ?? room.audienceCount} of {MAX_AUDIENCE} joined
+          </p>
+          {audience && audience.nicknames.length > 0 && (
+            <ul aria-label="Audience" className="flex flex-wrap gap-2">
+              {audience.nicknames.map((nickname, i) => (
+                // Two people may use the same name, so the place in the list is the key.
+                <li key={i} className="rounded-full border border-stone-300 bg-stone-50 px-3 py-1 text-sm text-stone-800">
+                  {nickname}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
       </section>
 
       {/* The live view, with voting: the director is one more voter (D028). */}
-      <Theatre room={room} beforeStart={<StartPerformance roomId={room.roomId} />} />
+      <Theatre room={room} beforeStart={<StartPerformance roomId={room.roomId} />} onAudience={setAudience} />
     </div>
   );
 }

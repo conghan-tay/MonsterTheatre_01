@@ -2,14 +2,15 @@
 
 import { useRouter } from "next/navigation";
 import { useState, type FormEvent } from "react";
-import { Button, ErrorNotice, Field, inputClass } from "@/components/ui";
+import { Button, CountedField, ErrorNotice, Field } from "@/components/ui";
 import { ApiError, api } from "@/lib/api";
 
 type Slot = "A" | "B";
 
 // The server is the authority on validation. The limits here only mirror its
-// rules (docs/system-design.md, section 5) so the browser can stop typing at
-// the limit; the server's own messages are what get shown.
+// rules (docs/system-design.md, section 5) so the browser can show how much
+// of each is used and stop typing at the limit; the server's own messages
+// are what get shown.
 const LIMITS = { name: 80, brief: 400, topic: 200, description: 1000, genre: 80 };
 const MAX_PORTRAIT_BYTES = 5 * 1024 * 1024;
 
@@ -86,12 +87,17 @@ export default function NewRoomPage() {
     return (
       <fieldset className="space-y-4 rounded-md border border-stone-200 bg-white p-4">
         <legend className="px-1 text-sm font-semibold">Character {slot}</legend>
-        <Field id={name} label="Name" error={fieldErrors[name]}>
-          <input id={name} name={`name${slot}`} required maxLength={LIMITS.name} className={inputClass} {...invalid(name)} />
-        </Field>
-        <Field id={brief} label="Brief" hint="Optional. A sentence or two about who they are." error={fieldErrors[brief]}>
-          <textarea id={brief} name={`brief${slot}`} rows={2} maxLength={LIMITS.brief} className={inputClass} {...invalid(brief)} />
-        </Field>
+        <CountedField id={name} name={`name${slot}`} label="Name" required max={LIMITS.name} error={fieldErrors[name]} />
+        <CountedField
+          id={brief}
+          name={`brief${slot}`}
+          label="Brief"
+          hint="Optional. A sentence or two about who they are."
+          multiline
+          rows={2}
+          max={LIMITS.brief}
+          error={fieldErrors[brief]}
+        />
         <Field id={portrait} label="Portrait" hint="JPEG, PNG, or WebP, up to 5 MiB." error={fieldErrors[portrait]}>
           <input
             id={portrait}
@@ -119,15 +125,33 @@ export default function NewRoomPage() {
 
         <fieldset className="space-y-4 rounded-md border border-stone-200 bg-white p-4">
           <legend className="px-1 text-sm font-semibold">Scene</legend>
-          <Field id="scene.topic" label="Topic" hint="What the scene is about, in a sentence." error={fieldErrors["scene.topic"]}>
-            <input id="scene.topic" name="topic" required maxLength={LIMITS.topic} className={inputClass} {...invalid("scene.topic")} />
-          </Field>
-          <Field id="scene.description" label="Description" hint="Optional. Where and when it happens." error={fieldErrors["scene.description"]}>
-            <textarea id="scene.description" name="description" rows={3} maxLength={LIMITS.description} className={inputClass} {...invalid("scene.description")} />
-          </Field>
-          <Field id="scene.genre" label="Genre" hint="Optional. For example: comedy." error={fieldErrors["scene.genre"]}>
-            <input id="scene.genre" name="genre" maxLength={LIMITS.genre} className={inputClass} {...invalid("scene.genre")} />
-          </Field>
+          <CountedField
+            id="scene.topic"
+            name="topic"
+            label="Topic"
+            hint="What the scene is about, in a sentence."
+            required
+            max={LIMITS.topic}
+            error={fieldErrors["scene.topic"]}
+          />
+          <CountedField
+            id="scene.description"
+            name="description"
+            label="Description"
+            hint="Optional. Where and when it happens."
+            multiline
+            rows={3}
+            max={LIMITS.description}
+            error={fieldErrors["scene.description"]}
+          />
+          <CountedField
+            id="scene.genre"
+            name="genre"
+            label="Genre"
+            hint="Optional. For example: comedy."
+            max={LIMITS.genre}
+            error={fieldErrors["scene.genre"]}
+          />
         </fieldset>
 
         <div className="grid gap-6 sm:grid-cols-2">

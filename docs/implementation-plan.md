@@ -339,6 +339,17 @@ Makefile           dev, test, e2e, migrate
 - Both Playwright tests pass.
 - A complete performance is run by hand in Chrome and Safari with real providers.
 
+### After step 14 — page changes asked for by the user
+
+**Done 2026-10-11.** Not one of the fifteen steps; four changes in one pull request.
+
+- **Nicknames.** The join page requires one (1 to 30 characters). It is stored on the audience session, in a column added to that table's original migration, and shown to the director only. Entering again as the same browser replaces it (D045).
+- **A live audience list.** The director's page shows the count and the names as people join, from a new WebSocket message sent to the director's connections only (D045).
+- **Script order.** Newest line first while the turns run; only the line being spoken while a recording plays; the whole script in speaking order otherwise.
+- **Character counts.** Every text field with a limit shows how much of it is used.
+
+Tests added: three Go end-to-end tests and one browser test, a pure test of the script rule, and more assertions in the full-performance browser test.
+
 ### Step 15 — AWS deployment
 
 **What to build**

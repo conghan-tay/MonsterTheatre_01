@@ -43,7 +43,7 @@ Configuration comes from environment variables, all with local defaults. See [.e
 
 ## The web app
 
-`make dev` serves it at http://localhost:3000. A director logs in, creates a room from one form, and gets the room's page with its share link and a Start button. Anyone who opens the share link gets the audience page. Both show the performance live: the three lines to vote on with a countdown, the winning line, and at the end the premiere, which plays the eight recordings in order. Create an account first (next section).
+`make dev` serves it at http://localhost:3000. A director logs in, creates a room from one form, and gets the room's page with its share link and a Start button. Anyone who opens the share link gets the audience page. The director's page lists who has joined, by nickname, as they join. Both show the performance live: the three lines to vote on with a countdown, the winning line, and at the end the premiere, which plays the eight recordings in order. Create an account first (next section).
 
 The browser only ever talks to port 3000: the web app proxies `/api/*` to the Go server, which is the routing a load balancer does in production.
 
@@ -82,13 +82,13 @@ The response carries the room ID and the share link for the audience. `GET /api/
 
 ## Joining as audience
 
-The share link is `{PUBLIC_BASE_URL}/join/{roomId}/{token}`. Opening it shows an **Enter theatre** button. The click joins the room, and is also what lets that page play sound later, so the button is there after a reload too; entering again as the same browser uses no extra seat. To try a second audience member on one machine, open the link in a private window or another browser.
+The share link is `{PUBLIC_BASE_URL}/join/{roomId}/{token}`. Opening it asks for a nickname, which the director will see, and shows an **Enter theatre** button. The click joins the room, and is also what lets that page play sound later, so the button is there after a reload too; entering again as the same browser uses no extra seat. To try a second audience member on one machine, open the link in a private window or another browser.
 
 The same thing with curl:
 
 ```sh
 curl -i -c audience.txt -H 'Content-Type: application/json' \
-  -d '{"roomId":"ROOM_ID","token":"TOKEN"}' localhost:8080/api/v1/audience-sessions
+  -d '{"roomId":"ROOM_ID","token":"TOKEN","nickname":"Ana"}' localhost:8080/api/v1/audience-sessions
 curl -b audience.txt localhost:8080/api/v1/rooms/ROOM_ID
 ```
 
@@ -223,5 +223,7 @@ One exception was made while every database was still a local test one: step 12 
 ```sh
 cd server && go run ./cmd/migrate down && go run ./cmd/migrate down && go run ./cmd/migrate up
 ```
+
+The same was done once more after step 14, for `nickname` on `audience_sessions` (`00005`); a database migrated before that needs three `down`s, not two, and loses its audience sessions as well.
 
 For the end-to-end tests' database, drop it and let the next run recreate it: `docker compose exec postgres dropdb -U monster monstertheatre_e2e`.

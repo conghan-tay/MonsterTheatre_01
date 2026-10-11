@@ -1,5 +1,7 @@
+"use client";
+
 // Small shared pieces, so every form and button looks and behaves the same.
-import type { ComponentProps, ReactNode } from "react";
+import { useState, type ChangeEvent, type ComponentProps, type ReactNode } from "react";
 
 export const inputClass =
   "block w-full rounded-md border border-stone-300 bg-white px-3 py-2 text-stone-900 " +
@@ -11,12 +13,15 @@ export function Field({
   label,
   hint,
   error,
+  count,
   children,
 }: {
   id: string;
   label: string;
   hint?: string;
   error?: string;
+  // How much of the field's limit is used, for a field that has one.
+  count?: ReactNode;
   children: ReactNode;
 }) {
   return (
@@ -25,13 +30,85 @@ export function Field({
         {label}
       </label>
       {children}
-      {hint && !error && <p className="text-xs text-stone-500">{hint}</p>}
-      {error && (
-        <p id={`${id}-error`} className="text-sm text-red-700">
-          {error}
-        </p>
-      )}
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          {hint && !error && <p className="text-xs text-stone-500">{hint}</p>}
+          {error && (
+            <p id={`${id}-error`} className="text-sm text-red-700">
+              {error}
+            </p>
+          )}
+        </div>
+        {count}
+      </div>
     </div>
+  );
+}
+
+// characters counts text as the server does: by character, not by byte or
+// by the pairs of code units an emoji takes in a JavaScript string.
+export function characters(text: string): number {
+  return [...text].length;
+}
+
+// CountedField is a text field with a limit: it shows how many characters
+// have been typed out of how many are allowed, as "12 / 200".
+//
+// Pass value and onChange to control it; without them it keeps the text
+// itself, as a plain form field does, and only watches the length.
+export function CountedField({
+  id,
+  label,
+  hint,
+  error,
+  max,
+  multiline = false,
+  value,
+  onValue,
+  ...input
+}: {
+  id: string;
+  label: string;
+  hint?: string;
+  error?: string;
+  max: number;
+  multiline?: boolean;
+  value?: string;
+  onValue?: (value: string) => void;
+  name?: string;
+  required?: boolean;
+  rows?: number;
+  autoComplete?: string;
+}) {
+  const [typed, setTyped] = useState(0);
+  const used = value !== undefined ? characters(value) : typed;
+  const shared = {
+    id,
+    maxLength: max,
+    className: inputClass,
+    value,
+    "aria-invalid": error ? (true as const) : undefined,
+    "aria-describedby": error ? `${id}-error` : undefined,
+    onChange: (event: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+      setTyped(characters(event.target.value));
+      onValue?.(event.target.value);
+    },
+    ...input,
+  };
+  return (
+    <Field
+      id={id}
+      label={label}
+      hint={hint}
+      error={error}
+      count={
+        <p className={"shrink-0 text-xs tabular-nums " + (used >= max ? "font-semibold text-stone-900" : "text-stone-500")}>
+          {used} / {max}
+        </p>
+      }
+    >
+      {multiline ? <textarea {...shared} /> : <input {...shared} />}
+    </Field>
   );
 }
 

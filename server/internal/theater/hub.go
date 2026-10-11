@@ -34,6 +34,9 @@ type conn struct {
 	// snapshot. The writer loop takes the snapshot, so that nothing is
 	// written between taking it and sending it.
 	resync chan struct{}
+	// director is true for a connection opened by the room's director.
+	// Some things are for the director alone: who is in the audience.
+	director bool
 	// close ends the connection with a close frame. It is safe to call from
 	// any goroutine and more than once.
 	close func(code websocket.StatusCode, reason string)
@@ -97,14 +100,27 @@ func (h *Hub) Broadcast(roomID string, revision int, msg []byte) {
 // connection whose request brought the news, which is answered directly. No
 // browser drops it as something it already has.
 func (h *Hub) announce(roomID string, except *conn, msg []byte) {
-	h.queue(roomID, except, outbound{data: msg, always: true})
+	h.queue(roomID, func(c *conn) bool { return c != except }, outbound{data: msg, always: true})
 }
 
-func (h *Hub) queue(roomID string, except *conn, out outbound) {
+// tellDirectors queues a message for the room's director, on however many
+// connections they have open, and for nobody else.
+func (h *Hub) tellDirectors(roomID string, msg []byte) {
+	h.queue(roomID, func(c *conn) bool { return c.director }, outbound{data: msg, always: true})
+}
+
+// tell queues a message for one connection, if it is still in the room.
+func (h *Hub) tell(roomID string, only *conn, msg []byte) {
+	h.queue(roomID, func(c *conn) bool { return c == only }, outbound{data: msg, always: true})
+}
+
+// queue hands a message to every connection in the room that wanted picks,
+// or to all of them if wanted is nil.
+func (h *Hub) queue(roomID string, wanted func(*conn) bool, out outbound) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for c := range h.rooms[roomID] {
-		if c == except {
+		if wanted != nil && !wanted(c) {
 			continue
 		}
 		select {

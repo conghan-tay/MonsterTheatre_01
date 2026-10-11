@@ -326,6 +326,8 @@ Makefile           dev, test, e2e, migrate
 
 ### Step 14 — Theatre web pages
 
+**Done 2026-10-11**, except the run by hand in Chrome and Safari, which is the user's. Built as listed, web-only, with one harness addition: the test stack takes a script directory so a browser test can slow a turn. The audience page lives at the share link and always opens on Enter theatre; sound goes through one audio element started inside that click; clips are fetched whole during the countdown (D044). Three Playwright tests where two were listed: a full performance, replay (by a newcomer, after a reload, and on the director's page), and an invalid link. One real-provider performance was driven through the pages in Playwright's Chromium and completed: lines of 101 to 152 characters, about 3 s to write each turn's lines and 3 to 4 s to tag and voice the winner, eight clips of 9 to 11 s, a premiere of about 85 s. Not checked: what it sounds like, Safari, any browser driven by a person, the Tap to hear audio path in a browser that really blocks sound, and `next build`.
+
 **What to build**
 - On a `recovering` snapshot, show that the performance is recovering and send `resync` every few seconds (no more than one a second is answered) until the phase changes.
 - The audience page: Enter theatre (which unlocks audio), waiting state, the three choices with a countdown, the winning line and "preparing" state, reconnection with backoff, and the failure message.
@@ -360,8 +362,8 @@ These are items 11 to 16 in [the review](review.md), placed where they come up:
 
 | Item | Settle in |
 | --- | --- |
-| Whether to show a "recovering" message | Server half settled in step 13: a `recovering` snapshot (D041). What the page shows: step 14 |
-| What the page shows between rounds | Step 14 |
+| Whether to show a "recovering" message | Settled: a `recovering` snapshot (D041, step 13), shown by the page as a line of text (step 14) |
+| What the page shows between rounds | Settled in step 14: the winning line with its counts, then "Writing the next lines…" |
 | Database cleanup | Step 15, or defer |
 | Whether goose runs unmodified against Aurora DSQL | Step 15 |
 | Piping audio from the object store | Settled in step 12: piped (D040) |

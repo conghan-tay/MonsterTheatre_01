@@ -1,3 +1,5 @@
+import os from "node:os";
+import path from "node:path";
 import { defineConfig, devices } from "@playwright/test";
 
 // The browser tests bring their own backend: the same isolated stack the Go
@@ -17,6 +19,11 @@ export const director = {
   password: `web-e2e-password-${runId}`,
 };
 
+// Where the stand-in providers read per-room scripts. A test writes
+// <roomId>.json here before pressing Start, to slow a turn down or make one
+// fail (tests/e2e/fixtures/script.go has the format).
+export const scriptDir = path.join(os.tmpdir(), `monstertheatre-web-e2e-scripts-${runId}`);
+
 export default defineConfig({
   testDir: "./e2e",
   fullyParallel: false,
@@ -35,7 +42,7 @@ export default defineConfig({
       // itself and it can shut its child processes down.
       command:
         `go build -o .bin/stack ./cmd/stack && exec ./.bin/stack -port ${API_PORT} ` +
-        `-public-base-url ${WEB_ORIGIN} -director-username ${director.username}`,
+        `-public-base-url ${WEB_ORIGIN} -director-username ${director.username} -script-dir ${scriptDir}`,
       cwd: "../tests/e2e",
       env: { STACK_DIRECTOR_PASSWORD: director.password },
       url: `${API_ORIGIN}/healthz`,

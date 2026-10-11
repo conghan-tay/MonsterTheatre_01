@@ -39,6 +39,7 @@ The log below is kept in full, including entries that were later replaced. These
 | D041 | A browser that cannot be given the state is sent a `recovering` snapshot and kept; it asks again with `resync` |
 | D042 | A run found dead is detected by a refused query, marked failed, and announced to its whole room |
 | D043 | A connecting browser never starts a workflow; only Start does |
+| D044 | The audience page always asks for a click; sound goes through one audio element started in it; clips are preloaded whole |
 
 Superseded or withdrawn: D002, D004, D006, D010, D011, D012, D014, D016, D019, D020, D021, and the data-lake half of D003.
 
@@ -801,3 +802,19 @@ This algorithm was run through the spike's three scenarios and was correct in ev
 **Tradeoffs and consequences:** After a Start that answered `503` or was cut off, the room says `recovering` until the director presses Start again; a director who walks away leaves it so. A row whose workflow Temporal has forgotten says `recovering` for good and is never marked failed. The first row of the table in the system design, section 6, and review item 9 were rewritten.
 
 **Status:** accepted — explicit user choice on 2026-10-11, reversing review item 9.
+
+## D044 — One click per page load, one audio element, clips preloaded whole
+
+**Decision:** The audience page is the share link itself and always opens on an **Enter theatre** button, including after a reload. Inside that click (or the director's **Start**) the page starts its single audio element on a moment of silence, and every recording is later played through that element. When the premiere is announced the page fetches all eight clips whole and plays from those copies.
+
+**Context / requirement:** The brief says Enter theatre "joins the room and activates audio playback in that browser for later", with **Tap to hear audio** as the fallback. Browsers refuse to play sound on a page nobody has clicked, and the premiere starts by itself, minutes after the last click, with no click of its own. Step 14 had to choose how the click earns later playback, what a reload does, and how clips are made ready in a five-second countdown.
+
+**Chosen approach:** The page keeps no "already entered" state: every load shows Enter theatre, and the click posts to the join endpoint, which returns an existing session without using a seat. `web/src/lib/audio.ts` holds one `Audio` element and plays a twentieth of a second of generated silence through it inside the click. `web/src/lib/usePremiere.ts` fetches each clip with `fetch`, keeps it as a blob, and plays the eight in order through that element, waiting for a clip that is not yet loaded. Buttons that start playback (Play performance, Play again, Tap to hear audio) repeat the silent start inside their own click first.
+
+**Why it fits:** Chrome allows later playback on a page that has had a click; Safari allows it for an element that was played during one. One element started in the click satisfies both rules without telling browsers apart. Asking for the click on every load is the same rule seen from the other side: a reloaded page has had no click, so it could not play the premiere however it was built. Whole-clip preloading is certain where an audio element's own buffering is a hint: a clip is in memory or the player waits for it.
+
+**Alternatives considered:** Skipping Enter theatre for a browser that already has a session: one click fewer after a reload, but that page would reach the premiere unable to play it and fall to Tap to hear audio every time. An audio element per clip with `preload`: the browser decides how much to fetch, and Safari would need each of the eight started during the click. Playing each clip straight from its URL: nothing held in memory, but a gap between clips while each one starts loading.
+
+**Tradeoffs and consequences:** The pages make whole-file requests, so the range support built in step 12 is not exercised by them; it remains for a browser or player that asks. About 1.2 MB of audio is held in memory during a premiere. A director who reloads mid-run has not clicked, and gets Tap to hear audio at the premiere. The Safari half of this reasoning is from documentation: nothing has been run in Safari.
+
+**Status:** accepted — proposed in the step 14 plan as judgment calls and approved with it on 2026-10-11.

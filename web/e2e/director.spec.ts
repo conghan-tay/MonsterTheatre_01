@@ -58,8 +58,9 @@ test("a director logs in, creates a room, and sees its share link", async ({ pag
       .toBe(true);
   }
 
-  // Start is shown but not wired up yet.
-  await expect(page.getByRole("button", { name: "Start performance" })).toBeDisabled();
+  // Start is ready to press, and the room is waiting for it.
+  await expect(page.getByRole("button", { name: "Start performance" })).toBeEnabled();
+  await expect(page.getByText("The performance has not started.")).toBeVisible();
 
   // The link is the same after a reload.
   const linkBefore = await shareLink.inputValue();

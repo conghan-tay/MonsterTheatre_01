@@ -7,7 +7,7 @@
 //
 // Usage:
 //
-//	stack -port 18080 -public-base-url http://127.0.0.1:13000 -director-username NAME
+//	stack -port 18080 -public-base-url http://127.0.0.1:13000 -director-username NAME -script-dir DIR
 //
 // With -director-username, a director account is created; its password is
 // read from STACK_DIRECTOR_PASSWORD.
@@ -28,19 +28,20 @@ func main() {
 	port := flag.Int("port", 0, "port for the Go server (0 picks a free one)")
 	publicBaseURL := flag.String("public-base-url", "", "where the web pages are served; share links start with it")
 	director := flag.String("director-username", "", "create a director with this username")
+	scriptDir := flag.String("script-dir", "", "where the fake providers read per-room scripts (default: a directory of the stack's own)")
 	flag.Parse()
 
-	if err := run(*port, *publicBaseURL, *director); err != nil {
+	if err := run(*port, *publicBaseURL, *director, *scriptDir); err != nil {
 		fmt.Fprintln(os.Stderr, "stack:", err)
 		os.Exit(1)
 	}
 }
 
-func run(port int, publicBaseURL, director string) error {
+func run(port int, publicBaseURL, director, scriptDir string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	stack, err := harness.StartWith(ctx, harness.Options{ServerPort: port, PublicBaseURL: publicBaseURL})
+	stack, err := harness.StartWith(ctx, harness.Options{ServerPort: port, PublicBaseURL: publicBaseURL, ScriptDir: scriptDir})
 	if err != nil {
 		return err
 	}

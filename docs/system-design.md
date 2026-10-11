@@ -36,7 +36,7 @@ Source of truth: [Product brief](monster-theatre-product-brief.md). Significant 
 | Director authentication, link-only audience access, private storage, input limits | Section 7 |
 | Media expires after seven days | S3 lifecycle rule. Database rows are not cleaned up in the prototype |
 | Failures and retries visible to the operator | Section 8 |
-| Desktop browsers, audio unlocked on Enter theatre | Frontend behaviour; the click that joins the room also unlocks audio for the premiere |
+| Desktop browsers, audio unlocked on Enter theatre | The click that joins the room also starts the page's one audio element, which is what lets it play the premiere later (section 6, "The pages"; D044) |
 
 ### Capacity
 
@@ -355,14 +355,14 @@ A browser that reconnects during a round gets its own vote back in the snapshot,
 
 1. After the eighth recording is saved, the workflow fixes the start time five seconds ahead, saves it with the final script and audio keys to the performance row, and marks the row `completed`.
 2. It publishes `premiere` with that start time and the ordered clip list (turn, speaker, URL).
-3. Each browser counts down to the start time, then plays the eight clips in order with a normal audio element, fetching each from the URL the clip carries, and highlights the portrait of the clip's speaker. The browser never builds an audio address itself.
+3. Each browser counts down to the start time, then plays the eight clips in order through one audio element, each fetched from the URL the clip carries, and highlights the portrait of the clip's speaker and its line in the script. The browser never builds an audio address itself.
 4. A browser that connects later gets the same `premiere` state as its snapshot, from the row. If the start time is still ahead it joins the countdown; if it has passed, the browser offers the recording from the beginning. This is also how a finished room is replayed, by anyone who can still enter it.
 
 Playback is not synchronised beyond the shared start time, which the brief accepts.
 
 Two delivery rules keep the premiere continuous and working across browsers:
 
-- **Preloading.** On receiving the `premiere` update, the browser starts fetching all eight clips during the five-second countdown, so each clip is ready before the previous one ends. If a clip is still loading when its turn comes, playback waits for it; nothing is skipped.
+- **Preloading.** On receiving the `premiere` state, the browser fetches all eight clips whole, during the five-second countdown, and plays from those copies, so each clip is ready before the previous one ends. If a clip is still loading when its turn comes, playback waits for it; nothing is skipped. With real recordings a clip is about 150 KB.
 - **Range requests.** The audio endpoint answers partial-content requests: it honours the `Range` header, replies `206` with `Accept-Ranges: bytes` (and `416` for a range past the end), and reads only the bytes asked for from S3. Safari's audio element expects this. The parsing and the replies are Go's `http.ServeContent`; the object store hands it a body that can seek, which over S3 means a ranged read from the offset sought (D040).
 
 ### Worker restart
@@ -371,6 +371,15 @@ Two delivery rules keep the premiere continuous and working across browsers:
 - Votes signalled while the worker is down are stored by Temporal. On return the workflow counts those whose receipt time is not after the deadline, and rejects the rest (D033).
 - Browsers stay connected to the server throughout and see updates pause, then continue.
 - A browser that connects while the worker is down cannot get the performance's state, because a query needs a worker. Its snapshot says `recovering`; it stays connected, asks again with `resync`, and is sent the next update with everyone else once the worker is back.
+
+### The pages
+
+Two pages show a room live, and both use one component for it (`web/src/components/Theatre.tsx`): the audience page at the share link, `/join/{roomId}/{token}`, and the director's room page.
+
+- **Entering.** The audience page always opens on an **Enter theatre** button, after a reload too. A browser lets a page make sound only once the person has clicked on it, so every page load needs a click; that click also posts to the join endpoint, which gives a returning browser its session back and uses no seat. The director's page connects without a click, and its click is **Start**.
+- **Sound.** The page has one audio element. It is started, on a moment of silence, inside the click, and every clip is then played through it: Chrome allows later playback on a page that has been clicked, and Safari allows it for the element that was played during the click. If the browser still refuses at the premiere (a director who reloaded mid-run has not clicked), the page shows **Tap to hear audio**, and the tap starts the performance from its first clip.
+- **What each phase shows.** `waiting`: Start for the director, "Waiting for the director" for the audience. `generating`: whose turn it is and "Writing the next lines…". `voting`: the three lines as buttons and the seconds left; the first click is the vote and the buttons then stop taking clicks. `preparing_line`: the winning line, how it was decided, each line's count, and "Preparing the next line…". `premiere`: a countdown if its start time is ahead, otherwise **Play performance**; **Play again** once it has played. `failed`: the reason. `recovering`: a line saying so. The script so far is listed under all of them.
+- **Staying connected.** A dropped WebSocket is reopened after 1, 2, 4, 8, then every 10 seconds, with "Reconnecting…" shown meanwhile. An update that skips a revision is applied, since it carries the whole state, and a `resync` is sent for the browser's own vote. While the phase is `recovering` a `resync` is sent every three seconds.
 
 ## 7. Security
 

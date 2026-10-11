@@ -34,14 +34,14 @@ Scope: high-level issues in [the product brief](monster-theatre-product-brief.md
 
 ### Small design points
 
-Items 7 to 10 are decided. Items 11 to 17 are settled while building; 14, 15, and 16 have been.
+Items 7 to 10 are decided. Items 11 to 17 are settled while building; 11, 12, 14, 15, and 16 have been.
 
 7. **Start the timer before publishing the deadline.** Decided 2026-10-08: the workflow starts the timer first, then publishes the deadline (system design, section 4).
 8. **What happens when a publish fails.** Decided 2026-10-08: publishing retries briefly, then the workflow continues; a browser that sees a revision gap sends `resync` (system design, sections 4 and 5).
 9. **Start that half-completes.** Decided 2026-10-08: when a browser connects and the workflow is not found, the server starts it with the same ID. **Reversed 2026-10-11** (D043): a connecting browser never starts a workflow. The room says `recovering` until the director presses Start again, which already repaired it.
 10. **A workflow that ends without marking its row.** Decided 2026-10-08: when a browser connects and the workflow is closed, the server marks the row `failed` (system design, section 6).
-11. **Recovery status.** The brief no longer requires a visible "recovering" state. Connected browsers just see updates pause. Decided 2026-10-11 for the server: a browser that connects while the workflow cannot be asked is sent a snapshot with phase `recovering` and stays connected (D041). What the page shows for it is step 14's.
-12. **Waiting between rounds.** After each vote come tagging, speech, and the next generation, with nothing to listen to. The page should show the winning line and a "preparing the next line" state. Running tagging and speech in the background during the next round is a later improvement noted in the system design.
+11. **Recovery status.** The brief no longer requires a visible "recovering" state. Connected browsers just see updates pause. Decided 2026-10-11 for the server: a browser that connects while the workflow cannot be asked is sent a snapshot with phase `recovering` and stays connected (D041). The page shows "The performance is recovering" and asks again every three seconds (step 14).
+12. **Waiting between rounds.** Decided 2026-10-11, as suggested: after each vote come tagging, speech, and the next generation, with nothing to listen to, and the page shows the winning line, how it was decided, each line's count, and "Preparing the next line…", then "Writing the next lines…" for the next turn. With real providers the first lasted about 3 s and the second about 3 s. Running tagging and speech in the background during the next round is a later improvement noted in the system design.
 13. **Database cleanup.** S3 objects expire after seven days; nothing removes old database rows. Not urgent for a demo.
 14. **Audio pass-through or buffer.** Decided 2026-10-11: piped. The server streams the object to the response and reads only the bytes a range request asks for (D040).
 15. **Clip URLs.** Decided 2026-10-09: the `premiere` clip list carries URLs; the browser does not build them (D037).

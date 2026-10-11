@@ -2,8 +2,10 @@
 
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+import { Theatre } from "@/components/Theatre";
 import { Button, ErrorNotice } from "@/components/ui";
-import { ApiError, api, type Character, type Room } from "@/lib/api";
+import { ApiError, api, type Room } from "@/lib/api";
+import { unlockAudio } from "@/lib/audio";
 
 const MAX_AUDIENCE = 10;
 
@@ -51,11 +53,6 @@ export default function RoomPage() {
         {room.scene.description && <p className="mt-3 text-stone-700">{room.scene.description}</p>}
       </div>
 
-      <section aria-label="Characters" className="grid gap-6 sm:grid-cols-2">
-        <CharacterCard slot="A" character={room.characterA} />
-        <CharacterCard slot="B" character={room.characterB} />
-      </section>
-
       <section className="space-y-2 rounded-md border border-stone-200 bg-white p-4">
         <label htmlFor="share-link" className="block text-sm font-semibold">
           Share link
@@ -78,36 +75,42 @@ export default function RoomPage() {
         </p>
       </section>
 
-      <section className="space-y-2">
-        <Button type="button" disabled aria-describedby="start-note">
-          Start performance
-        </Button>
-        <p id="start-note" className="text-sm text-stone-500">
-          Starting a performance is not built yet. It arrives in a later step.
-        </p>
-      </section>
+      {/* The live view, with voting: the director is one more voter (D028). */}
+      <Theatre room={room} beforeStart={<StartPerformance roomId={room.roomId} />} />
     </div>
   );
 }
 
-function CharacterCard({ slot, character }: { slot: string; character: Character }) {
+// The Start button, shown while the room waits. Pressing it is safe to
+// repeat. Once the performance is running the live view replaces it.
+function StartPerformance({ roomId }: { roomId: string }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function start() {
+    // First, while this is still the click: it lets this page play the
+    // premiere later (lib/audio.ts).
+    unlockAudio();
+    setBusy(true);
+    setError(null);
+    try {
+      await api.start(roomId);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "The performance could not be started. Press Start again.");
+    }
+    setBusy(false);
+  }
+
   return (
-    <article className="flex gap-4 rounded-md border border-stone-200 bg-white p-4">
-      {/* A plain img: the portrait is private, served by the API with the
-          session cookie, and already the size it was uploaded at. */}
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img
-        src={character.portraitUrl}
-        alt={`Portrait of ${character.name}`}
-        width={96}
-        height={96}
-        className="h-24 w-24 shrink-0 rounded-md bg-stone-100 object-cover"
-      />
-      <div>
-        <p className="text-xs uppercase tracking-wide text-stone-500">Character {slot}</p>
-        <h2 className="text-lg font-semibold">{character.name}</h2>
-        {character.brief && <p className="mt-1 text-sm text-stone-700">{character.brief}</p>}
-      </div>
-    </article>
+    <div className="space-y-3">
+      <p className="text-stone-700">The performance has not started.</p>
+      {error && <ErrorNotice>{error}</ErrorNotice>}
+      <Button type="button" onClick={start} disabled={busy}>
+        {busy ? "Starting…" : "Start performance"}
+      </Button>
+      <p className="text-sm text-stone-500">
+        Once started it runs by itself: eight turns, each with a vote, then the premiere. It cannot be stopped.
+      </p>
+    </div>
   );
 }

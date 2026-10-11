@@ -15,6 +15,13 @@ export type Room = {
   createdAt: string;
 };
 
+// What an audience member is shown of a room: no share link and no count.
+export type RoomView = Pick<Room, "roomId" | "scene" | "characterA" | "characterB">;
+
+export type Entered = { sessionId: string; roomId: string; restored: boolean; room: RoomView };
+
+export type Performance = { performanceId: string; roomId: string; status: "running" | "completed" | "failed" };
+
 export type RoomSummary = { roomId: string; topic: string; createdAt: string };
 
 export type Director = { directorId: string; username: string };
@@ -74,4 +81,10 @@ export const api = {
   getRoom: (roomId: string) => request<Room>(`/api/v1/rooms/${encodeURIComponent(roomId)}`),
   // The browser sets the multipart boundary itself, so no Content-Type here.
   createRoom: (form: FormData) => request<Room>("/api/v1/rooms", { method: "POST", body: form }),
+  // The Enter theatre click. Safe to repeat: a browser that already has a
+  // session for the room gets it back, and no seat is used.
+  join: (roomId: string, token: string) => request<Entered>("/api/v1/audience-sessions", json({ roomId, token })),
+  // The Start button. Safe to repeat: a room has one performance.
+  start: (roomId: string) =>
+    request<Performance>(`/api/v1/rooms/${encodeURIComponent(roomId)}/performance`, json({})),
 };

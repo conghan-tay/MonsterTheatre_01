@@ -71,6 +71,10 @@ type Options struct {
 	// PublicBaseURL is where the stack is told the web pages live. Empty
 	// means PublicBaseURL.
 	PublicBaseURL string
+	// ScriptDir is where the fake providers read per-room scripts. Empty
+	// means a directory of the stack's own. The browser tests fix it, so
+	// that they can write a script without asking the stack where.
+	ScriptDir string
 }
 
 // StartWith is Start with options.
@@ -91,6 +95,9 @@ func StartWith(ctx context.Context, opts Options) (stack *Stack, err error) {
 		workDir:   workDir,
 		LogDir:    filepath.Join(workDir, "logs"),
 		ScriptDir: filepath.Join(workDir, "scripts"),
+	}
+	if opts.ScriptDir != "" {
+		s.ScriptDir = opts.ScriptDir
 	}
 	defer func() {
 		if err != nil {

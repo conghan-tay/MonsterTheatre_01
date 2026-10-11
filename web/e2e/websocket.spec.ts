@@ -49,9 +49,9 @@ function firstMessage(page: Page, url: string): Promise<string> {
 
 const waiting = { type: "snapshot", revision: 0, state: { phase: "waiting", turn: 0 } };
 
-// No page opens the WebSocket yet (the theatre pages are step 14). These
-// tests open it from a real browser on the web app's origin, which proves
-// what the Go tests cannot: the cookie is sent, the Origin the browser
+// These tests open the WebSocket by hand from a real browser on the web
+// app's origin, apart from the theatre pages that use it (theatre.spec.ts).
+// They prove what the Go tests cannot: the cookie is sent, the Origin the browser
 // chooses is accepted, and the /api proxy carries the upgrade.
 test("the room's WebSocket works through the web app's own origin", async ({ page }) => {
   const roomId = await createRoom(page);

@@ -43,9 +43,9 @@ Configuration comes from environment variables, all with local defaults. See [.e
 
 ## The web app
 
-`make dev` serves it at http://localhost:3000. A director logs in, creates a room from one form, and gets the room's page with its share link. Create an account first (next section).
+`make dev` serves it at http://localhost:3000. A director logs in, creates a room from one form, and gets the room's page with its share link and a Start button. Anyone who opens the share link gets the audience page. Both show the performance live: the three lines to vote on with a countdown, the winning line, and at the end the premiere, which plays the eight recordings in order. Create an account first (next section).
 
-The browser only ever talks to port 3000: the web app proxies `/api/*` to the Go server, which is the routing a load balancer does in production. Opening a share link does not work yet; the audience page arrives in a later step.
+The browser only ever talks to port 3000: the web app proxies `/api/*` to the Go server, which is the routing a load balancer does in production.
 
 ## Director accounts
 
@@ -82,7 +82,9 @@ The response carries the room ID and the share link for the audience. `GET /api/
 
 ## Joining as audience
 
-The share link is `{PUBLIC_BASE_URL}/join/{roomId}/{token}`. Until the web pages exist, join by posting those two values:
+The share link is `{PUBLIC_BASE_URL}/join/{roomId}/{token}`. Opening it shows an **Enter theatre** button. The click joins the room, and is also what lets that page play sound later, so the button is there after a reload too; entering again as the same browser uses no extra seat. To try a second audience member on one machine, open the link in a private window or another browser.
+
+The same thing with curl:
 
 ```sh
 curl -i -c audience.txt -H 'Content-Type: application/json' \
@@ -102,7 +104,7 @@ Share links are derived from `SHARE_LINK_SECRET`, not stored. `make dev` keeps a
 {"type":"snapshot","revision":0,"state":{"phase":"waiting","turn":0}}
 ```
 
-No page opens it yet. To try it, log in at http://localhost:3000, open a room, and run this in the browser console on that page:
+The theatre pages open it themselves. To watch it by hand, log in at http://localhost:3000, open a room, and run this in the browser console on that page:
 
 ```js
 new WebSocket(`ws://${location.host}/api/v1/rooms/${location.pathname.split("/").pop()}/ws`).onmessage = (e) => console.log(e.data)
@@ -112,7 +114,7 @@ The handshake is accepted only from a page on `PUBLIC_BASE_URL` or on the server
 
 ## Running a performance
 
-The Start button on the room page is not wired up yet, so start one with curl, logged in as the room's director (see "Director accounts" for `cookies.txt`):
+Press **Start performance** on the room page. Everything after that is automatic, and the page becomes the live view: the director votes like everyone else. The rest of this section is the same thing by hand, which is useful for seeing what the pages do underneath. To start one with curl, logged in as the room's director (see "Director accounts" for `cookies.txt`):
 
 ```sh
 curl -b cookies.txt -X POST -H 'Content-Type: application/json' -d '{}' \
@@ -142,7 +144,7 @@ curl -b cookies.txt -o turn-1.mp3 localhost:8080/api/v1/performances/PERFORMANCE
 curl -b cookies.txt -H 'Range: bytes=0-99' -o first-100-bytes localhost:8080/api/v1/performances/PERFORMANCE_ID/turns/1/audio
 ```
 
-Before that the answer is `409`: nothing is heard before the premiere. A room WebSocket opened after the run gets the same `premiere` state as its snapshot, at revision 25, read from the database; its `startsAt` is then in the past, which is how a page knows to offer the recording from the beginning. No page plays it yet.
+Before that the answer is `409`: nothing is heard before the premiere. A room WebSocket opened after the run gets the same `premiere` state as its snapshot, at revision 25, read from the database; its `startsAt` is then in the past, which is how a page knows to offer the recording from the beginning. The pages then offer **Play performance** instead of a countdown.
 
 By default the language model and speech service are stand-ins: lines read "Turn 1, first option." and the recordings are silent. Nothing is spent unless you ask for the real ones.
 

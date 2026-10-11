@@ -187,7 +187,7 @@ What to notice:
 - **Case C:** this is the limit of anonymous identity. A cleared cookie, a private window, or a second device is a new person as far as the server can tell. The design accepts this.
 - **Missed messages are never replayed one by one.** The snapshot carries a revision number. The browser replaces its state with the snapshot and drops any update that is not newer.
 - **A vote sent just before a drop is not lost.** Once the server has signalled it, the workflow holds it, and the next snapshot shows it.
-- **If the worker is down,** the query in Case A cannot be answered. The server tells the browser the performance is recovering, and the browser retries.
+- **If the worker is down,** the query in Case A cannot be answered. The server's snapshot says the performance is recovering, and the browser stays connected and asks again with `resync`.
 
 ## Settled questions
 

@@ -371,19 +371,6 @@ func TestServeWSSnapshotComesFromTheRunningWorkflowAndOlderUpdatesAreDropped(t *
 	require.Equal(t, 7, readMessage(t, ctx, ws).Revision)
 }
 
-func TestServeWSAsksTheBrowserToComeBackWhenTheWorkflowCannotAnswer(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	svc, _, url := served(t, 0, 0)
-	svc.Performances = &fakePerformances{row: &performance.Performance{ID: "perf-1", Status: performance.StatusRunning}}
-	svc.Workflows = &fakeWorkflow{err: errors.New("no worker is polling")}
-
-	ws := dial(t, ctx, url)
-	_, _, err := ws.Read(ctx)
-	require.Equal(t, websocket.StatusTryAgainLater, websocket.CloseStatus(err), "error: %v", err)
-	require.Eventually(t, func() bool { return svc.Hub.Count("room") == 0 }, 2*time.Second, 10*time.Millisecond)
-}
-
 func TestServeWSSendsACompletedPerformanceAsItsPremiere(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -726,7 +713,7 @@ func TestMessagesThatAreNotVotes(t *testing.T) {
 
 	// A type this server does not know is ignored without a reply: the next
 	// reply to arrive is the vote's.
-	require.NoError(t, ws.Write(ctx, websocket.MessageText, []byte(`{"type":"resync"}`)))
+	require.NoError(t, ws.Write(ctx, websocket.MessageText, []byte(`{"type":"applause"}`)))
 	reply := say(t, ctx, ws, `{"type":"vote","turn":1,"choiceId":"c1"}`)
 	require.Equal(t, "vote_received", reply["type"])
 }

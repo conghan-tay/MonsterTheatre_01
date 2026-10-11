@@ -12,10 +12,14 @@ import (
 // performance is 25 updates, so a browser this far behind is not reading.
 const sendBuffer = 32
 
-// outbound is an update waiting to be written to one browser.
+// outbound is a message waiting to be written to one browser: an update, or
+// a snapshot the whole room is being sent.
 type outbound struct {
 	revision int
 	data     []byte
+	// always marks a message that is sent whatever the browser already
+	// has. An update is dropped if the browser's snapshot covers it.
+	always bool
 }
 
 // conn is one browser's connection as the hub sees it.
@@ -26,6 +30,10 @@ type conn struct {
 	// replies holds answers to this browser's own messages, such as
 	// vote_received. Nil for a connection that cannot be answered.
 	replies chan []byte
+	// resync holds at most one request from this browser for a fresh
+	// snapshot. The writer loop takes the snapshot, so that nothing is
+	// written between taking it and sending it.
+	resync chan struct{}
 	// close ends the connection with a close frame. It is safe to call from
 	// any goroutine and more than once.
 	close func(code websocket.StatusCode, reason string)
@@ -82,11 +90,25 @@ func (h *Hub) Count(roomID string) int {
 // than waited for, so one stalled browser cannot hold up a room; when it
 // reconnects it gets a fresh snapshot.
 func (h *Hub) Broadcast(roomID string, revision int, msg []byte) {
+	h.queue(roomID, nil, outbound{revision: revision, data: msg})
+}
+
+// announce queues a snapshot for every connection in the room but one: the
+// connection whose request brought the news, which is answered directly. No
+// browser drops it as something it already has.
+func (h *Hub) announce(roomID string, except *conn, msg []byte) {
+	h.queue(roomID, except, outbound{data: msg, always: true})
+}
+
+func (h *Hub) queue(roomID string, except *conn, out outbound) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for c := range h.rooms[roomID] {
+		if c == except {
+			continue
+		}
 		select {
-		case c.send <- outbound{revision: revision, data: msg}:
+		case c.send <- out:
 		default:
 			delete(h.rooms[roomID], c)
 			go c.close(websocket.StatusPolicyViolation, "too far behind")

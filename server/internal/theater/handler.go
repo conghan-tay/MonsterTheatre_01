@@ -57,6 +57,12 @@ type StateQuerier interface {
 	State(ctx context.Context, performanceID, voterID string) (performance.Snapshot, error)
 }
 
+// Failer marks a performance failed, if it is still running.
+// *performance.PGStore implements it.
+type Failer interface {
+	Fail(ctx context.Context, id, reason string, now time.Time) error
+}
+
 // VoteSignaller hands a vote to a performance's workflow.
 // *performance.Workflows implements it.
 type VoteSignaller interface {
@@ -69,10 +75,12 @@ type Service struct {
 	Audience     SessionToucher
 	Performances PerformanceReader
 	Workflows    StateQuerier
-	Votes        VoteSignaller
-	Hub          *Hub
-	Origins      OriginPolicy
-	Logger       *slog.Logger
+	// Failures is where a run found dead is marked failed.
+	Failures Failer
+	Votes    VoteSignaller
+	Hub      *Hub
+	Origins  OriginPolicy
+	Logger   *slog.Logger
 	// PingInterval and PongTimeout default to DefaultPingInterval and
 	// DefaultPongTimeout when zero.
 	PingInterval time.Duration
@@ -120,6 +128,7 @@ func (s *Service) ServeWS(w http.ResponseWriter, r *http.Request) {
 	c := &conn{
 		send:    make(chan outbound, sendBuffer),
 		replies: make(chan []byte),
+		resync:  make(chan struct{}, 1),
 		close: func(code websocket.StatusCode, reason string) {
 			closeOnce.Do(func() { _ = ws.Close(code, reason) })
 		},
@@ -138,17 +147,9 @@ func (s *Service) ServeWS(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
-	revision, state, err := s.snapshot(ctx, roomID, viewer.ID)
-	if err != nil {
-		// Most likely no worker is running to answer. The browser is told to
-		// come back; step 13 replaces this with the recovery rule.
-		if ctx.Err() == nil {
-			log.Warn("theater: no snapshot available", "error", err)
-		}
-		c.close(websocket.StatusTryAgainLater, "performance state unavailable")
-		return
-	}
-	if err := write(ctx, ws, snapshotMessage(revision, state)); err != nil {
+	v := &viewing{conn: c, roomID: roomID, voterID: viewer.ID, log: log}
+	revision, ok := s.sendSnapshot(ctx, ws, v)
+	if !ok {
 		return
 	}
 
@@ -157,7 +158,7 @@ func (s *Service) ServeWS(w http.ResponseWriter, r *http.Request) {
 	// browser's votes reach the workflow in the order it sent them.
 	go func() {
 		defer cancel()
-		in := &inbox{service: s, roomID: roomID, voterID: viewer.ID, log: log}
+		in := &inbox{service: s, roomID: roomID, voterID: viewer.ID, log: log, resync: c.resync}
 		for {
 			_, data, err := ws.Read(ctx)
 			if err != nil {
@@ -176,7 +177,35 @@ func (s *Service) ServeWS(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	s.writeLoop(ctx, ws, c, revision)
+	s.writeLoop(ctx, ws, v, revision)
+}
+
+// viewing is one connection and who is on it.
+type viewing struct {
+	conn   *conn
+	roomID string
+	// voterID is who is watching, so a snapshot can include their own vote.
+	voterID string
+	log     *slog.Logger
+}
+
+// sendSnapshot takes a snapshot and writes it, and returns its revision. It
+// is used for the first message and for the answer to a resync. If there is
+// no snapshot to send, because the database could not be read, it closes
+// the connection and returns false; the browser reconnects.
+func (s *Service) sendSnapshot(ctx context.Context, ws *websocket.Conn, v *viewing) (int, bool) {
+	revision, state, err := s.snapshot(ctx, v)
+	if err != nil {
+		if ctx.Err() == nil {
+			v.log.Warn("theater: no snapshot available", "error", err)
+		}
+		v.conn.close(websocket.StatusTryAgainLater, "performance state unavailable")
+		return 0, false
+	}
+	if err := write(ctx, ws, snapshotMessage(revision, state)); err != nil {
+		return 0, false
+	}
+	return revision, true
 }
 
 // snapshot returns the room's current state and its revision. Where it comes
@@ -184,32 +213,81 @@ func (s *Service) ServeWS(w http.ResponseWriter, r *http.Request) {
 // no row, the room is waiting; running, the workflow is asked; finished, the
 // row says how, and no worker is needed.
 //
-// voterID is who is asking, so a running performance can include their own
-// vote in the answer.
-func (s *Service) snapshot(ctx context.Context, roomID, voterID string) (int, performance.State, error) {
-	p, err := s.Performances.ByRoom(ctx, roomID)
+// If the workflow cannot be asked, the answer is still a snapshot: one that
+// says the performance is recovering. The only error is a database that
+// could not be read.
+func (s *Service) snapshot(ctx context.Context, v *viewing) (int, performance.State, error) {
+	p, err := s.Performances.ByRoom(ctx, v.roomID)
 	if errors.Is(err, performance.ErrNotFound) {
 		return 0, performance.State{Phase: performance.PhaseWaiting}, nil
 	}
 	if err != nil {
 		return 0, performance.State{}, err
 	}
-	switch p.Status {
-	case performance.StatusRunning:
-		ctx, cancel := context.WithTimeout(ctx, queryTimeout)
-		defer cancel()
-		snapshot, err := s.Workflows.State(ctx, p.ID, voterID)
-		return snapshot.Revision, snapshot.State, err
-	case performance.StatusCompleted:
+	if p.Status != performance.StatusRunning {
+		revision, state := finished(p)
+		return revision, state, nil
+	}
+
+	queryCtx, cancel := context.WithTimeout(ctx, queryTimeout)
+	defer cancel()
+	snapshot, err := s.Workflows.State(queryCtx, p.ID, v.voterID)
+	switch {
+	case err == nil:
+		return snapshot.Revision, snapshot.State, nil
+	case errors.Is(err, performance.ErrWorkflowClosed):
+		return s.dead(ctx, v, p)
+	default:
+		// No worker is up to answer, most likely. A workflow that was never
+		// started also ends here, and is not started from here: that is
+		// the director's to do, with Start (docs/decisions.md, D043).
+		if ctx.Err() == nil {
+			v.log.Warn("theater: workflow did not answer; the performance is recovering", "performance_id", p.ID, "error", err)
+		}
+		return 0, performance.RecoveringState(p), nil
+	}
+}
+
+// finished is the snapshot of a performance whose row says it has ended.
+func finished(p performance.Performance) (int, performance.State) {
+	if p.Status == performance.StatusCompleted {
 		// The premiere as it was published. The row is marked a moment
 		// before that update goes out; a browser that connects in between
 		// is sent this, and the update is then dropped as nothing new.
-		return performance.LastRevision, performance.PremiereState(p), nil
-	default:
-		// The row does not record the revision a run failed at. Zero lets
-		// a failed update still on its way through, which says the same.
-		return 0, performance.FailedState(p), nil
+		return performance.LastRevision, performance.PremiereState(p)
 	}
+	// The row does not record the revision a run failed at. Zero lets a
+	// failed update still on its way through, which says the same.
+	return 0, performance.FailedState(p)
+}
+
+// dead deals with a performance whose row says running and whose workflow
+// has ended: a run stopped by its timeout, or from outside, which could not
+// mark its own row. The row is marked failed and everyone in the room is
+// told, since they would otherwise wait on a round that will never close
+// (docs/decisions.md, D042).
+//
+// Marking changes only a row that is still running, and the row is read
+// again afterwards. So a run that finished properly in the moment between
+// the first read and the query is answered as it finished, and nothing is
+// announced.
+func (s *Service) dead(ctx context.Context, v *viewing, p performance.Performance) (int, performance.State, error) {
+	if err := s.Failures.Fail(ctx, p.ID, performance.FailureInternal, s.Now()); err != nil {
+		return 0, performance.State{}, err
+	}
+	p, err := s.Performances.ByRoom(ctx, v.roomID)
+	if err != nil {
+		return 0, performance.State{}, err
+	}
+	if p.Status == performance.StatusRunning {
+		return 0, performance.RecoveringState(p), nil // cannot happen: Fail has just marked it
+	}
+	revision, state := finished(p)
+	if p.Status == performance.StatusFailed {
+		v.log.Warn("theater: the workflow ended without marking its performance; marked failed", "performance_id", p.ID)
+		s.Hub.announce(v.roomID, v.conn, snapshotMessage(revision, state))
+	}
+	return revision, state, nil
 }
 
 // writeLoop sends queued updates, replies, and pings until the connection ends. It is
@@ -217,7 +295,13 @@ func (s *Service) snapshot(ctx context.Context, roomID, voterID string) (int, pe
 //
 // It drops any update at or below snapshotRevision: one that was queued
 // while the snapshot was being fetched and that the snapshot already covers.
-func (s *Service) writeLoop(ctx context.Context, ws *websocket.Conn, c *conn, snapshotRevision int) {
+//
+// A resync is answered here and not by the reader, for the same reason the
+// first snapshot is taken after the connection joins the room: while this
+// loop is taking the snapshot it writes nothing, so every update published
+// meanwhile is queued behind it and then sent or dropped by its revision.
+func (s *Service) writeLoop(ctx context.Context, ws *websocket.Conn, v *viewing, snapshotRevision int) {
+	c := v.conn
 	interval, timeout := s.PingInterval, s.PongTimeout
 	if interval <= 0 {
 		interval = DefaultPingInterval
@@ -233,7 +317,7 @@ func (s *Service) writeLoop(ctx context.Context, ws *websocket.Conn, c *conn, sn
 		case <-ctx.Done():
 			return
 		case update := <-c.send:
-			if update.revision <= snapshotRevision {
+			if !update.always && update.revision <= snapshotRevision {
 				continue
 			}
 			if err := write(ctx, ws, update.data); err != nil {
@@ -243,6 +327,12 @@ func (s *Service) writeLoop(ctx context.Context, ws *websocket.Conn, c *conn, sn
 			if err := write(ctx, ws, reply); err != nil {
 				return
 			}
+		case <-c.resync:
+			revision, ok := s.sendSnapshot(ctx, ws, v)
+			if !ok {
+				return
+			}
+			snapshotRevision = revision
 		case <-ticker.C:
 			pingCtx, cancel := context.WithTimeout(ctx, timeout)
 			err := ws.Ping(pingCtx)

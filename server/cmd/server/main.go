@@ -156,6 +156,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		Audience:     audienceService,
 		Performances: performances,
 		Workflows:    workflows,
+		Failures:     performances,
 		Votes:        workflows,
 		Hub:          hub,
 		Origins:      origins,

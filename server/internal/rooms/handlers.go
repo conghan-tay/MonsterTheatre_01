@@ -273,13 +273,19 @@ func (s *Service) readableRoom(w http.ResponseWriter, r *http.Request) (room Roo
 // endpoint does not reveal which rooms exist. A logged-in director asking for
 // another director's room gets 403.
 func (s *Service) Authorize(w http.ResponseWriter, r *http.Request) (viewer Viewer, ok bool) {
+	return s.AuthorizeRoom(w, r, r.PathValue("roomId"))
+}
+
+// AuthorizeRoom is Authorize for a route that does not name its room in the
+// path: a turn's recording is addressed by its performance, and the caller
+// has looked up which room that is.
+func (s *Service) AuthorizeRoom(w http.ResponseWriter, r *http.Request, id string) (viewer Viewer, ok bool) {
 	director, isDirector, err := s.Directors.Director(r)
 	if err != nil {
 		s.internalError(w, "look up director", err)
 		return Viewer{}, false
 	}
 
-	id := r.PathValue("roomId")
 	validID := uuid.Validate(id) == nil
 	sessionID, isMember := "", false
 	if validID {
@@ -289,7 +295,7 @@ func (s *Service) Authorize(w http.ResponseWriter, r *http.Request) (viewer View
 		}
 	}
 	if !isDirector && !isMember {
-		httpapi.WriteError(w, http.StatusUnauthorized, "not_logged_in", "Log in or enter the theatre to continue.")
+		WriteNotLoggedIn(w)
 		return Viewer{}, false
 	}
 	if !validID {
@@ -316,6 +322,14 @@ func (s *Service) Authorize(w http.ResponseWriter, r *http.Request) (viewer View
 		httpapi.WriteError(w, http.StatusForbidden, "not_your_room", "This room belongs to another director.")
 		return Viewer{}, false
 	}
+}
+
+// WriteNotLoggedIn writes the refusal for a request that carries neither a
+// director login nor an audience session for the room it asks about. Every
+// endpoint that admits both sends this same response, so that it says
+// nothing about what exists.
+func WriteNotLoggedIn(w http.ResponseWriter) {
+	httpapi.WriteError(w, http.StatusUnauthorized, "not_logged_in", "Log in or enter the theatre to continue.")
 }
 
 func (s *Service) internalError(w http.ResponseWriter, what string, err error) {

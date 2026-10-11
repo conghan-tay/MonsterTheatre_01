@@ -135,13 +135,19 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	performances := &performance.PGStore{Pool: pool}
 	workflows := &performance.Workflows{Client: temporalClient, TaskQueue: cfg.TemporalTaskQueue}
 	performanceService := &performance.Service{
-		Rooms:     roomStore,
-		Store:     performances,
-		Workflows: workflows,
-		Logger:    logger,
-		Now:       time.Now,
+		Rooms:      roomStore,
+		Store:      performances,
+		Workflows:  workflows,
+		Authorizer: roomService,
+		Directors:  directors,
+		Objects:    objects,
+		Logger:     logger,
+		Now:        time.Now,
 	}
 	mux.Handle("POST /api/v1/rooms/{roomId}/performance", director(performanceService.Start))
+	// A turn's recording, for the same people who may read the room, once
+	// the performance has completed.
+	mux.HandleFunc(performance.AudioRoute, performanceService.Audio)
 
 	// The room's live connection, for the same people who may read the room.
 	hub := theater.NewHub()

@@ -384,20 +384,57 @@ func TestServeWSAsksTheBrowserToComeBackWhenTheWorkflowCannotAnswer(t *testing.T
 	require.Eventually(t, func() bool { return svc.Hub.Count("room") == 0 }, 2*time.Second, 10*time.Millisecond)
 }
 
-func TestServeWSSaysAFinishedPerformanceIsFinished(t *testing.T) {
+func TestServeWSSendsACompletedPerformanceAsItsPremiere(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	for status, phase := range map[string]string{
-		performance.StatusCompleted: performance.PhaseCompleted,
-		performance.StatusFailed:    performance.PhaseFailed,
-	} {
-		svc, _, url := served(t, 0, 0)
-		svc.Performances = &fakePerformances{row: &performance.Performance{ID: "perf-1", Status: status}}
-		ws := dial(t, ctx, url)
-		require.Equal(t, performance.Message{
-			Type: "snapshot", Revision: 0, State: performance.State{Phase: phase, PerformanceID: "perf-1"},
-		}, readMessage(t, ctx, ws), "the workflow is not asked, so no worker is needed")
-	}
+	startsAt := time.Date(2026, 10, 11, 12, 0, 5, 0, time.UTC)
+	svc, _, url := served(t, 0, 0)
+	svc.Performances = &fakePerformances{row: &performance.Performance{
+		ID: "perf-1", RoomID: "room", Status: performance.StatusCompleted, PremiereStartsAt: startsAt,
+		Script: performance.Script{Turns: []performance.ScriptTurn{
+			{Turn: 1, Speaker: "A", Winner: performance.Choice{ID: "c2", Text: "hello"}, TaggedText: "[tag] hello"},
+			{Turn: 2, Speaker: "B", Winner: performance.Choice{ID: "c1", Text: "goodbye"}, TaggedText: "[tag] goodbye"},
+		}},
+	}}
+
+	ws := dial(t, ctx, url)
+	require.Equal(t, performance.Message{
+		Type: "snapshot", Revision: performance.LastRevision, State: performance.State{
+			Phase: performance.PhasePremiere, Turn: performance.Turns, PerformanceID: "perf-1",
+			Lines: []performance.Line{{Turn: 1, Speaker: "A", Text: "hello"}, {Turn: 2, Speaker: "B", Text: "goodbye"}},
+			Premiere: &performance.Premiere{StartsAt: startsAt, Clips: []performance.Clip{
+				{Turn: 1, Speaker: "A", URL: "/api/v1/performances/perf-1/turns/1/audio"},
+				{Turn: 2, Speaker: "B", URL: "/api/v1/performances/perf-1/turns/2/audio"},
+			}},
+		},
+	}, readMessage(t, ctx, ws), "read from the row: the workflow is not asked, so no worker is needed")
+
+	// The premiere update itself, arriving late, is nothing new.
+	svc.Hub.Broadcast("room", performance.LastRevision, updateJSON(performance.LastRevision))
+	svc.Hub.Broadcast("room", performance.LastRevision+1, updateJSON(performance.LastRevision+1))
+	require.Equal(t, performance.LastRevision+1, readMessage(t, ctx, ws).Revision)
+}
+
+func TestServeWSSendsAFailedPerformanceWithItsReason(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	svc, _, url := served(t, 0, 0)
+	svc.Performances = &fakePerformances{row: &performance.Performance{
+		ID: "perf-1", RoomID: "room", Status: performance.StatusFailed, FailureReason: performance.FailureSpeech,
+	}}
+
+	ws := dial(t, ctx, url)
+	require.Equal(t, performance.Message{
+		Type: "snapshot", Revision: 0, State: performance.State{
+			Phase: performance.PhaseFailed, PerformanceID: "perf-1",
+			Failure: &performance.Failure{Code: "speech_failed", Message: "The line could not be turned into speech."},
+		},
+	}, readMessage(t, ctx, ws), "read from the row: the workflow is not asked, so no worker is needed")
+
+	// The row does not say which revision the run failed at, so the failed
+	// update, if it is still on its way, is let through.
+	svc.Hub.Broadcast("room", 7, updateJSON(7))
+	require.Equal(t, 7, readMessage(t, ctx, ws).Revision)
 }
 
 // fakeStream is a Redis stream held in memory. Entry IDs are "1-0", "2-0", ...

@@ -88,6 +88,12 @@ func requireFailed(t *testing.T, ctx context.Context, director *client.DirectorC
 	snapshot, err := later.Snapshot(ctx)
 	require.NoError(t, err)
 	require.Equal(t, client.PhaseFailed, snapshot.State.Phase, "snapshot: %s", snapshot.Raw)
+	// Step 12: read from the row, which records why the run failed but not
+	// where it had got to.
+	require.Equal(t, 0, snapshot.Revision, "snapshot: %s", snapshot.Raw)
+	require.Equal(t, started.PerformanceID, snapshot.State.PerformanceID)
+	require.Equal(t, failed.State.Failure, snapshot.State.Failure, "the same reason and sentence as the update; snapshot: %s", snapshot.Raw)
+	require.Nil(t, snapshot.State.Premiere, "snapshot: %s", snapshot.Raw)
 
 	// Nothing more is published, and once the run has closed a vote is refused.
 	var reply client.Message
@@ -133,6 +139,10 @@ func TestSpeechFailingPastItsLimitFailsTheRun(t *testing.T) {
 	require.NoError(t, err, "turn 1 was voiced before the failure")
 	_, err = stack.StoredObject(audioKey(started.PerformanceID, 2))
 	require.Error(t, err, "turn 2 never was")
+
+	// Step 12: a failed run's recordings are never served.
+	resp, err := director.FetchAudio(ctx, audioURL(started.PerformanceID, 1))
+	requireRefused(t, resp, err, http.StatusConflict, "performance_not_completed", "turn 1 of a failed run")
 }
 
 // S9 (first part): choice generation that fails briefly is retried, and the

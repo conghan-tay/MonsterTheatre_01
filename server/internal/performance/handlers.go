@@ -21,9 +21,10 @@ type RoomReader interface {
 	Get(ctx context.Context, id string) (rooms.Room, error)
 }
 
-// Store is the persistence Start needs. *PGStore implements it.
+// Store is the persistence the handlers need. *PGStore implements it.
 type Store interface {
 	CreateOrGet(ctx context.Context, roomID string, now time.Time) (Performance, bool, error)
+	ByID(ctx context.Context, id string) (Performance, error)
 }
 
 // Starter starts a performance's workflow. *Workflows implements it.
@@ -31,13 +32,19 @@ type Starter interface {
 	Start(ctx context.Context, performanceID, roomID string) error
 }
 
-// Service serves the Start endpoint. It is behind auth.RequireDirector.
+// Service serves the performance endpoints. Start is behind
+// auth.RequireDirector. Audio admits the room's director or a member of its
+// audience, and checks that itself.
 type Service struct {
 	Rooms     RoomReader
 	Store     Store
 	Workflows Starter
-	Logger    *slog.Logger
-	Now       func() time.Time
+	// Authorizer, Directors, and Objects are what Audio needs.
+	Authorizer RoomAuthorizer
+	Directors  DirectorResolver
+	Objects    ObjectReader
+	Logger     *slog.Logger
+	Now        func() time.Time
 }
 
 type startResponse struct {

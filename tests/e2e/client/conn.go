@@ -46,7 +46,6 @@ const (
 	PhaseVoting        = "voting"
 	PhasePreparingLine = "preparing_line"
 	PhasePremiere      = "premiere"
-	PhaseCompleted     = "completed"
 	PhaseFailed        = "failed"
 )
 

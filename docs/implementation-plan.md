@@ -58,7 +58,7 @@ Note: `.gitignore` excludes `*.mp3` and `*.wav`, so audio fixtures are generated
 | H4 | After Start, with no votes, connected browsers receive revisions 1 to 25 in order and the performance row ends `completed` with a full script | 9 |
 | H5 | Votes decide the winner: majority wins, the director's vote counts, and a tie is settled once | 10 |
 | H6 | A browser that reconnects mid-round gets a snapshot containing its own vote and then continues from the right revision | 10 |
-| H7 | After completion, all eight clips can be fetched, including by range request, and a browser connecting later gets the completed snapshot | 12 |
+| H7 | After completion, all eight clips can be fetched, including by range request, and a browser connecting later gets the premiere as its snapshot, exactly as it was published | 12 |
 | H8 | The worker is stopped mid-performance and restarted; connected browsers stay connected and the run completes | 13 |
 
 ### Sad paths
@@ -302,6 +302,8 @@ Makefile           dev, test, e2e, migrate
 
 ### Step 12 — Premiere and replay
 
+**Done 2026-10-11.** Two things differ from the list below. A completed room's snapshot is not a separate "completed" state: it is the `premiere` state exactly as published, at revision 25, rebuilt from the row, and the `completed` phase has left the WebSocket contract (D039). For that the premiere's start time is now saved on the row: the workflow fixes it before the save. The column was added to the `performances` create-table migration (`00006`) instead of a new migration, since only local test data existed; a database migrated before this step must drop and recreate that table (README, "Migration rules"). Range requests are answered by `http.ServeContent` over an object body that can seek (D040). Review items 14 and 16 are decided. A failed room's snapshot carries the reason but no turn or lines, and is at revision 0. Not checked: playback in a real audio element, in any browser.
+
 **What to build**
 - The audio endpoint with authorisation, the completed-only rule, and range requests.
 - The completed and failed snapshots read from the performance row.
@@ -324,7 +326,7 @@ Makefile           dev, test, e2e, migrate
 
 **What to build**
 - The audience page: Enter theatre (which unlocks audio), waiting state, the three choices with a countdown, the winning line and "preparing" state, reconnection with backoff, and the failure message.
-- The premiere player: countdown, preloading, eight clips in order with the speaker's portrait highlighted, the **Tap to hear audio** fallback, and replay for a finished room.
+- The premiere player: countdown, preloading, eight clips in order with the speaker's portrait highlighted, the **Tap to hear audio** fallback, and replay for a finished room. A finished room arrives as the `premiere` state with a `startsAt` that has passed (D039); there is no separate phase for it.
 - The director's room page wired to Start, with the same live view and voting.
 - Playwright tests: a full performance with one director and two audience browsers using fake providers, and a replay of a finished room.
 
@@ -359,6 +361,6 @@ These are items 11 to 16 in [the review](review.md), placed where they come up:
 | What the page shows between rounds | Step 14 |
 | Database cleanup | Step 15, or defer |
 | Whether goose runs unmodified against Aurora DSQL | Step 15 |
-| Piping audio from the object store | Step 12 |
+| Piping audio from the object store | Settled in step 12: piped (D040) |
 | Who builds clip URLs | Settled in step 9: the clip list carries them (D037) |
-| Caching of audio responses | Step 12 |
+| Caching of audio responses | Settled in step 12: private, seven days, immutable |

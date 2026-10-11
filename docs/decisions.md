@@ -34,6 +34,8 @@ The log below is kept in full, including entries that were later replaced. These
 | D036 | Every update carries the whole state, not a change |
 | D037 | The premiere's clip list carries each clip's URL |
 | D038 | Choice generation has no stand-in lines: retry for a window, then fail the run |
+| D039 | A finished room's snapshot comes from its row: the premiere as published, at revision 25, with its start time stored |
+| D040 | Stored objects are read through a body that can seek, so the standard library answers range requests |
 
 Superseded or withdrawn: D002, D004, D006, D010, D011, D012, D014, D016, D019, D020, D021, and the data-lake half of D003.
 
@@ -716,3 +718,35 @@ This algorithm was run through the spike's three scenarios and was correct in ev
 **Tradeoffs and consequences:** A long outage ends the performance, two minutes later than it would have with three attempts, and the room cannot be run again (D005). The audience may wait up to two minutes on one turn. The brief's sentence and the S9 test were reworded; the failure path gained a second way in.
 
 **Status:** accepted — explicit user choice on 2026-10-10.
+
+## D039 — A finished room's snapshot is its last published state
+
+**Decision:** A browser that connects to a room whose performance has completed is sent the `premiere` state exactly as it was published, at revision 25, rebuilt from the performance row. The premiere's start time is stored on the row for this. There is no `completed` phase on the WebSocket. A failed room's snapshot is `failed` with its reason, at revision 0.
+
+**Context / requirement:** Until step 12 a finished room's snapshot only named a phase, `completed` or `failed`, at revision 0. The brief requires that reopening the room link shows the script and replays the premiere, so the snapshot needed the lines and the clips. Three things were open: its shape, its revision, and what a browser connecting during the countdown is told, since the start time was computed after the row was saved and stored nowhere.
+
+**Chosen approach:** The workflow fixes the start time (its current time plus the countdown, in UTC, to the microsecond the database keeps) before the final save. The one write that marks the row `completed` stores it with the script and audio keys, and the premiere update then carries the same value. For a `completed` row the server builds the state from the row: `phase: premiere`, `turn: 8`, the lines and clips from the saved script (each clip's URL from `performance.AudioURL`), and the stored `startsAt`. Its revision is 25, a constant: every completed run has published three updates a turn and then the premiere, and the revision goes up with each publish whether or not it reached Redis. For a `failed` row the state is `phase: failed` with `failure` built from the stored reason, at revision 0. The column was added to the `performances` create-table migration instead of a new one, because only local test data existed.
+
+**Why it fits:** Everyone holds the same state for a finished room whenever they connected: the same message, the same revision, and no second shape for pages to handle. A browser that connects during the countdown joins it, instead of being offered the recording ahead of everyone else (D022). A browser that reconnects after the run does not see its revision go from 25 back to 0. The pages (step 14) must handle a `premiere` whose start time has passed in any case, for the browsers that watched it, so replay asks nothing more of them.
+
+**Alternatives considered:** A separate `completed` state without a start time, at revision 0, as first planned: no schema or workflow change, but a browser connecting during the countdown could play up to five seconds early, and revisions appear to step backwards on reconnecting. The same at a fixed revision 26: tidier, with the same early-play gap. Sending `premiere` until the start time and `completed` after, decided by the server's clock: independent of the browser's clock, but two shapes for one situation. Storing the last revision on the row, which would be exact for failed runs too: a second workflow change for a number nothing needs.
+
+**Tradeoffs and consequences:** The final save comes out of the countdown; a database being retried can leave little or none. Whether a late browser counts down or offers the recording depends on its own clock, so one that runs slow can count down to a premiere that is over. The system design's "connects after the start time gets the completed snapshot" no longer describes the system and was rewritten. A failed snapshot has less than the failed update did: no turn, no lines, and no true revision, because a failed run saves no script; a `failed` update still on its way is let through and says the same. Rows written before the column existed have no start time; there were only local ones, and they were deleted.
+
+**Status:** accepted — explicit user choices on 2026-10-11, in the step 12 plan.
+
+## D040 — Stored objects are read through a body that can seek
+
+**Decision:** `objectstore.Object.Body` is an `io.ReadSeekCloser`. The audio endpoint hands it to Go's `http.ServeContent`, which parses the `Range` header and writes the `206`, `416`, and `HEAD` replies. The object is streamed to the response, never held in memory.
+
+**Context / requirement:** The audio endpoint must answer range requests, which Safari's audio element needs, and the system design said the range should be passed through to S3. `Store.Get` returned a plain reader and a size. Review item 14 also left open whether to pipe the object or buffer it.
+
+**Chosen approach:** The filesystem store already returned a file, which can seek, so only the declared type changed. `ServeContent` seeks to the end to learn the size, seeks to the first byte asked for, and copies from there. The S3 store, built in step 15, must supply a body that makes those cheap: answer the seek to the end from the object's known size, and open its read at the offset last sought, as a ranged `GetObject`.
+
+**Why it fits:** Range handling has many cases (open-ended and suffix ranges, several ranges at once, ranges past the end, `If-Range`), and the standard library's is correct and maintained. None of it is our code to test or get wrong. It also settles item 14: the response is piped.
+
+**Alternatives considered:** A ranged read on the `Store` interface, with the handler parsing `Range` and writing the partial-content headers itself: maps to S3 in one call, but puts hand-written range parsing in this codebase. Reading the whole clip into memory and serving it from there: simplest, and a clip is only a few hundred kilobytes, but it is the buffering item 14 advised against.
+
+**Tradeoffs and consequences:** The S3 store needs a small reader that turns a seek and a read into a ranged request, and a request against it costs one call for the size and one for the bytes. That reader does not exist yet, so range requests have only been exercised against the filesystem store.
+
+**Status:** accepted — explicit user choice on 2026-10-11, in the step 12 plan.

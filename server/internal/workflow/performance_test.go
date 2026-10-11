@@ -240,7 +240,12 @@ func TestWinningLinesFeedTheNextTurnAndTheScript(t *testing.T) {
 	require.Equal(t, lines, state.Lines)
 	require.Empty(t, state.Choices)
 	require.Nil(t, state.Winner)
-	require.WithinDuration(t, premiere.at.Add(testCountdown), state.Premiere.StartsAt, 0)
+	// The start time is fixed before the save, saved with the script, and
+	// then announced: one value, in the precision the database keeps.
+	startsAt := state.Premiere.StartsAt
+	require.True(t, saved.PremiereStartsAt.Equal(startsAt), "saved: %s; announced: %s", saved.PremiereStartsAt, startsAt)
+	require.True(t, startsAt.Equal(startsAt.Truncate(time.Microsecond)), "whole microseconds: %s", startsAt)
+	require.WithinDuration(t, premiere.at.Add(testCountdown), startsAt, time.Microsecond)
 	require.Len(t, state.Premiere.Clips, performance.Turns)
 	for i, clip := range state.Premiere.Clips {
 		require.Equal(t, performance.Clip{

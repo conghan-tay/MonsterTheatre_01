@@ -264,10 +264,17 @@ func (r *run) play(ctx workflow.Context) error {
 		})
 	}
 
+	// The start time is fixed first and saved with the script, so that a
+	// browser connecting later is told the same time as those watching now.
+	// The save therefore comes out of the countdown: a moment, normally. It
+	// is kept to what the database stores, a UTC time in microseconds, so
+	// the saved time and the published one are the same to the last digit.
+	startsAt := workflow.Now(ctx).Add(room.PremiereCountdown).UTC().Truncate(time.Microsecond)
+
 	// Saved before the premiere is announced, so the recordings and the
 	// script are there for any browser that hears about it.
 	err = workflow.ExecuteActivity(workflow.WithActivityOptions(ctx, databaseOptions), a.Complete, activities.CompleteInput{
-		PerformanceID: in.PerformanceID, Script: script, AudioKeys: audioKeys,
+		PerformanceID: in.PerformanceID, Script: script, AudioKeys: audioKeys, PremiereStartsAt: startsAt,
 	}).Get(ctx, nil)
 	if err != nil {
 		return err
@@ -281,7 +288,7 @@ func (r *run) play(ctx workflow.Context) error {
 	}
 	r.publish(ctx, performance.State{
 		Phase: performance.PhasePremiere, Turn: performance.Turns,
-		Premiere: &performance.Premiere{StartsAt: workflow.Now(ctx).Add(room.PremiereCountdown), Clips: clips},
+		Premiere: &performance.Premiere{StartsAt: startsAt, Clips: clips},
 	})
 	return nil
 }

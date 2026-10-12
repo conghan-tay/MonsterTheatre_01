@@ -96,7 +96,7 @@ func waitForIndexes(ctx context.Context, conn *sql.DB) error {
 	for {
 		var pending int
 		err := conn.QueryRowContext(ctx,
-			`SELECT count(*) FROM sys.jobs WHERE status IN ('submitted', 'processing')`).Scan(&pending)
+			`SELECT count(*) FROM sys.jobs WHERE job_type = 'INDEX_BUILD' AND status IN ('submitted', 'processing')`).Scan(&pending)
 		if err != nil {
 			return fmt.Errorf("read index build jobs: %w", err)
 		}

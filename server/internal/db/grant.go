@@ -36,7 +36,8 @@ func GrantStatements(roleARNs []string) ([]string, error) {
 		}
 		statements = append(statements, fmt.Sprintf("AWS IAM GRANT %s TO '%s'", AppRole, arn))
 	}
-	statements = append(statements, fmt.Sprintf("GRANT USAGE ON SCHEMA public TO %s", AppRole))
+	// Nothing is granted on the public schema itself: DSQL refuses that,
+	// and every role can already use it, though not create in it.
 	for _, table := range AppTables {
 		statements = append(statements, fmt.Sprintf("GRANT SELECT, INSERT, UPDATE, DELETE ON %s TO %s", table, AppRole))
 	}

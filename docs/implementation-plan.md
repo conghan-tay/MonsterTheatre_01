@@ -360,11 +360,12 @@ Tests added: three Go end-to-end tests and one browser test, a pure test of the 
 
 ### Step 15 — AWS deployment
 
-**Built 2026-10-12; not yet deployed.** Everything that can be written and tested without an AWS account is done; the definition of done below is not met until the deployment has been made and checked. What was decided on the way is D047 to D052.
+**Built 2026-10-12; deployment in progress.** The data stack is deployed and migrated; the application stack is not yet. The definition of done below is not met until the rest has been made and checked. What was decided on the way is D047 to D052.
 
 - **Built and tested locally:** the S3 object store with its seekable body; the DSQL connection path; `migrate` for DSQL (goose's DSQL dialect, `CREATE INDEX` written as `ASYNC`, a wait for index builds) and `migrate grant`; session hashes as text, because DSQL cannot index `bytea`; Temporal Cloud sign-in by API key; `/livez`; both container images; the CDK app (two stacks, 15 template tests); a mode of the Go end-to-end suite that runs against a deployment; the browser tests against `next build` and `next start`, which had never been run.
 - **Changed from the text below:** there is no domain, so HTTPS is CloudFront's, in front of an internal load balancer (D049); the tasks have public addresses and there is no NAT gateway (D050); the cache is Valkey, locally too (D051); against a deployment 32 of the suite's 46 top-level tests run and 14 skip, each saying why.
-- **Still to do, each with the user's go-ahead:** bootstrap and deploy; apply the migrations and grants to the cluster, which is the first real run of goose on DSQL and of conflict retries; the S3 smoke test; the end-to-end suite against the deployment; one performance with real providers and two remote browsers.
+- **Done on AWS, 2026-10-12:** `cdk bootstrap`; `MonsterTheatreData` deployed; all nine migrations applied to the cluster with both indexes valid; the application's database role created and granted; the S3 smoke test passed against the bucket.
+- **Still to do, each with the user's go-ahead:** deploy the application stack in test mode; the end-to-end suite against it, which is the first real run of conflict retries; one performance with real providers and two remote browsers.
 
 One server instance is deployed, but nothing on the live path requires that: the load balancer needs no sticky routing for WebSockets (D046). Before a second instance is added, move the failed-login lock out of server memory (system design, section 9).
 
@@ -393,7 +394,7 @@ These are items 11 to 16 in [the review](review.md), placed where they come up:
 | Whether to show a "recovering" message | Settled: a `recovering` snapshot (D041, step 13), shown by the page as a line of text (step 14) |
 | What the page shows between rounds | Settled in step 14: the winning line with its counts, then "Writing the next lines…" |
 | Database cleanup | Deferred at step 15; still open |
-| Whether goose runs unmodified against Aurora DSQL | Settled in code at step 15 (D048): its DSQL dialect, with index statements rewritten. To be confirmed on the cluster |
+| Whether goose runs unmodified against Aurora DSQL | Settled at step 15 (D048): it does, through its DSQL dialect, with index statements rewritten as `ASYNC`. Run on the cluster 2026-10-12 |
 | Piping audio from the object store | Settled in step 12: piped (D040) |
 | Who builds clip URLs | Settled in step 9: the clip list carries them (D037) |
 | Caching of audio responses | Settled in step 12: private, seven days, immutable |

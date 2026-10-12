@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/stretchr/testify/require"
 )
@@ -32,9 +31,8 @@ func TestS3SmokeAgainstARealBucket(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	awsCfg, err := awsconfig.LoadDefaultConfig(ctx)
+	client, err := newS3Client(ctx)
 	require.NoError(t, err)
-	client := s3.NewFromConfig(awsCfg)
 	store := NewS3(client, bucket)
 
 	suffix := make([]byte, 8)

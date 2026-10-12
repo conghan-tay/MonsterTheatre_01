@@ -6,6 +6,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// There is no grant on the public schema itself. Aurora DSQL refuses one
+// ("feature not supported on system entity"), and none is needed: every role
+// may use that schema, and none but admin may create in it.
 func TestGrantStatements(t *testing.T) {
 	statements, err := GrantStatements([]string{
 		"arn:aws:iam::123456789012:role/MonsterTheatreData-ServerTaskRole1A2B3C-xYz012",
@@ -15,7 +18,6 @@ func TestGrantStatements(t *testing.T) {
 	require.Equal(t, []string{
 		`AWS IAM GRANT monster_app TO 'arn:aws:iam::123456789012:role/MonsterTheatreData-ServerTaskRole1A2B3C-xYz012'`,
 		`AWS IAM GRANT monster_app TO 'arn:aws:iam::123456789012:role/worker_task.role+1=a,b@c'`,
-		`GRANT USAGE ON SCHEMA public TO monster_app`,
 		`GRANT SELECT, INSERT, UPDATE, DELETE ON directors TO monster_app`,
 		`GRANT SELECT, INSERT, UPDATE, DELETE ON director_sessions TO monster_app`,
 		`GRANT SELECT, INSERT, UPDATE, DELETE ON rooms TO monster_app`,

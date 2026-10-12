@@ -871,7 +871,7 @@ This algorithm was run through the spike's three scenarios and was correct in ev
 
 **Alternatives considered:** Trying `bytea` on a cluster first: it would have confirmed whether the create-table statement is refused, at the cost of a deployment cycle, to protect a column type nothing depends on. Using the hash as the primary key: also indexable only as text or UUID, and a larger change.
 
-**Tradeoffs and consequences:** Not confirmed by running it that DSQL refuses `bytea UNIQUE`; the documentation says the type cannot be indexed and this follows it. A database migrated before this needs the two tables recreated (README, "Migration rules"). The hash takes 64 bytes instead of 32.
+**Tradeoffs and consequences:** Not confirmed by running it that DSQL refuses `bytea UNIQUE`; the documentation says the type cannot be indexed and this follows it. With `text`, both tables and their unique indexes were created on the cluster on 2026-10-12. A database migrated before this needs the two tables recreated (README, "Migration rules"). The hash takes 64 bytes instead of 32.
 
 **Status:** accepted — approved by the user in the step 15 plan, 2026-10-12.
 
@@ -889,7 +889,9 @@ This algorithm was run through the spike's three scenarios and was correct in ev
 
 **Tradeoffs and consequences:** goose's DSQL support was read in its source and not yet run against a cluster; if it fails there, the fallback stands. A migration that fails after its statement ran but before the version write leaves the two out of step, and the next `up` fails on "already exists"; that is fixed by hand. A test checks that every migration's Up section holds exactly one statement, and another that every table the migrations create is in the grant list.
 
-**Status:** accepted — approved by the user in the step 15 plan, 2026-10-12. To be confirmed on the cluster.
+**Confirmed on the cluster, 2026-10-12:** `migrate up` applied all nine migrations to a new cluster through goose's DSQL dialect, both `CREATE INDEX ASYNC` builds completed and are valid, and a second `up` found nothing to apply. `migrate grant` needed one change: DSQL refuses `GRANT USAGE ON SCHEMA public` ("feature not supported on system entity"). It is not needed, since every role may already use that schema and none but `admin` may create in it, so the statement was removed. After the grant, `monster_app` has all four privileges on the five tables and none on goose's table. `sys.jobs` also lists `ANALYZE` jobs, so the wait counts index builds only.
+
+**Status:** accepted — approved by the user in the step 15 plan, 2026-10-12, and run on the cluster the same day.
 
 ## D049 — CloudFront in front, with no domain name
 

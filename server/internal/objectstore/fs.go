@@ -77,19 +77,31 @@ func (s *FS) Get(_ context.Context, key string) (*Object, error) {
 // path maps a key to a file path, refusing anything that is not a plain
 // relative path inside the root.
 func (s *FS) path(key string) (string, error) {
+	if err := checkKey(key); err != nil {
+		return "", err
+	}
+	// A key ending like this would collide with another object's sidecar.
+	if strings.HasSuffix(key, contentTypeSuffix) {
+		return "", fmt.Errorf("%w: %q", ErrInvalidKey, key)
+	}
+	return filepath.Join(s.root, filepath.FromSlash(key)), nil
+}
+
+// checkKey refuses a key that is not a plain relative path. Every store
+// applies it, so a key accepted locally is accepted on AWS and the reverse.
+func checkKey(key string) error {
 	if key == "" ||
 		strings.HasPrefix(key, "/") ||
 		strings.Contains(key, "\\") ||
-		strings.HasSuffix(key, contentTypeSuffix) ||
 		path.Clean(key) != key {
-		return "", fmt.Errorf("%w: %q", ErrInvalidKey, key)
+		return fmt.Errorf("%w: %q", ErrInvalidKey, key)
 	}
 	for _, segment := range strings.Split(key, "/") {
 		if segment == ".." || segment == "." {
-			return "", fmt.Errorf("%w: %q", ErrInvalidKey, key)
+			return fmt.Errorf("%w: %q", ErrInvalidKey, key)
 		}
 	}
-	return filepath.Join(s.root, filepath.FromSlash(key)), nil
+	return nil
 }
 
 func writeAtomic(target string, body io.Reader) error {

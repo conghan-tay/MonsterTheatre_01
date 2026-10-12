@@ -16,7 +16,6 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"go.temporal.io/sdk/client"
-	temporallog "go.temporal.io/sdk/log"
 	"go.temporal.io/sdk/worker"
 	sdkworkflow "go.temporal.io/sdk/workflow"
 
@@ -31,6 +30,7 @@ import (
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/providers/elevenlabs"
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/providers/fake"
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/rooms"
+	"github.com/conghan-tay/MonsterTheatre_01/server/internal/temporalclient"
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/workflow"
 )
 
@@ -48,7 +48,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	acts, closeDeps, err := buildActivities(ctx, cfg)
+	acts, chosen, closeDeps, err := buildActivities(ctx, cfg)
 	if err != nil {
 		return err
 	}
@@ -56,11 +56,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 
 	// Dial connects immediately: a worker that cannot reach Temporal has
 	// nothing to do, so failing here is the worker's health check.
-	temporalClient, err := client.DialContext(ctx, client.Options{
-		HostPort:  cfg.TemporalAddress,
-		Namespace: cfg.TemporalNamespace,
-		Logger:    temporallog.NewStructuredLogger(logger),
-	})
+	temporalClient, err := client.DialContext(ctx, temporalclient.Options(cfg, logger))
 	if err != nil {
 		return err
 	}
@@ -77,6 +73,8 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		"temporal_address", cfg.TemporalAddress,
 		"namespace", cfg.TemporalNamespace,
 		"task_queue", cfg.TemporalTaskQueue,
+		"database", chosen.database,
+		"object_store", chosen.objectStore,
 		"llm_provider", cfg.LLMProvider,
 		"tts_provider", cfg.TTSProvider,
 		"llm_model", cfg.LLMModel,
@@ -92,43 +90,50 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	return nil
 }
 
+// backends names the database and object store the worker chose, for its
+// startup log.
+type backends struct {
+	database    string
+	objectStore string
+}
+
 // buildActivities connects the activities to the database, Redis, the object
 // store, and the providers. The returned function releases them.
 //
 // The settings are checked here, before the worker takes any work, so a
 // mistake stops the process at once and not in the middle of a performance.
-func buildActivities(ctx context.Context, cfg config.Config) (*activities.Activities, func(), error) {
+func buildActivities(ctx context.Context, cfg config.Config) (*activities.Activities, backends, func(), error) {
 	if cfg.VoteWindow <= 0 {
-		return nil, nil, errors.New(`VOTE_WINDOW must be a positive duration such as "10s"`)
+		return nil, backends{}, nil, errors.New(`VOTE_WINDOW must be a positive duration such as "10s"`)
 	}
 	if cfg.PremiereCountdown <= 0 {
-		return nil, nil, errors.New(`PREMIERE_COUNTDOWN must be a positive duration such as "5s"`)
+		return nil, backends{}, nil, errors.New(`PREMIERE_COUNTDOWN must be a positive duration such as "5s"`)
 	}
 	if cfg.ChoicesRetryWindow <= 0 {
-		return nil, nil, errors.New(`CHOICES_RETRY_WINDOW must be a positive duration such as "2m"`)
+		return nil, backends{}, nil, errors.New(`CHOICES_RETRY_WINDOW must be a positive duration such as "2m"`)
 	}
 	// Checked before any provider is built: the limit is enforced on what
 	// the model returns, and a little less is what the model is asked for.
 	lineLength, err := providers.LineLimit(cfg.MaxLineLength)
 	if err != nil {
-		return nil, nil, err
+		return nil, backends{}, nil, err
 	}
 	dialogue, speech, err := buildProviders(cfg, lineLength)
 	if err != nil {
-		return nil, nil, err
+		return nil, backends{}, nil, err
 	}
 
-	objects, err := objectstore.NewFS(cfg.ObjectStoreDir)
+	objects, objectStore, err := objectstore.Configured(ctx, cfg)
 	if err != nil {
-		return nil, nil, err
+		return nil, backends{}, nil, err
 	}
 	redisOpts, err := redis.ParseURL(cfg.RedisURL)
 	if err != nil {
-		return nil, nil, err
+		return nil, backends{}, nil, err
 	}
-	pool, err := db.Open(ctx, cfg.DatabaseURL)
+	pool, database, err := db.OpenConfigured(ctx, cfg)
 	if err != nil {
-		return nil, nil, err
+		return nil, backends{}, nil, err
 	}
 	redisClient := redis.NewClient(redisOpts)
 
@@ -145,7 +150,7 @@ func buildActivities(ctx context.Context, cfg config.Config) (*activities.Activi
 		LineLimit:          cfg.MaxLineLength,
 		Now:                time.Now,
 	}
-	return acts, func() {
+	return acts, backends{database: database, objectStore: objectStore}, func() {
 		redisClient.Close()
 		pool.Close()
 	}, nil

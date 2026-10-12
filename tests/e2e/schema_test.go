@@ -45,3 +45,18 @@ func TestQueriesThatFilterByAForeignKeyHaveAnIndex(t *testing.T) {
 		require.Contains(t, plan, tc.index, "the query can be answered from the index; plan:\n%s", plan)
 	}
 }
+
+// A session is looked up by the hash of its cookie, so the column has a
+// unique index. Aurora DSQL cannot index bytea, so the hash is kept as text
+// (its hex), which both databases index.
+func TestSessionHashesAreStoredAsText(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	for _, table := range []string{"director_sessions", "audience_sessions"} {
+		dataType, err := stack.ColumnType(ctx, table, "credential_hash")
+		require.NoError(t, err)
+		require.Equal(t, "text", dataType, "%s.credential_hash", table)
+	}
+}

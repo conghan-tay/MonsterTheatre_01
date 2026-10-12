@@ -44,3 +44,14 @@ func TestHandlerNamesFailedCheckWithoutLeakingError(t *testing.T) {
 	require.Equal(t, "unavailable", body.Status)
 	require.Equal(t, map[string]string{"database": "ok", "redis": "unreachable"}, body.Checks)
 }
+
+// The load balancer asks this one. It says only that the process is up: a
+// dependency being down must not take the server, and every open
+// WebSocket, out of service.
+func TestLiveAnswersOKWithoutCheckingAnything(t *testing.T) {
+	rec := httptest.NewRecorder()
+	Live().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/livez", nil))
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, "ok\n", rec.Body.String())
+}

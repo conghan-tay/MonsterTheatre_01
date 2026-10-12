@@ -342,6 +342,24 @@ func (s *Stack) IndexDefinition(ctx context.Context, name string) (string, error
 	return definition, err
 }
 
+// ColumnType returns the data type of a column in the test database, as
+// PostgreSQL names it, or "" if there is no such column.
+func (s *Stack) ColumnType(ctx context.Context, table, column string) (string, error) {
+	conn, err := pgx.Connect(ctx, e2eDatabaseURL)
+	if err != nil {
+		return "", err
+	}
+	defer conn.Close(ctx)
+	var dataType string
+	err = conn.QueryRow(ctx,
+		"SELECT data_type FROM information_schema.columns WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2",
+		table, column).Scan(&dataType)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	return dataType, err
+}
+
 // PlanWithoutScanning returns how PostgreSQL would run a query if it were
 // not allowed to read a whole table. The test tables hold a few rows, and
 // for those a full read is the sensible plan whatever indexes exist; with

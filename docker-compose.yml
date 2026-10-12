@@ -16,12 +16,14 @@ services:
       timeout: 2s
       retries: 15
 
+  # Valkey, which is what runs on AWS (ElastiCache has no Redis 8). It speaks
+  # the Redis protocol, so the service keeps its name and REDIS_URL its form.
   redis:
-    image: redis:8-alpine
+    image: valkey/valkey:8-alpine
     ports:
       - "6379:6379"
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "valkey-cli", "ping"]
       interval: 2s
       timeout: 2s
       retries: 15

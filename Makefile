@@ -1,4 +1,4 @@
-.PHONY: dev infra infra-down migrate server worker web director test test-verbose e2e e2e-verbose web-check web-e2e
+.PHONY: dev infra infra-down migrate server worker web director test test-verbose e2e e2e-verbose web-check web-e2e web-e2e-prod
 
 # Start everything; Ctrl-C stops everything.
 dev:
@@ -54,3 +54,9 @@ web-check:
 web-e2e:
 	cd web && { [ -d node_modules ] || npm install; } && npx playwright install chromium \
 		&& E2E_RUN_ID=$$(date +%s) npx playwright test
+
+# The same browser tests against the production build (`next build`, then
+# `next start`), which is what the web container runs.
+web-e2e-prod:
+	cd web && { [ -d node_modules ] || npm install; } && npx playwright install chromium \
+		&& WEB_E2E_PRODUCTION=1 E2E_RUN_ID=$$(date +%s) npx playwright test

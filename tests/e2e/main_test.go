@@ -26,7 +26,11 @@ func TestMain(m *testing.M) {
 		os.Exit(2)
 	}
 	stack = s
-	fmt.Printf("e2e stack up: %s (logs: %s)\n", s.BaseURL, s.LogDir)
+	if s.Remote {
+		fmt.Printf("e2e against the deployment at %s\n", s.BaseURL)
+	} else {
+		fmt.Printf("e2e stack up: %s (logs: %s)\n", s.BaseURL, s.LogDir)
+	}
 
 	// Tear down on Ctrl-C too, so no child processes are left behind.
 	go func() {
@@ -38,4 +42,14 @@ func TestMain(m *testing.M) {
 	cancel()
 	s.Stop()
 	os.Exit(code)
+}
+
+// requireLocal skips a test that needs something only the stack the harness
+// starts itself can give: a worker to kill, a second server, scripts on the
+// worker's disk. Against a deployment (E2E_BASE_URL) such a test cannot run.
+func requireLocal(t *testing.T, why string) {
+	t.Helper()
+	if stack.Remote {
+		t.Skipf("not run against a deployment: %s", why)
+	}
 }

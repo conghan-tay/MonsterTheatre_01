@@ -26,12 +26,12 @@ func TestQueriesThatFilterByAForeignKeyHaveAnIndex(t *testing.T) {
 	}{
 		{
 			index: "audience_sessions_room_id_created_at_idx",
-			on:    "audience_sessions USING btree (room_id, created_at)",
+			on:    "(room_id, created_at)",
 			query: `SELECT nickname FROM audience_sessions WHERE room_id = $1 ORDER BY created_at, id`,
 		},
 		{
 			index: "rooms_director_id_created_at_idx",
-			on:    "rooms USING btree (director_id, created_at)",
+			on:    "(director_id, created_at)",
 			query: `SELECT id, scene_topic, created_at FROM rooms WHERE director_id = $1 ORDER BY created_at DESC, id`,
 		},
 	} {
@@ -40,6 +40,16 @@ func TestQueriesThatFilterByAForeignKeyHaveAnIndex(t *testing.T) {
 		require.NotEmpty(t, definition, "there is an index named %s", tc.index)
 		require.Contains(t, definition, tc.on, "on the columns the query filters and orders by")
 
+		valid, err := stack.IndexIsValid(ctx, tc.index)
+		require.NoError(t, err)
+		require.True(t, valid, "%s has finished building", tc.index)
+
+		// Whether Aurora DSQL lets a connection rule out a full read, as
+		// the next step does, is not known; a deployment is checked for the
+		// index and its columns only.
+		if stack.Remote {
+			continue
+		}
 		plan, err := stack.PlanWithoutScanning(ctx, tc.query, anyID)
 		require.NoError(t, err)
 		require.Contains(t, plan, tc.index, "the query can be answered from the index; plan:\n%s", plan)

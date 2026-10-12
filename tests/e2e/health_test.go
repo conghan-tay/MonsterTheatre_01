@@ -15,6 +15,7 @@ import (
 // the failure is in the application, not in the test stack.
 
 func TestStackIsHealthy(t *testing.T) {
+	requireLocal(t, "/healthz is not reachable from outside a deployment")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -32,6 +33,7 @@ func TestStackIsHealthy(t *testing.T) {
 }
 
 func TestWorkerCanBeStoppedAndRestarted(t *testing.T) {
+	requireLocal(t, "the worker is stopped and restarted")
 	require.True(t, stack.WorkerRunning())
 
 	require.NoError(t, stack.StopWorker())

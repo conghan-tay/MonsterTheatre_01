@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -40,6 +41,13 @@ const (
 type Stack struct {
 	// BaseURL is the server's address, for example "http://127.0.0.1:54321".
 	BaseURL string
+	// PublicBaseURL is where the stack was told the web pages live. Share
+	// links start with it, and it is an origin the WebSocket accepts.
+	PublicBaseURL string
+	// Remote is true when the stack is a deployment the harness did not
+	// start (see connectRemote). Tests that need to control the processes
+	// skip themselves.
+	Remote bool
 	// SecondBaseURL is the address of a second server process: the same
 	// program, with the same database, Redis, and Temporal, on another port.
 	// Tests use it to check that people on different servers share a room.
@@ -54,6 +62,11 @@ type Stack struct {
 	env            []string
 	startedCompose bool
 
+	// Set only for a deployment.
+	dsqlEndpoint string
+	bucket       string
+	s3           *s3.Client
+
 	temporal        *process
 	temporalAddress string
 	server          *process
@@ -63,7 +76,13 @@ type Stack struct {
 
 // Start brings the whole stack up. On failure it tears down whatever it
 // started and returns an error that includes the relevant log tails.
+//
+// With E2E_BASE_URL set it starts nothing, and returns the deployment at
+// that address instead.
 func Start(ctx context.Context) (*Stack, error) {
+	if os.Getenv(EnvBaseURL) != "" {
+		return connectRemote(ctx)
+	}
 	return StartWith(ctx, Options{})
 }
 
@@ -96,10 +115,11 @@ func StartWith(ctx context.Context, opts Options) (stack *Stack, err error) {
 		return nil, err
 	}
 	s := &Stack{
-		repoRoot:  repoRoot,
-		workDir:   workDir,
-		LogDir:    filepath.Join(workDir, "logs"),
-		ScriptDir: filepath.Join(workDir, "scripts"),
+		PublicBaseURL: opts.PublicBaseURL,
+		repoRoot:      repoRoot,
+		workDir:       workDir,
+		LogDir:        filepath.Join(workDir, "logs"),
+		ScriptDir:     filepath.Join(workDir, "scripts"),
 	}
 	if opts.ScriptDir != "" {
 		s.ScriptDir = opts.ScriptDir
@@ -269,7 +289,7 @@ type PerformanceRow struct {
 // PerformanceRow reads a room's performance straight from the database, for
 // what no endpoint exposes yet. found is false if the room has none.
 func (s *Stack) PerformanceRow(ctx context.Context, roomID string) (row PerformanceRow, found bool, err error) {
-	conn, err := pgx.Connect(ctx, e2eDatabaseURL)
+	conn, err := s.connect(ctx)
 	if err != nil {
 		return row, false, err
 	}
@@ -285,7 +305,7 @@ func (s *Stack) PerformanceRow(ctx context.Context, roomID string) (row Performa
 
 // PerformanceCount returns how many performance rows a room has.
 func (s *Stack) PerformanceCount(ctx context.Context, roomID string) (int, error) {
-	conn, err := pgx.Connect(ctx, e2eDatabaseURL)
+	conn, err := s.connect(ctx)
 	if err != nil {
 		return 0, err
 	}
@@ -300,7 +320,7 @@ func (s *Stack) PerformanceCount(ctx context.Context, roomID string) (int, error
 // when it dies between its two steps, which the endpoint itself cannot be
 // made to do.
 func (s *Stack) InsertPerformance(ctx context.Context, roomID string) (string, error) {
-	conn, err := pgx.Connect(ctx, e2eDatabaseURL)
+	conn, err := s.connect(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -329,7 +349,7 @@ func (s *Stack) TerminateWorkflow(ctx context.Context, performanceID string) err
 // IndexDefinition returns the definition of a named index in the test
 // database, as PostgreSQL records it, or "" if there is no such index.
 func (s *Stack) IndexDefinition(ctx context.Context, name string) (string, error) {
-	conn, err := pgx.Connect(ctx, e2eDatabaseURL)
+	conn, err := s.connect(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -342,10 +362,25 @@ func (s *Stack) IndexDefinition(ctx context.Context, name string) (string, error
 	return definition, err
 }
 
+// IndexIsValid reports whether a named index is ready for use. On Aurora
+// DSQL an index is built in the background and is invalid until that ends,
+// or for good if the build failed.
+func (s *Stack) IndexIsValid(ctx context.Context, name string) (bool, error) {
+	conn, err := s.connect(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer conn.Close(ctx)
+	var valid bool
+	err = conn.QueryRow(ctx,
+		"SELECT i.indisvalid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid WHERE c.relname = $1", name).Scan(&valid)
+	return valid, err
+}
+
 // ColumnType returns the data type of a column in the test database, as
 // PostgreSQL names it, or "" if there is no such column.
 func (s *Stack) ColumnType(ctx context.Context, table, column string) (string, error) {
-	conn, err := pgx.Connect(ctx, e2eDatabaseURL)
+	conn, err := s.connect(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -365,7 +400,7 @@ func (s *Stack) ColumnType(ctx context.Context, table, column string) (string, e
 // for those a full read is the sensible plan whatever indexes exist; with
 // that ruled out, the plan shows whether an index can serve the query.
 func (s *Stack) PlanWithoutScanning(ctx context.Context, query string, args ...any) (string, error) {
-	conn, err := pgx.Connect(ctx, e2eDatabaseURL)
+	conn, err := s.connect(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -383,8 +418,12 @@ func (s *Stack) PlanWithoutScanning(ctx context.Context, query string, args ...a
 }
 
 // StoredObject reads an object the stack has stored, such as a turn's
-// recording, from the filesystem object store.
+// recording, from its object store: the filesystem one, or a deployment's
+// bucket.
 func (s *Stack) StoredObject(key string) ([]byte, error) {
+	if s.Remote {
+		return s.storedObjectS3(key)
+	}
 	return os.ReadFile(filepath.Join(s.workDir, "objects", filepath.FromSlash(key)))
 }
 

@@ -41,9 +41,8 @@ func run(ctx context.Context, command string, args []string) error {
 	switch command {
 	case "up", "status":
 	case "down":
-		// Several Down sections drop a column or a table's index in ways
-		// DSQL does not support, and nothing deployed is rolled back by
-		// hand.
+		// One Down section drops a column, which DSQL does not support, and
+		// nothing deployed is rolled back by hand.
 		if onDSQL {
 			return fmt.Errorf("down is not supported on Aurora DSQL")
 		}

@@ -120,6 +120,7 @@ func audioKey(performanceID string, turn int) string {
 // S8: speech failing past its retry limit ends the run as failed, and
 // browsers are told.
 func TestSpeechFailingPastItsLimitFailsTheRun(t *testing.T) {
+	requireLocal(t, "the fake providers read their scripts from the worker's disk")
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -148,6 +149,7 @@ func TestSpeechFailingPastItsLimitFailsTheRun(t *testing.T) {
 // S9 (first part): choice generation that fails briefly is retried, and the
 // run carries on as if nothing had happened.
 func TestChoiceGenerationRecoversFromABriefFailure(t *testing.T) {
+	requireLocal(t, "the fake providers read their scripts from the worker's disk")
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -172,6 +174,7 @@ func TestChoiceGenerationRecoversFromABriefFailure(t *testing.T) {
 // S9 (second part): choice generation failing past its limit ends the run as
 // failed. There is no stand-in for lines the model did not write.
 func TestChoiceGenerationFailingPastItsLimitFailsTheRun(t *testing.T) {
+	requireLocal(t, "the fake providers read their scripts from the worker's disk")
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -195,6 +198,7 @@ func TestChoiceGenerationFailingPastItsLimitFailsTheRun(t *testing.T) {
 // S9 (third part): tagging failing past its limit falls back to the untagged
 // line, and the run still completes.
 func TestTaggingFailureFallsBackToTheUntaggedLine(t *testing.T) {
+	requireLocal(t, "the fake providers read their scripts from the worker's disk")
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()

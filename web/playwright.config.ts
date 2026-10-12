@@ -24,6 +24,11 @@ export const director = {
 // fail (tests/e2e/fixtures/script.go has the format).
 export const scriptDir = path.join(os.tmpdir(), `monstertheatre-web-e2e-scripts-${runId}`);
 
+// WEB_E2E_PRODUCTION=1 runs the same tests against the production build
+// (`next build`, then `next start`), which is what is deployed, instead of
+// the dev server.
+const production = process.env.WEB_E2E_PRODUCTION === "1";
+
 export default defineConfig({
   testDir: "./e2e",
   fullyParallel: false,
@@ -53,10 +58,14 @@ export default defineConfig({
       stderr: "pipe",
     },
     {
-      command: `npm run dev -- --port ${WEB_PORT} --hostname 127.0.0.1`,
+      command: production
+        ? `npm run build && npm run start -- --port ${WEB_PORT} --hostname 127.0.0.1`
+        : `npm run dev -- --port ${WEB_PORT} --hostname 127.0.0.1`,
+      // Read when the app is built as well as when it starts: the /api
+      // rewrite is fixed at build time.
       env: { API_ORIGIN },
       url: `${WEB_ORIGIN}/login`,
-      timeout: 120_000,
+      timeout: production ? 240_000 : 120_000,
       reuseExistingServer: false,
       gracefulShutdown: { signal: "SIGTERM", timeout: 10_000 },
     },

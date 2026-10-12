@@ -42,6 +42,12 @@ The log below is kept in full, including entries that were later replaced. These
 | D044 | The audience page always asks for a click; sound goes through one audio element started in it; clips are preloaded whole |
 | D045 | Audience members give a nickname, which only the director sees; the director's page is told who is in the audience over the WebSocket |
 | D046 | A server's own messages for a room go through a Redis stream, so a room's people can be on different servers |
+| D047 | Session hashes are stored as hex text, because Aurora DSQL cannot index `bytea` |
+| D048 | Migrations run on Aurora DSQL through goose's own DSQL support, with `CREATE INDEX` rewritten as `ASYNC` when the files are read |
+| D049 | No domain name: CloudFront's address and certificate are the public ones, in front of an internal load balancer |
+| D050 | No NAT gateway: the tasks have public addresses and accept nothing from the internet |
+| D051 | Valkey 8.1 on ElastiCache and locally, as one node |
+| D052 | Two stacks: one kept between demos, one destroyed; real providers only when asked for |
 
 Superseded or withdrawn: D002, D004, D006, D010, D011, D012, D014, D016, D019, D020, D021, and the data-lake half of D003.
 
@@ -852,3 +858,99 @@ This algorithm was run through the spike's three scenarios and was correct in ev
 **Tradeoffs and consequences:** Every server receives every room's notices and ignores most of them. A join now costs one append to Redis and, on each server holding that director, one read of at most ten names. The director is told a few tens of milliseconds after a join instead of at once. Not everything is ready for a second server: the failed-login lock is counted per server, and the local object store is one server's disk. Two servers were run together in tests; more, a load balancer, and load were not.
 
 **Status:** accepted — explicit user request and choices on 2026-10-11 (a stream, not Pub/Sub; one stream, not one per room; the login lock left for later).
+
+## D047 — Session hashes are stored as text
+
+**Decision:** `credential_hash` in `director_sessions` and `audience_sessions` is a `text` column holding the hex of the SHA-256, not `bytea`.
+
+**Context / requirement:** Both columns are unique, because a session is looked up by the hash of its cookie, and a unique column is an index. Aurora DSQL's table of supported types gives `bytea` index support "No". D032 checked foreign keys, unique constraints, and `jsonb` against the documentation, but not this.
+
+**Chosen approach:** The two create-table migrations (`00003`, `00005`) were edited, as nothing was deployed and the user prefers that to a new migration while every database is local. The two stores encode the hash to hex where they hand it to SQL (`hashText`). What is hashed, the cookie, and every caller are unchanged.
+
+**Why it fits:** `text` is indexed by both databases, 64 characters is small, and the comparison is still an exact match on a unique column.
+
+**Alternatives considered:** Trying `bytea` on a cluster first: it would have confirmed whether the create-table statement is refused, at the cost of a deployment cycle, to protect a column type nothing depends on. Using the hash as the primary key: also indexable only as text or UUID, and a larger change.
+
+**Tradeoffs and consequences:** Not confirmed by running it that DSQL refuses `bytea UNIQUE`; the documentation says the type cannot be indexed and this follows it. A database migrated before this needs the two tables recreated (README, "Migration rules"). The hash takes 64 bytes instead of 32.
+
+**Status:** accepted — approved by the user in the step 15 plan, 2026-10-12.
+
+## D048 — Migrations on Aurora DSQL
+
+**Decision:** `migrate` has a DSQL mode, chosen by `DSQL_ENDPOINT`. It runs the same SQL files through goose's Aurora DSQL dialect with DDL isolation, reads them through a wrapper that writes each `CREATE INDEX` as `CREATE INDEX ASYNC`, then waits for the index builds. This closes review item 17 as far as it can be closed without a cluster.
+
+**Context / requirement:** DSQL allows one schema statement per transaction and none together with a row change, and it refuses `CREATE INDEX` without `ASYNC`, which PostgreSQL in turn does not accept. goose normally runs a migration and the write to its own version table in one transaction. D032 left open whether goose could be used, with a hand-written script as the fallback.
+
+**Chosen approach:** goose v3.28.0, the version already pinned, has a DSQL dialect (its version table has no identity column) and an option, `WithIsolateDDL`, that runs the migration's statement apart from the version write. `migrations.ForDSQL` returns the embedded files with `ASYNC` inserted after `CREATE [UNIQUE] INDEX`; nothing else in a file changes, and a test compares every file before and after. After `up`, the command polls `sys.jobs` until nothing is `submitted` or `processing`, then fails if any index is left invalid. `down` is refused on DSQL. A second subcommand, `migrate grant`, creates the application's database role (`monster_app`), maps the task roles' ARNs to it, and grants it the five tables by name: no schema changes, and nothing on goose's table. The ARN goes into `AWS IAM GRANT` as a literal, so it is first matched against the exact shape of a role ARN.
+
+**Why it fits:** One set of migration files, which was the point of the migration rules. The rewrite is one regular expression over statements the rules already keep one to a file.
+
+**Alternatives considered:** The D032 fallback, a script that applies the files itself: more code to own, for something the pinned library now does. A second copy of the two index files for DSQL: two sets of files to keep in step. `-- +goose NO TRANSACTION` on each file: does not help with the version table's own creation, and does nothing for `ASYNC`.
+
+**Tradeoffs and consequences:** goose's DSQL support was read in its source and not yet run against a cluster; if it fails there, the fallback stands. A migration that fails after its statement ran but before the version write leaves the two out of step, and the next `up` fails on "already exists"; that is fixed by hand. A test checks that every migration's Up section holds exactly one statement, and another that every table the migrations create is in the grant list.
+
+**Status:** accepted — approved by the user in the step 15 plan, 2026-10-12. To be confirmed on the cluster.
+
+## D049 — CloudFront in front, with no domain name
+
+**Decision:** The public address is the CloudFront distribution's own (`https://xxxx.cloudfront.net`), with CloudFront's certificate. Behind it is an internal Application Load Balancer, reached through a CloudFront VPC origin, which sends `/api/*` to the Go server and everything else to Next.js.
+
+**Context / requirement:** Session cookies are `Secure` and the pages open the WebSocket as `wss`, so the site needs HTTPS. The user chose not to use a domain name. A load balancer's own name cannot carry a certificate.
+
+**Chosen approach:** One distribution. Its default behaviour caches nothing and forwards every header (cookies, `Origin`, the WebSocket upgrade, and `Host`); `/_next/static/*` is cached, since Next.js names those files by content. `PUBLIC_BASE_URL` is set by CloudFormation to `https://` plus the distribution's domain name, so it cannot differ from the address bar (D035). The load balancer has no public address; its security group admits port 80 from inside the VPC, which is where CloudFront's network interfaces are.
+
+**Why it fits:** HTTPS with no domain, no certificate to manage, and no fixed cost. CloudFront carries WebSockets by default; its idle limit is ten minutes and the server pings every 25 seconds.
+
+**Alternatives considered:** A domain in Route 53 with an ACM certificate on a public load balancer: the step's original wording, simpler by one service, but the user has no domain for it. A public load balancer behind CloudFront: the same, with a second way in to protect.
+
+**Tradeoffs and consequences:** The hop from CloudFront to the load balancer is plain HTTP inside AWS's network: an internal certificate would need a domain. The address is not memorable and changes if the distribution is recreated, which invalidates nothing stored (share links are rebuilt from `PUBLIC_BASE_URL`) but does change every link already sent. `/healthz` is not reachable from outside; the load balancer asks `/livez`, which checks only the process, because a health check that also asked Temporal, Redis, and the database would close every WebSocket whenever one of them blinked.
+
+**Status:** accepted — explicit user choice on 2026-10-12.
+
+## D050 — No NAT gateway
+
+**Decision:** The three Fargate tasks run in public subnets with a public IPv4 address each. Their security groups accept traffic only from the load balancer.
+
+**Context / requirement:** The tasks must reach Temporal Cloud, Claude, ElevenLabs, the Aurora DSQL endpoint, ECR, S3, and Secrets Manager. In `ap-southeast-1` a NAT gateway costs 0.059 USD an hour, about 43 USD a month, plus 0.059 USD per gigabyte; three public addresses cost about 11 USD a month.
+
+**Chosen approach:** A VPC of public and isolated subnets, with no NAT. The cache and the load balancer are in the isolated subnets, which have no route out.
+
+**Why it fits:** A demo that is torn down between uses should not pay most of its network bill for a gateway.
+
+**Alternatives considered:** Private subnets and one NAT gateway: the conventional layout, with no public address on any task, at about 32 USD a month more. VPC endpoints for the AWS services: several endpoints at about 7 USD each a month, and the third parties would still need a way out.
+
+**Tradeoffs and consequences:** Each task has an address reachable from the internet, protected by its security group alone. A mistake in a security group is therefore an exposure, not a non-event.
+
+**Status:** accepted — explicit user choice on 2026-10-12.
+
+## D051 — Valkey 8.1, on AWS and locally
+
+**Decision:** The two Redis streams are held by Valkey 8.1: one `cache.t4g.micro` ElastiCache node with cluster mode off, encrypted in transit and at rest; and the `valkey/valkey:8-alpine` container locally.
+
+**Context / requirement:** The local container was Redis 8. ElastiCache offers Redis OSS only up to 7.1, and Valkey 7.2 to 9.1, so nothing matched. The code uses `XADD`, `XREAD`, and `XREVRANGE`, which all of them have.
+
+**Chosen approach:** The user chose Valkey for both, so that local tests run on the engine that is deployed. The container image is 8.1.10, so ElastiCache is set to 8.1.
+
+**Why it fits:** The same engine in both places, and the cheaper of the two on ElastiCache (0.0192 against 0.024 USD an hour for this node).
+
+**Alternatives considered:** Redis OSS 7.1 on ElastiCache with Redis 8 locally: two different versions. ElastiCache Serverless: no node to pay for when idle, but it speaks cluster mode, and the server reads both streams in one `XREAD`, which a clustered cache can refuse because the two keys may be in different slots.
+
+**Tradeoffs and consequences:** One node, so no failover; a node failure stops live updates until it is replaced, and browsers recover by `resync`. The cache has no password: it is reachable only from the server's and the worker's security groups, over TLS.
+
+**Status:** accepted — explicit user choice on 2026-10-12. The plan named 8.2; 8.1 was used to match the container.
+
+## D052 — Two stacks, and real providers only when asked for
+
+**Decision:** The CDK app has two stacks. `MonsterTheatreData` holds the DSQL cluster, the bucket, the four secrets, and the two task roles, and is kept. `MonsterTheatreApp` holds the network, the cache, the three services, the load balancer, and CloudFront, and is destroyed between demos. The app stack deploys in `test` mode unless `-c mode=live` is given.
+
+**Context / requirement:** The user wants the stack torn down between demos, and wants no paid call to Claude or ElevenLabs without being asked. The step also asks for the end-to-end suite to run against the deployment with the stand-in providers.
+
+**Chosen approach:** Everything billed by the hour is in the app stack. The task roles are in the data stack because the database maps its application role to their ARNs; made with the tasks, every teardown would break the mapping. In `test` mode the worker runs the stand-in providers with the test suite's timings and is not given the provider keys at all. Three secrets are created holding a placeholder and are filled in by hand; the share-link secret is generated by Secrets Manager. ECS passes them to the tasks as secrets, so no value is in a template or a task definition.
+
+**Why it fits:** With the app stack gone, what is left costs about 2 USD a month. A deployment that has no provider keys cannot spend on them.
+
+**Alternatives considered:** One stack: simpler, but tearing it down would delete the database and the secrets each time. Scaling the services to zero instead of destroying: keeps the load balancer and the cache, which are most of the cost.
+
+**Tradeoffs and consequences:** The secrets have fixed names, so destroying the data stack and creating it again within Secrets Manager's recovery window fails until the old ones are purged. The project's instructions name a Secrets Manager skill and a tool, `asm-exec`, for handling secrets; neither was available, and the user approved this approach instead: no secret value passes through any command run during the work.
+
+**Status:** accepted — approved by the user in the step 15 plan, 2026-10-12.

@@ -108,6 +108,7 @@ Versions were checked against the Go module proxy, the npm registry, and Docker 
 | `github.com/aws/aws-sdk-go-v2` | v1.47.1 | AWS SDK core |
 | `github.com/aws/aws-sdk-go-v2/config` | v1.33.7 | AWS credential and region loading |
 | `github.com/aws/aws-sdk-go-v2/service/s3` | v1.114.1 | S3 implementation of the object store |
+| `github.com/aws/aws-sdk-go-v2/feature/dsql/auth` | v1.2.1 | Brought in by the DSQL connector: signs the IAM database tokens |
 | `golang.org/x/crypto` | v0.57.0 | Password hashing (argon2id) |
 | `github.com/anthropics/anthropic-sdk-go` | v1.80.0 | First real implementation of the language-model adapter |
 | `github.com/stretchr/testify` | v1.12.1 | Test assertions; also used by the Temporal test suite |
@@ -125,6 +126,7 @@ Deliberately not added: a web framework (the standard library router is enough),
 | `@playwright/test` | 1.64.0 | Browser E2E tests |
 | `aws-cdk-lib` | 2.272.0 | Infrastructure as code for the AWS deployment |
 | `aws-cdk` | 2.1145.0 | CDK command line |
+| `tsx` | ^4 | Runs the CDK app and its template tests without a build step |
 
 ### Containers and services
 
@@ -132,7 +134,9 @@ Deliberately not added: a web framework (the standard library router is enough),
 | --- | --- | --- |
 | `postgres` image | 17-alpine | Local database only |
 | Aurora DSQL | — | Database on AWS (D032). PostgreSQL-compatible, no version to choose |
-| `redis` image | 8-alpine | Local Redis. Confirm the matching ElastiCache engine at step 15 |
+| `valkey/valkey` image | 8-alpine (8.1.10) | Local stand-in for ElastiCache. Replaced `redis:8-alpine` at step 15: ElastiCache has Redis OSS only up to 7.1 (D051) |
+| ElastiCache | Valkey 8.1, `cache.t4g.micro` | The two Redis streams on AWS. Checked with `DescribeCacheEngineVersions` in `ap-southeast-1` on 2026-10-12: Valkey 7.2 to 9.1 |
+| CloudFront | — | The public HTTPS address, in front of an internal load balancer (D049) |
 | Temporal Cloud | — | Hosted workflow service for the AWS deployment |
 | Anthropic API | Model set by `LLM_MODEL` | Choice generation and tag enhancement |
 | ElevenLabs API | `eleven_v4_turbo`, Text to Dialogue convert endpoint | Speech |
@@ -356,6 +360,12 @@ Tests added: three Go end-to-end tests and one browser test, a pure test of the 
 
 ### Step 15 — AWS deployment
 
+**Built 2026-10-12; not yet deployed.** Everything that can be written and tested without an AWS account is done; the definition of done below is not met until the deployment has been made and checked. What was decided on the way is D047 to D052.
+
+- **Built and tested locally:** the S3 object store with its seekable body; the DSQL connection path; `migrate` for DSQL (goose's DSQL dialect, `CREATE INDEX` written as `ASYNC`, a wait for index builds) and `migrate grant`; session hashes as text, because DSQL cannot index `bytea`; Temporal Cloud sign-in by API key; `/livez`; both container images; the CDK app (two stacks, 15 template tests); a mode of the Go end-to-end suite that runs against a deployment; the browser tests against `next build` and `next start`, which had never been run.
+- **Changed from the text below:** there is no domain, so HTTPS is CloudFront's, in front of an internal load balancer (D049); the tasks have public addresses and there is no NAT gateway (D050); the cache is Valkey, locally too (D051); against a deployment 32 of the suite's 46 top-level tests run and 14 skip, each saying why.
+- **Still to do, each with the user's go-ahead:** bootstrap and deploy; apply the migrations and grants to the cluster, which is the first real run of goose on DSQL and of conflict retries; the S3 smoke test; the end-to-end suite against the deployment; one performance with real providers and two remote browsers.
+
 One server instance is deployed, but nothing on the live path requires that: the load balancer needs no sticky routing for WebSockets (D046). Before a second instance is added, move the failed-login lock out of server memory (system design, section 9).
 
 **What to build**
@@ -382,8 +392,8 @@ These are items 11 to 16 in [the review](review.md), placed where they come up:
 | --- | --- |
 | Whether to show a "recovering" message | Settled: a `recovering` snapshot (D041, step 13), shown by the page as a line of text (step 14) |
 | What the page shows between rounds | Settled in step 14: the winning line with its counts, then "Writing the next lines…" |
-| Database cleanup | Step 15, or defer |
-| Whether goose runs unmodified against Aurora DSQL | Step 15 |
+| Database cleanup | Deferred at step 15; still open |
+| Whether goose runs unmodified against Aurora DSQL | Settled in code at step 15 (D048): its DSQL dialect, with index statements rewritten. To be confirmed on the cluster |
 | Piping audio from the object store | Settled in step 12: piped (D040) |
 | Who builds clip URLs | Settled in step 9: the clip list carries them (D037) |
 | Caching of audio responses | Settled in step 12: private, seven days, immutable |

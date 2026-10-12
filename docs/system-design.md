@@ -441,7 +441,7 @@ Two pages show a room live, and both use one component for it (`web/src/componen
 - The premiere's countdown is shortened by however long the final save takes, since the start time is fixed before it. A database that is being retried can leave little or none.
 - Whether a late browser counts down or offers the recording is decided by its own clock against `startsAt`. One whose clock runs slow can show a countdown for a premiere that is already over, by the amount it is slow.
 - A browser may keep playing recordings it has cached for up to seven days without the server checking its session again, as with portraits.
-- The local and deployed databases behave differently under contention. Conflict retries only run for real on Aurora DSQL, so they are first exercised at deployment.
+- The local and deployed databases behave differently under contention: conflict retries only run for real on Aurora DSQL. They were first exercised at deployment (fifteen simultaneous joins, ten admitted, six runs of six); nothing heavier has been tried.
 - On AWS there is one cache node and one task of each kind, so any one of them failing interrupts the service until it is replaced. Old database rows are never removed (review item 13).
 - The public address is CloudFront's own and changes if the distribution is recreated, which changes every share link already sent.
 

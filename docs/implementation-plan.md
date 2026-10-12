@@ -360,13 +360,14 @@ Tests added: three Go end-to-end tests and one browser test, a pure test of the 
 
 ### Step 15 — AWS deployment
 
-**Built 2026-10-12; deployment in progress.** Both stacks are deployed, the application in test mode. The definition of done below is not met until the checks against it have been run. What was decided on the way is D047 to D052.
+**Built and deployed in test mode 2026-10-12.** Of the definition of done below, what remains is the performance with real providers and two remote browsers. What was decided on the way is D047 to D052.
 
 - **Built and tested locally:** the S3 object store with its seekable body; the DSQL connection path; `migrate` for DSQL (goose's DSQL dialect, `CREATE INDEX` written as `ASYNC`, a wait for index builds) and `migrate grant`; session hashes as text, because DSQL cannot index `bytea`; Temporal Cloud sign-in by API key; `/livez`; both container images; the CDK app (two stacks, 15 template tests); a mode of the Go end-to-end suite that runs against a deployment; the browser tests against `next build` and `next start`, which had never been run.
 - **Changed from the text below:** there is no domain, so HTTPS is CloudFront's, in front of an internal load balancer (D049); the tasks have public addresses and there is no NAT gateway (D050); the cache is Valkey, locally too (D051); against a deployment 32 of the suite's 46 top-level tests run and 14 skip, each saying why.
 - **Done on AWS, 2026-10-12:** `cdk bootstrap`; `MonsterTheatreData` deployed; all nine migrations applied to the cluster with both indexes valid; the application's database role created and granted; the S3 smoke test passed against the bucket.
 - **Also done on AWS, 2026-10-12:** `MonsterTheatreApp` deployed in test mode. The worker connected to Temporal Cloud; server and worker connect to DSQL as `monster_app`. The first deployment answered 504 because of a wrong security-group rule, since corrected (D049). `cdk diff` is empty.
-- **Still to do, each with the user's go-ahead:** the end-to-end suite against the deployment, which is the first real run of conflict retries; one performance with real providers and two remote browsers.
+- **The end-to-end suite against the deployment, 2026-10-12:** 32 top-level tests passed and 14 skipped, with no failure and no change needed to a test or to the product. It covers login, rooms and portraits through S3, joining, the WebSocket through CloudFront, voting, full performances on Temporal Cloud, and the premiere's recordings. The simultaneous-joins part of S4 admitted exactly ten of fifteen in six runs out of six; the cluster's own metric counted 108 transaction conflicts in the five minutes that included those runs, so the retries in `db.WithTx` ran for real.
+- **Still to do, with the user's go-ahead:** one performance with real providers and two remote browsers.
 
 One server instance is deployed, but nothing on the live path requires that: the load balancer needs no sticky routing for WebSockets (D046). Before a second instance is added, move the failed-login lock out of server memory (system design, section 9).
 

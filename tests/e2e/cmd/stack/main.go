@@ -57,7 +57,7 @@ func run(port int, publicBaseURL, director, scriptDir string) error {
 		}
 	}
 
-	fmt.Printf("stack ready: %s (logs: %s)\n", stack.BaseURL, stack.LogDir)
+	fmt.Printf("stack ready: %s (second server: %s; logs: %s)\n", stack.BaseURL, stack.SecondBaseURL, stack.LogDir)
 	<-ctx.Done()
 	fmt.Println("stack stopping")
 	return nil

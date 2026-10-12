@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/google/uuid"
 
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/httpapi"
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/performance"
@@ -87,8 +88,11 @@ type Service struct {
 	Failures Failer
 	Votes    VoteSignaller
 	Hub      *Hub
-	Origins  OriginPolicy
-	Logger   *slog.Logger
+	// Notices is the stream this server tells the others through. Nil
+	// means there are no others: news goes to this server's connections.
+	Notices NoticeAdder
+	Origins OriginPolicy
+	Logger  *slog.Logger
 	// PingInterval and PongTimeout default to DefaultPingInterval and
 	// DefaultPongTimeout when zero.
 	PingInterval time.Duration
@@ -139,6 +143,7 @@ func (s *Service) ServeWS(w http.ResponseWriter, r *http.Request) {
 
 	var closeOnce sync.Once
 	c := &conn{
+		id:       uuid.NewString(),
 		send:     make(chan outbound, sendBuffer),
 		replies:  make(chan []byte),
 		resync:   make(chan struct{}, 1),
@@ -199,12 +204,16 @@ func (s *Service) ServeWS(w http.ResponseWriter, r *http.Request) {
 	s.writeLoop(ctx, ws, v, revision)
 }
 
-// AudienceChanged tells the room's director who is in the audience now. The
-// audience service calls it when someone is admitted or changes their name.
-// Nobody else is told: an audience member's page is not shown who else is
-// there, or how many (docs/decisions.md, D045).
+// AudienceChanged is called by the audience service when someone is
+// admitted to a room or changes their name. The room's director is told who
+// is in the audience now, and nobody else is: an audience member's page is
+// not shown who else is there, or how many (docs/decisions.md, D045).
+//
+// The director's connection may be on another server, so this only
+// publishes a notice. Whichever servers hold that director's connections
+// read the names and send them (docs/decisions.md, D046).
 func (s *Service) AudienceChanged(ctx context.Context, roomID string) {
-	s.tellAudience(ctx, roomID, nil)
+	s.publish(ctx, notice{roomID: roomID, kind: noticeAudienceChanged})
 }
 
 // tellAudience reads the room's audience and queues it for only, or for
@@ -341,7 +350,10 @@ func (s *Service) dead(ctx context.Context, v *viewing, p performance.Performanc
 	revision, state := finished(now)
 	if marked {
 		v.log.Warn("theater: the workflow ended without marking its performance; marked failed", "performance_id", p.ID)
-		s.Hub.announce(v.roomID, v.conn, snapshotMessage(revision, state))
+		// As a notice: the others in the room may be on other servers.
+		s.publish(ctx, notice{
+			roomID: v.roomID, kind: noticeAnnounce, message: string(snapshotMessage(revision, state)), except: v.conn.id,
+		})
 	}
 	return revision, state, nil
 }

@@ -350,12 +350,19 @@ Makefile           dev, test, e2e, migrate
 
 Tests added: three Go end-to-end tests and one browser test, a pure test of the script rule, and more assertions in the full-performance browser test.
 
+### After step 14 — room messages through Redis
+
+**Done 2026-10-11.** Not one of the fifteen steps. The two messages a server originates, the `audience` message and the failed snapshot for a dead run, now reach browsers through a second Redis stream, `room-notices`, read by every server, so a room's director and audience can be connected to different server instances (D046). One server is still deployed. No page, message, schema, or workflow changed. The test stack runs two servers, and three end-to-end tests put a room's people on both.
+
 ### Step 15 — AWS deployment
+
+One server instance is deployed, but nothing on the live path requires that: the load balancer needs no sticky routing for WebSockets (D046). Before a second instance is added, move the failed-login lock out of server memory (system design, section 9).
 
 **What to build**
 - A CDK app: network, load balancer with HTTPS, three Fargate services (web, server, worker), an Aurora DSQL cluster, ElastiCache, the private encrypted S3 bucket with a seven-day lifecycle rule, and secrets for the provider keys and Temporal Cloud credentials.
 - The S3 implementation of the object store and its smoke test against a real bucket.
 - A Temporal Cloud namespace and the worker's connection to it.
+- The two index migrations, `00008` and `00009`, are plain `CREATE INDEX`. DSQL is documented as needing `CREATE INDEX ASYNC`, so these two statements must be issued in that form there, by the script if goose cannot. Confirm the syntax against the DSQL documentation first; it has not been checked.
 - The Aurora DSQL connection path: the connector, a scoped database role mapped to the task roles, and the migrations applied to the cluster. If goose does not run unmodified against DSQL, apply the same SQL files with a small script.
 
 Before starting this step, load the relevant AWS skills as the project's instructions require, including `aurora-dsql`, and confirm that Aurora DSQL is available in the chosen region and which Redis engine version ElastiCache offers.

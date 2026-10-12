@@ -41,6 +41,7 @@ The log below is kept in full, including entries that were later replaced. These
 | D043 | A connecting browser never starts a workflow; only Start does |
 | D044 | The audience page always asks for a click; sound goes through one audio element started in it; clips are preloaded whole |
 | D045 | Audience members give a nickname, which only the director sees; the director's page is told who is in the audience over the WebSocket |
+| D046 | A server's own messages for a room go through a Redis stream, so a room's people can be on different servers |
 
 Superseded or withdrawn: D002, D004, D006, D010, D011, D012, D014, D016, D019, D020, D021, and the data-lake half of D003.
 
@@ -835,3 +836,19 @@ This algorithm was run through the spike's three scenarios and was correct in ev
 **Tradeoffs and consequences:** A fifth server message type, with no revision: each replaces the last. Someone can change their name at any time, including mid-performance. The push goes through the server's in-memory connection map, as updates do, which is right for the single server instance the design specifies. The page remembers the last name typed in the browser's own storage, per room; a browser with storage switched off starts with an empty field each time. Names are whatever people type: there is no filter on them.
 
 **Status:** accepted — explicit user choices on 2026-10-11 (who sees nicknames; renaming on re-entry; the migration), with the message and the nickname rules proposed in the plan and approved with it.
+
+## D046 — A server's own room messages go through Redis
+
+**Decision:** Anything a server has to tell a room's browsers is appended to a Redis stream, `room-notices`, which every server reads; each server then tells the connections it holds. No message is delivered by writing to one server's connection map alone. One server is still what is deployed.
+
+**Context / requirement:** The user asked that the design allow several server instances later, with a room's director and audience on different ones. Performance updates already allowed it: the worker appends them to a stream and every server reads all of it. Two messages did not, because the server that originated them handed them straight to its own connections: the `audience` message (D045) and the failed snapshot announced when a run is found dead (D042). A director connected to one server was never told of a join handled by another.
+
+**Chosen approach:** A notice has a room ID and a kind. `audience_changed` carries nothing more; a server that holds that room's director's connection reads the names from the database on receiving it and sends them. `announce` carries the message, a failed snapshot, and the ID of the connection that has already been answered. The server that publishes a notice does nothing locally and acts on it when it comes back from the stream, like every other server. The existing stream reader follows both streams in one blocking read, each from its own last entry. If a notice cannot be written, the publishing server acts on it for its own connections.
+
+**Why it fits:** One mechanism for everything a browser is sent, already chosen (D024, D031), already resuming after a Redis outage, already tested. Reading the names on receipt makes ordering a non-issue: whatever order two servers' notices are appended in, each causes a read that is at least as new as the notice, so the last thing a director is sent is current. A lock in one server's memory, which is what ordered this before, cannot order two servers. Because the publisher takes the same path as everyone else, the single-server tests exercise the code several servers would run.
+
+**Alternatives considered:** Redis Pub/Sub, which the user suggested: natural for this, but it keeps nothing, so a server reconnecting to Redis when a notice is published never gets it, and it would be a second delivery mechanism beside the stream. Carrying the names in the notice: no database read on receipt, but two joins on two servers can be appended in the wrong order and leave the director with the older list, unless a shared version number is added. A stream per room: each server receives only what concerns the rooms it serves, and rooms are isolated from one another, but every server must then follow a changing set of streams (about two to three times the server work), and most of the traffic, the updates, would be unaffected unless they moved too. A stream per room for everything is the coherent form of that and the larger scalability gain; it was left for when it is needed.
+
+**Tradeoffs and consequences:** Every server receives every room's notices and ignores most of them. A join now costs one append to Redis and, on each server holding that director, one read of at most ten names. The director is told a few tens of milliseconds after a join instead of at once. Not everything is ready for a second server: the failed-login lock is counted per server, and the local object store is one server's disk. Two servers were run together in tests; more, a load balancer, and load were not.
+
+**Status:** accepted — explicit user request and choices on 2026-10-11 (a stream, not Pub/Sub; one stream, not one per room; the login lock left for later).

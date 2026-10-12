@@ -40,6 +40,10 @@ const (
 type Stack struct {
 	// BaseURL is the server's address, for example "http://127.0.0.1:54321".
 	BaseURL string
+	// SecondBaseURL is the address of a second server process: the same
+	// program, with the same database, Redis, and Temporal, on another port.
+	// Tests use it to check that people on different servers share a room.
+	SecondBaseURL string
 	// ScriptDir is where tests write per-room scripts for the fake providers.
 	ScriptDir string
 	// LogDir holds one log file per child process.
@@ -53,6 +57,7 @@ type Stack struct {
 	temporal        *process
 	temporalAddress string
 	server          *process
+	secondServer    *process
 	worker          *process
 }
 
@@ -186,11 +191,34 @@ func StartWith(ctx context.Context, opts Options) (stack *Stack, err error) {
 	if s.server, err = startProcess("server", s.LogDir, s.env, s.bin("server")); err != nil {
 		return nil, err
 	}
+	secondPort, err := freePort()
+	if err != nil {
+		return nil, err
+	}
+	s.SecondBaseURL = fmt.Sprintf("http://127.0.0.1:%d", secondPort)
+	// A later entry overrides an earlier one with the same name.
+	secondEnv := append(append([]string{}, s.env...), fmt.Sprintf("HTTP_ADDR=127.0.0.1:%d", secondPort))
+	if s.secondServer, err = startProcess("server-2", s.LogDir, secondEnv, s.bin("server")); err != nil {
+		return nil, err
+	}
 	if err := s.StartWorker(); err != nil {
 		return nil, err
 	}
 	if err := waitFor(ctx, "server /healthz", s.server, func() error {
 		resp, err := http.Get(s.BaseURL + "/healthz")
+		if err != nil {
+			return err
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("status %d", resp.StatusCode)
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	if err := waitFor(ctx, "second server /healthz", s.secondServer, func() error {
+		resp, err := http.Get(s.SecondBaseURL + "/healthz")
 		if err != nil {
 			return err
 		}
@@ -213,6 +241,7 @@ func (s *Stack) Stop() {
 	}
 	s.worker.kill()
 	s.server.kill()
+	s.secondServer.kill()
 	s.temporal.kill()
 	if s.startedCompose {
 		cmd := exec.Command("docker", "compose", "stop")
@@ -295,6 +324,44 @@ func (s *Stack) TerminateWorkflow(ctx context.Context, performanceID string) err
 		return fmt.Errorf("terminate workflow of %s: %w\n%s", performanceID, err, out)
 	}
 	return nil
+}
+
+// IndexDefinition returns the definition of a named index in the test
+// database, as PostgreSQL records it, or "" if there is no such index.
+func (s *Stack) IndexDefinition(ctx context.Context, name string) (string, error) {
+	conn, err := pgx.Connect(ctx, e2eDatabaseURL)
+	if err != nil {
+		return "", err
+	}
+	defer conn.Close(ctx)
+	var definition string
+	err = conn.QueryRow(ctx, "SELECT indexdef FROM pg_indexes WHERE schemaname = 'public' AND indexname = $1", name).Scan(&definition)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	return definition, err
+}
+
+// PlanWithoutScanning returns how PostgreSQL would run a query if it were
+// not allowed to read a whole table. The test tables hold a few rows, and
+// for those a full read is the sensible plan whatever indexes exist; with
+// that ruled out, the plan shows whether an index can serve the query.
+func (s *Stack) PlanWithoutScanning(ctx context.Context, query string, args ...any) (string, error) {
+	conn, err := pgx.Connect(ctx, e2eDatabaseURL)
+	if err != nil {
+		return "", err
+	}
+	defer conn.Close(ctx)
+	// For this connection only, which is closed when this returns.
+	if _, err := conn.Exec(ctx, "SET enable_seqscan = off"); err != nil {
+		return "", err
+	}
+	rows, err := conn.Query(ctx, "EXPLAIN "+query, args...)
+	if err != nil {
+		return "", err
+	}
+	lines, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	return strings.Join(lines, "\n"), err
 }
 
 // StoredObject reads an object the stack has stored, such as a turn's
@@ -384,7 +451,7 @@ func (s *Stack) bin(name string) string {
 func (s *Stack) logTails() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "logs: %s\n", s.LogDir)
-	for _, p := range []*process{s.temporal, s.server, s.worker} {
+	for _, p := range []*process{s.temporal, s.server, s.secondServer, s.worker} {
 		if p != nil {
 			fmt.Fprintf(&b, "--- last lines of %s\n%s\n", p.name, p.logTail(15))
 		}

@@ -104,6 +104,8 @@ Share links are derived from `SHARE_LINK_SECRET`, not stored. `make dev` keeps a
 {"type":"snapshot","revision":0,"state":{"phase":"waiting","turn":0}}
 ```
 
+Which server a browser is connected to does not matter. Everything it is sent reaches the servers through two Redis streams that each of them reads whole: `performance-updates`, written by the worker, and `room-notices`, written by a server with news for the others (someone joined; a run was found dead). One server is what `make dev` and the deployment run; the end-to-end tests run two.
+
 The theatre pages open it themselves. To watch it by hand, log in at http://localhost:3000, open a room, and run this in the browser console on that page:
 
 ```js
@@ -216,7 +218,8 @@ The deployed database is Aurora DSQL, which restricts schema changes. Every migr
 
 - one schema statement per file;
 - never mix schema and data changes in one file;
-- no column drops or type changes without recreating the table.
+- no column drops or type changes without recreating the table;
+- an index goes in a file of its own. The two that exist (`00008`, `00009`) use plain `CREATE INDEX`; Aurora DSQL needs `CREATE INDEX ASYNC`, which is for the AWS step to deal with.
 
 One exception was made while every database was still a local test one: step 12 added `premiere_starts_at` to the `performances` create-table migration (`00006`) instead of adding a migration. Goose does not re-run a migration it has recorded, so a database migrated before that needs the table recreated, which deletes its performance rows:
 

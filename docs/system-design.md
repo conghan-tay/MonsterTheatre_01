@@ -40,17 +40,17 @@ Source of truth: [Product brief](monster-theatre-product-brief.md). Significant 
 
 ### Capacity
 
-One performance involves at most 11 WebSocket connections, 25 published updates, 88 vote signals, 16 language-model calls, 8 speech calls, and 8 audio files of a few hundred kilobytes each, with only a handful of performances at once. One server instance and one worker instance are enough, the connection map can live in server memory, and no scaling machinery is needed.
+One performance involves at most 11 WebSocket connections, 25 published updates, 88 vote signals, 16 language-model calls, 8 speech calls, and 8 audio files of a few hundred kilobytes each, with only a handful of performances at once. One server instance and one worker instance are enough for that, and one of each is what is deployed. The live path does not depend on there being one server, though: everything a browser is sent reaches the servers through Redis, so a room's director and audience can be connected to different instances (section 6, "More than one server"; D046). What still assumes a single server is listed in section 9.
 
 ## 2. Components
 
 | Component | Role |
 | --- | --- |
 | Next.js frontend | Director setup form, audience theatre, voting, premiere player |
-| Go server | One process with two modules. **Room service:** create rooms, audience sessions, Start. **Theater:** WebSocket connections, vote signalling, forwarding updates, serving portraits and audio |
+| Go server | One process, of which one instance is deployed, with two modules. **Room service:** create rooms, audience sessions, Start. **Theater:** WebSocket connections, vote signalling, forwarding updates, serving portraits and audio |
 | Go worker | A separate process from the same codebase. Runs the performance workflow and its activities (D026) |
 | Temporal Cloud | Stores and drives the performance workflow |
-| Redis Streams | The worker publishes performance updates; the server reads them and forwards to browsers (D024). ElastiCache on AWS, plain Redis locally |
+| Redis Streams | Two streams, each read whole by every server and forwarded to that server's browsers. `performance-updates`: the worker publishes performance updates (D024). `room-notices`: a server publishes news of its own for the others (D046). ElastiCache on AWS, plain Redis locally |
 | PostgreSQL | Rooms, audience sessions, and one row per performance. Aurora DSQL on AWS, a plain PostgreSQL container locally (D032) |
 | S3 | Portraits and the eight turn recordings |
 | Language model | Choice generation and audio-tag enhancement, behind a configurable adapter (D017) |
@@ -103,7 +103,8 @@ The same code runs against local PostgreSQL and Aurora DSQL (D032). Four rules m
 - **Retry on conflict.** Aurora DSQL has no row locks; a transaction that conflicts with another fails at commit with SQLSTATE `40001`. Every write transaction runs through one helper that retries on that error with backoff. On local PostgreSQL the helper never has anything to retry.
 - **Session cap by counter.** Admitting an audience member is one transaction: `UPDATE rooms SET audience_count = audience_count + 1 WHERE id = $1 AND audience_count < 10`, then the session insert. If the update changes no row, the room is full. Locally the row lock makes simultaneous joins queue; on DSQL they conflict and one retries.
 - **Application-generated UUID keys.** No sequences are used.
-- **Plain migrations.** One schema statement per migration, never mixed with data changes, and no column drops or type changes without recreating the table. On DSQL, indexes are created with `CREATE INDEX ASYNC`.
+- **Plain migrations.** One schema statement per migration, never mixed with data changes, and no column drops or type changes without recreating the table. On DSQL, indexes are created with `CREATE INDEX ASYNC`. The two index migrations that exist (`00008`, `00009`) are written as plain `CREATE INDEX`, which is what local PostgreSQL accepts, so those two files cannot run unchanged on DSQL; applying them there is a known item for step 15.
+- **An index for every filter.** Each query filters by a primary key, a unique column, or an indexed one. Two needed an index of their own, on the column filtered by and the one ordered by: `audience_sessions (room_id, created_at)`, for a room's audience in joining order, read on every join; and `rooms (director_id, created_at)`, for a director's room list. A test checks that both exist and that the planner can use them for the real statements.
 
 Nothing in the schema needs triggers, extensions, or LISTEN/NOTIFY, which DSQL does not support. The final script is a `jsonb` column well under DSQL's 1 MiB limit.
 
@@ -339,9 +340,26 @@ A browser sent `recovering` stays in the room. It asks again with `resync` every
 
 A missing workflow is not started by a connecting browser (D043). The server cannot tell a Start that has not finished from a workflow Temporal has forgotten, and starting the second kind would bring an old room to life when someone opened it. The director pressing Start again starts it; until then the room says `recovering`.
 
-The server keeps an in-memory map of room to open connections. It reads each update from Redis once and writes it to every connection for that room. The server reads the stream from "now" at startup; history is not needed because snapshots come from the workflow.
+Each server keeps an in-memory map of room to the connections it holds. It reads each update from Redis once and writes it to every one of its connections for that room. The map is only the last hop, from a server to its own browsers; nothing is ever delivered by writing to it alone. A server reads the streams from "now" at startup; history is not needed because snapshots come from the workflow.
 
 All performances share one stream, `performance-updates`. Each entry holds the room ID, the revision, and the message exactly as browsers receive it. The stream is trimmed to about a thousand entries. The reader notes the stream's last entry at startup and from then on always reads on from the last entry it has seen, including after a Redis outage; asking only for "what is new" on each read would lose an update that arrived between two reads.
+
+#### More than one server
+
+One server is deployed, but a room's people need not be on the same one (D046). What makes that so:
+
+| What a browser is sent, or sends | How it crosses servers |
+| --- | --- |
+| Performance updates | The worker appends them to `performance-updates`; every server reads the whole stream, with no consumer group, so each gets every entry |
+| The `audience` message (D045) | The server that handled the join or rename appends a notice to `room-notices`: the room ID and `audience_changed`, and nothing else. Every server reads it; one that holds that room's director's connection then reads the names from the database and sends them. Reading on receipt, and not carrying the names in the notice, is what keeps two joins handled by two servers from leaving the director with the older list |
+| The failed snapshot for a run found dead (D042) | The server that found it appends a notice carrying the snapshot and the ID of the connection it has already answered; every server sends it to the room's other connections |
+| Votes | A signal to Temporal, from whichever server holds the connection |
+| Snapshots | A Temporal query, or the performance row; any server can ask |
+| Sessions and logins | PostgreSQL, so any server recognises any cookie, and no sticky routing is needed |
+
+A server that publishes a notice does nothing else with it: it hears its own notice from the stream and acts then, exactly as the others do, so one server and several run the same code. If the notice cannot be written, the server acts on it for its own connections directly, which with one server is everyone. Both streams are read in one blocking call, each resumed from its own last entry.
+
+`room-notices` is one stream for all rooms, trimmed to about a thousand entries. A stream per room was considered and set aside: each server would have to follow a changing set of streams, and the gain is small unless updates move to per-room streams as well. The split can be made later without changing any page or message.
 
 ### Voting
 
@@ -413,6 +431,8 @@ Two pages show a room live, and both use one component for it (`web/src/componen
 - No history of individual votes after a run; only counts are kept in the final script.
 - No single assembled recording; the premiere is eight clips.
 - No limit on how many performances run at once (D027).
+- Two things still assume one server, and must change before a second is deployed. The failed-login lock is counted in each server's memory, so with N servers an attacker gets five tries per server, not five. And the local filesystem object store is one server's disk; on AWS it is S3, which has no such limit.
+- Two servers have been run together in a test, sharing one database, Redis, and Temporal. More than two, a load balancer in front, and any load have not.
 - A room creation that fails halfway can leave orphaned portraits in S3 until the lifecycle rule removes them.
 - An activity may publish the same update twice after a retry; the revision rule makes that harmless.
 - The premiere's countdown is shortened by however long the final save takes, since the start time is fixed before it. A database that is being retried can leave little or none.

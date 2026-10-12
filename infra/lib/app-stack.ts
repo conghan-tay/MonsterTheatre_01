@@ -57,10 +57,14 @@ export class AppStack extends Stack {
     const webGroup = group("WebGroup", "Monster Theatre web tasks");
     const cacheGroup = group("CacheGroup", "Monster Theatre cache");
 
-    // The load balancer has no public address. CloudFront reaches it through
-    // network interfaces it places inside this VPC, so "from inside the VPC"
-    // is CloudFront and nothing else that can send it traffic.
-    loadBalancerGroup.addIngressRule(ec2.Peer.ipv4(vpc.vpcCidrBlock), ec2.Port.tcp(80), "CloudFront, from inside the VPC");
+    // The load balancer has no public address; only a CloudFront VPC origin
+    // can send it anything. CloudFront's requests keep CloudFront's own
+    // source addresses, though, so the rule names CloudFront's managed list
+    // of them. A rule for this VPC's range would let nothing in.
+    const cloudFront = ec2.PrefixList.fromLookup(this, "CloudFrontOriginFacing", {
+      prefixListName: "com.amazonaws.global.cloudfront.origin-facing",
+    });
+    loadBalancerGroup.addIngressRule(ec2.Peer.prefixList(cloudFront.prefixListId), ec2.Port.tcp(80), "CloudFront origin-facing addresses");
 
     // --- Cache: the two Redis streams (D024, D046) ---
     for (const [name, from] of [["server", serverGroup], ["worker", workerGroup]] as const) {

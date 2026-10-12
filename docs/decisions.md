@@ -899,13 +899,15 @@ This algorithm was run through the spike's three scenarios and was correct in ev
 
 **Context / requirement:** Session cookies are `Secure` and the pages open the WebSocket as `wss`, so the site needs HTTPS. The user chose not to use a domain name. A load balancer's own name cannot carry a certificate.
 
-**Chosen approach:** One distribution. Its default behaviour caches nothing and forwards every header (cookies, `Origin`, the WebSocket upgrade, and `Host`); `/_next/static/*` is cached, since Next.js names those files by content. `PUBLIC_BASE_URL` is set by CloudFormation to `https://` plus the distribution's domain name, so it cannot differ from the address bar (D035). The load balancer has no public address; its security group admits port 80 from inside the VPC, which is where CloudFront's network interfaces are.
+**Chosen approach:** One distribution. Its default behaviour caches nothing and forwards every header (cookies, `Origin`, the WebSocket upgrade, and `Host`); `/_next/static/*` is cached, since Next.js names those files by content. `PUBLIC_BASE_URL` is set by CloudFormation to `https://` plus the distribution's domain name, so it cannot differ from the address bar (D035). The load balancer has no public address; its security group admits port 80 from CloudFront's managed prefix list of origin-facing addresses, which is one of the two ways CloudFront documents (the other is its own service security group, which CloudFormation cannot name without a custom resource).
 
 **Why it fits:** HTTPS with no domain, no certificate to manage, and no fixed cost. CloudFront carries WebSockets by default; its idle limit is ten minutes and the server pings every 25 seconds.
 
 **Alternatives considered:** A domain in Route 53 with an ACM certificate on a public load balancer: the step's original wording, simpler by one service, but the user has no domain for it. A public load balancer behind CloudFront: the same, with a second way in to protect.
 
 **Tradeoffs and consequences:** The hop from CloudFront to the load balancer is plain HTTP inside AWS's network: an internal certificate would need a domain. The address is not memorable and changes if the distribution is recreated, which invalidates nothing stored (share links are rebuilt from `PUBLIC_BASE_URL`) but does change every link already sent. `/healthz` is not reachable from outside; the load balancer asks `/livez`, which checks only the process, because a health check that also asked Temporal, Redis, and the database would close every WebSocket whenever one of them blinked.
+
+**Corrected on the first deployment, 2026-10-12:** the rule was first written as "port 80 from inside the VPC", on the assumption that CloudFront's requests arrive from the private addresses of the network interfaces it places there. They do not: they keep CloudFront's own source addresses, so every request timed out and CloudFront answered 504. With the prefix-list rule the pages, the API, and the redirect from `http` all answer through the CloudFront address.
 
 **Status:** accepted — explicit user choice on 2026-10-12.
 

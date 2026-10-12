@@ -150,6 +150,30 @@ test("the load balancer is internal, sends /api/* to the server and the rest to 
   assert.doesNotMatch(JSON.stringify(groups), /stickiness\.enabled","Value":"true"/);
 });
 
+// CloudFront's requests do not arrive from addresses inside the VPC, so a
+// rule for the VPC's own range lets nothing in (the first deployment
+// answered 504 for that reason). The documented ways in are CloudFront's
+// managed prefix list or its service security group.
+test("the load balancer accepts port 80 from CloudFront's origin-facing prefix list and nothing else", () => {
+  const { app } = synth("test");
+  const groups = app.findResources("AWS::EC2::SecurityGroup");
+  const [id] = Object.keys(groups).filter((g) => groups[g].Properties.GroupDescription === "Monster Theatre load balancer");
+  assert.ok(id, "the load balancer's security group");
+
+  // A rule may be written inside the group or as a resource of its own.
+  const inline = (groups[id].Properties.SecurityGroupIngress ?? []) as Record<string, unknown>[];
+  const separate = Object.values(app.findResources("AWS::EC2::SecurityGroupIngress"))
+    .map((r) => r.Properties as Record<string, unknown>)
+    .filter((r) => JSON.stringify(r.GroupId).includes(id));
+  const ingress = [...inline, ...separate];
+
+  assert.equal(ingress.length, 1);
+  assert.equal(ingress[0].FromPort, 80);
+  assert.equal(ingress[0].ToPort, 80);
+  assert.ok(ingress[0].SourcePrefixListId, "from a prefix list");
+  assert.equal(ingress[0].CidrIp, undefined, "not from an address range");
+});
+
 test("CloudFront serves HTTPS only and reaches the load balancer privately", () => {
   const { app } = synth("test");
   app.resourceCountIs("AWS::CloudFront::Distribution", 1);

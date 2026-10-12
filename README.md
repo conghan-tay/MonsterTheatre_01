@@ -203,7 +203,7 @@ Both are isolated from `make dev` (their own database, their own Temporal server
 
 ## Deploying to AWS
 
-**Status, 2026-10-12: the data stack is deployed and migrated, and the S3 smoke test has passed against its bucket. The application stack has not been deployed, so nothing from "Then the application" on has been run.** Design: [system design](docs/system-design.md), sections 2 and 7, and decisions D047 to D052.
+**Status, 2026-10-12: both stacks are deployed, the application in test mode. The pages and the API answer at the CloudFront address. The end-to-end suite has not yet been run against it, and nothing has been run in live mode.** Design: [system design](docs/system-design.md), sections 2 and 7, and decisions D047 to D052.
 
 What runs where: CloudFront (the public HTTPS address) in front of an internal load balancer; three Fargate tasks (web, server, worker); Aurora DSQL; one Valkey node on ElastiCache; a private S3 bucket; Temporal Cloud. Region `ap-southeast-1`.
 

@@ -50,7 +50,7 @@ One performance involves at most 11 WebSocket connections, 25 published updates,
 | Go server | One process, of which one instance is deployed, with two modules. **Room service:** create rooms, audience sessions, Start. **Theater:** WebSocket connections, vote signalling, forwarding updates, serving portraits and audio |
 | Go worker | A separate process from the same codebase. Runs the performance workflow and its activities (D026) |
 | Temporal Cloud | Stores and drives the performance workflow |
-| Redis Streams | Two streams, each read whole by every server and forwarded to that server's browsers. `performance-updates`: the worker publishes performance updates (D024). `room-notices`: a server publishes news of its own for the others (D046). ElastiCache on AWS, plain Redis locally |
+| Redis Streams | Two streams, each read whole by every server and forwarded to that server's browsers. `performance-updates`: the worker publishes performance updates (D024). `room-notices`: a server publishes news of its own for the others (D046). Held by Valkey 8.1, which speaks the Redis protocol: one ElastiCache node on AWS, a container locally (D051) |
 | PostgreSQL | Rooms, audience sessions, and one row per performance. Aurora DSQL on AWS, a plain PostgreSQL container locally (D032) |
 | S3 | Portraits and the eight turn recordings |
 | Language model | Choice generation and audio-tag enhancement, behind a configurable adapter (D017) |
@@ -59,7 +59,8 @@ One performance involves at most 11 WebSocket connections, 25 published updates,
 
 ```mermaid
 flowchart LR
-    Browser[Director and audience browsers] -->|HTTPS| ALB[Load balancer]
+    Browser[Director and audience browsers] -->|HTTPS| CDN[CloudFront]
+    CDN -->|HTTP, inside AWS| ALB[Internal load balancer]
     ALB -->|Pages| Web[Next.js]
     ALB -->|API and one WebSocket per browser| Server["Go server (Room service and Theater)"]
     Server -->|Rooms, sessions, performance row| DB[("PostgreSQL (Aurora DSQL on AWS)")]
@@ -76,9 +77,9 @@ flowchart LR
 
 The server and the worker never talk to each other directly. The server reaches the workflow through Temporal (start, signal, query), and the workflow reaches the server through Redis.
 
-The browser sees one origin. On AWS the load balancer routes `/api/*` and the WebSocket to the Go server and everything else to Next.js. Locally the Next.js app does that routing itself, proxying `/api/*` to the Go server, so cookies need no cross-origin handling in either place. Pages fetch from the API in the browser; Next.js does no data fetching of its own.
+The browser sees one origin. On AWS that origin is a CloudFront distribution, at its own `cloudfront.net` address since there is no domain name (D049); behind it an internal load balancer routes `/api/*` and the WebSocket to the Go server and everything else to Next.js. Locally the Next.js app does that routing itself, proxying `/api/*` to the Go server, so cookies need no cross-origin handling in either place. Pages fetch from the API in the browser; Next.js does no data fetching of its own.
 
-For prototyping, everything runs locally: the Temporal dev server, Redis, and PostgreSQL in containers, with a real S3 bucket or a local stand-in. On AWS the three application processes run as containers on ECS Fargate, and the database is Aurora DSQL.
+For prototyping, everything runs locally: the Temporal dev server, Redis, and PostgreSQL in containers, with a real S3 bucket or a local stand-in. On AWS the three application processes run as containers on ECS Fargate, one task each, in public subnets with no NAT gateway (D050), and the database is Aurora DSQL. The deployment is two CDK stacks, one kept and one destroyed between demos (D052); the README has the commands and the cost.
 
 ## 3. Stored data
 
@@ -103,7 +104,8 @@ The same code runs against local PostgreSQL and Aurora DSQL (D032). Four rules m
 - **Retry on conflict.** Aurora DSQL has no row locks; a transaction that conflicts with another fails at commit with SQLSTATE `40001`. Every write transaction runs through one helper that retries on that error with backoff. On local PostgreSQL the helper never has anything to retry.
 - **Session cap by counter.** Admitting an audience member is one transaction: `UPDATE rooms SET audience_count = audience_count + 1 WHERE id = $1 AND audience_count < 10`, then the session insert. If the update changes no row, the room is full. Locally the row lock makes simultaneous joins queue; on DSQL they conflict and one retries.
 - **Application-generated UUID keys.** No sequences are used.
-- **Plain migrations.** One schema statement per migration, never mixed with data changes, and no column drops or type changes without recreating the table. On DSQL, indexes are created with `CREATE INDEX ASYNC`. The two index migrations that exist (`00008`, `00009`) are written as plain `CREATE INDEX`, which is what local PostgreSQL accepts, so those two files cannot run unchanged on DSQL; applying them there is a known item for step 15.
+- **Plain migrations.** One schema statement per migration, never mixed with data changes, and no column drops or type changes without recreating the table. On DSQL, indexes are created with `CREATE INDEX ASYNC`, which PostgreSQL does not accept. The files say `CREATE INDEX`; the migrate command, when pointed at DSQL, reads them with `ASYNC` inserted, runs each statement apart from goose's own bookkeeping, and waits for the index builds (D048).
+- **Indexable types only where an index is needed.** DSQL cannot index `bytea` or `jsonb`. The session hash, which is unique and so indexed, is stored as hex in a `text` column (D047); the two `jsonb` columns are never filtered on.
 - **An index for every filter.** Each query filters by a primary key, a unique column, or an indexed one. Two needed an index of their own, on the column filtered by and the one ordered by: `audience_sessions (room_id, created_at)`, for a room's audience in joining order, read on every join; and `rooms (director_id, created_at)`, for a director's room list. A test checks that both exist and that the planner can use them for the real statements.
 
 Nothing in the schema needs triggers, extensions, or LISTEN/NOTIFY, which DSQL does not support. The final script is a `jsonb` column well under DSQL's 1 MiB limit.
@@ -412,9 +414,10 @@ Two pages show a room live, and both use one component for it (`web/src/componen
 - **WebSocket.** The handshake is authenticated by cookie, so the server also checks the `Origin` header and refuses connections from other sites (D035). The header must be present and name either the web app's origin (`PUBLIC_BASE_URL`: scheme, host, and port) or the host and port the request itself was addressed to. The check runs before any session lookup.
 - **Login.** Passwords are stored with argon2id. Five failed attempts for a username within 15 minutes lock that username until the 15 minutes have passed, and the lock applies even to the correct password. The count is held in server memory. Accepted cost: someone who knows a director's username can lock that director out for 15 minutes.
 - **Cookie `Secure` flag.** On by default and controlled by `COOKIE_SECURE`. Local development and the test stack turn it off because they serve plain HTTP.
-- **Secrets.** Language-model and ElevenLabs keys are held only by the worker; the Temporal credentials by server and worker. Nothing is sent to browsers.
-- **Database.** On AWS the server and worker connect to Aurora DSQL with short-lived IAM tokens issued to their task roles, through a scoped database role. There is no database password to store.
-- **Storage.** The S3 bucket is private and encrypted. Browsers reach portraits and audio only through the server's authorised endpoints.
+- **Secrets.** Language-model and ElevenLabs keys are held only by the worker; the Temporal Cloud API key by server and worker; the share-link secret by the server. On AWS all four are in Secrets Manager and reach a task as it starts; none is in a template, a task definition, or the repository, and a deployment in test mode is not given the provider keys at all (D052). Nothing is sent to browsers.
+- **Database.** On AWS the server and worker connect to Aurora DSQL with short-lived IAM tokens issued to their task roles, through a scoped database role, `monster_app`, which can read and write the five tables and cannot change the schema (D048). There is no database password to store. Migrations run as `admin`, from an administrator's machine.
+- **Storage.** The S3 bucket is private, encrypted, and refuses requests not made over TLS. Browsers reach portraits and audio only through the server's authorised endpoints.
+- **Network.** Only CloudFront is reachable from the internet. The load balancer and the cache have no public address, and the load balancer admits only CloudFront's origin-facing addresses; the tasks have one each, for outbound calls, and their security groups admit only the load balancer (D050). The hop from CloudFront to the load balancer is plain HTTP inside AWS's network (D049).
 - **Input limits.** The validation bounds in section 5 apply to every upload and text field.
 
 ## 8. Observability
@@ -438,7 +441,9 @@ Two pages show a room live, and both use one component for it (`web/src/componen
 - The premiere's countdown is shortened by however long the final save takes, since the start time is fixed before it. A database that is being retried can leave little or none.
 - Whether a late browser counts down or offers the recording is decided by its own clock against `startsAt`. One whose clock runs slow can show a countdown for a premiere that is already over, by the amount it is slow.
 - A browser may keep playing recordings it has cached for up to seven days without the server checking its session again, as with portraits.
-- The local and deployed databases behave differently under contention. Conflict retries only run for real on Aurora DSQL, so they are first exercised at deployment.
+- The local and deployed databases behave differently under contention: conflict retries only run for real on Aurora DSQL. They were first exercised at deployment (fifteen simultaneous joins, ten admitted, six runs of six); nothing heavier has been tried.
+- On AWS there is one cache node and one task of each kind, so any one of them failing interrupts the service until it is replaced. Old database rows are never removed (review item 13).
+- The public address is CloudFront's own and changes if the distribution is recreated, which changes every share link already sent.
 
 ## 10. Next step
 

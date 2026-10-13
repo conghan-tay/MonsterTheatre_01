@@ -19,7 +19,7 @@ Two things are kept separate throughout:
 | --- | --- | --- |
 | `id` | `uuid`, primary key | The session ID. This is the voter ID sent with each vote signal. Safe to log. |
 | `room_id` | `uuid`, foreign key to `rooms` | The one room this session is scoped to. |
-| `credential_hash` | `bytea`, unique | SHA-256 of the secret in the cookie. The cookie holds the secret itself; the database holds only the hash, so a database leak does not leak usable credentials. |
+| `credential_hash` | `text`, unique: the hash as hex, since Aurora DSQL cannot index `bytea` (D047) | SHA-256 of the secret in the cookie. The cookie holds the secret itself; the database holds only the hash, so a database leak does not leak usable credentials. |
 | `nickname` | `text`, required | What this person asked to be called: 1 to 30 characters, not unique. Shown to the room's director and to nobody else. It is not an identity: votes are counted by `id`. Replaced each time the same browser enters again. |
 | `created_at` | `timestamptz` | When the session was admitted. The director's list of names is in this order. |
 | `last_seen_at` | `timestamptz` | Updated on connect and reconnect. For inspection and any future slot cleanup. |

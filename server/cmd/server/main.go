@@ -13,7 +13,6 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	"go.temporal.io/sdk/client"
-	temporallog "go.temporal.io/sdk/log"
 
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/audience"
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/auth"
@@ -24,6 +23,7 @@ import (
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/objectstore"
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/performance"
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/rooms"
+	"github.com/conghan-tay/MonsterTheatre_01/server/internal/temporalclient"
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/theater"
 )
 
@@ -50,12 +50,12 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	objects, err := objectstore.NewFS(cfg.ObjectStoreDir)
+	objects, objectStore, err := objectstore.Configured(ctx, cfg)
 	if err != nil {
 		return err
 	}
 
-	pool, err := db.Open(ctx, cfg.DatabaseURL)
+	pool, database, err := db.OpenConfigured(ctx, cfg)
 	if err != nil {
 		return err
 	}
@@ -70,17 +70,15 @@ func run(cfg config.Config, logger *slog.Logger) error {
 
 	// A lazy client connects on first use, so Temporal being down at startup
 	// is reported by /healthz and does not stop the server from starting.
-	temporalClient, err := client.NewLazyClient(client.Options{
-		HostPort:  cfg.TemporalAddress,
-		Namespace: cfg.TemporalNamespace,
-		Logger:    temporallog.NewStructuredLogger(logger),
-	})
+	temporalClient, err := client.NewLazyClient(temporalclient.Options(cfg, logger))
 	if err != nil {
 		return err
 	}
 	defer temporalClient.Close()
 
 	mux := http.NewServeMux()
+	// What the load balancer asks. It checks nothing, on purpose.
+	mux.Handle("GET /livez", health.Live())
 	mux.Handle("GET /healthz", health.Handler(logger,
 		health.Check{Name: "database", Run: pool.Ping},
 		health.Check{Name: "redis", Run: func(ctx context.Context) error {
@@ -183,7 +181,14 @@ func run(cfg config.Config, logger *slog.Logger) error {
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.ListenAndServe() }()
-	logger.Info("server started", "addr", cfg.HTTPAddr)
+	logger.Info("server started",
+		"addr", cfg.HTTPAddr,
+		"database", database,
+		"object_store", objectStore,
+		"temporal_address", cfg.TemporalAddress,
+		"namespace", cfg.TemporalNamespace,
+		"public_base_url", cfg.PublicBaseURL,
+	)
 
 	select {
 	case err := <-errCh:

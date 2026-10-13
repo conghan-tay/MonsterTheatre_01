@@ -284,6 +284,7 @@ func TestVotingBeforeStartIsRefused(t *testing.T) {
 //
 // This test stops the shared worker, so it does not run in parallel.
 func TestVotesCastWhileTheWorkerIsDownAreJudgedByReceiptTime(t *testing.T) {
+	requireLocal(t, "the worker is stopped and restarted")
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	t.Cleanup(func() {

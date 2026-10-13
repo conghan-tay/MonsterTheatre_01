@@ -1,0 +1,7 @@
+{
+  "app": "npx tsx app.ts",
+  "watch": { "include": ["app.ts", "lib"] },
+  "context": {
+    "@aws-cdk/core:defaultCrossStackReferences": "strong"
+  }
+}

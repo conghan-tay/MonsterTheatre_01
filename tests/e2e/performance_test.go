@@ -83,6 +83,7 @@ func readThrough(t *testing.T, ctx context.Context, conn *client.Conn, after int
 // H4: after Start, with no votes, connected browsers receive revisions 1 to
 // 25 in order and the performance row ends completed with a full script.
 func TestPerformanceRunsEightTurnsWithoutVotes(t *testing.T) {
+	requireLocal(t, "the fake providers read their scripts from the worker's disk")
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()

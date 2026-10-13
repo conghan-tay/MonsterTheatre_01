@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"strings"
 	"time"
@@ -88,7 +89,7 @@ func (s *PGStore) CreateSession(ctx context.Context, directorID string, credenti
 		_, err := tx.Exec(ctx,
 			`INSERT INTO director_sessions (id, director_id, credential_hash, created_at, expires_at)
 			 VALUES ($1, $2, $3, $4, $5)`,
-			uuid.NewString(), directorID, credentialHash, now, expiresAt)
+			uuid.NewString(), directorID, hashText(credentialHash), now, expiresAt)
 		return err
 	})
 }
@@ -100,7 +101,7 @@ func (s *PGStore) SessionByHash(ctx context.Context, credentialHash []byte) (Ses
 		   FROM director_sessions s
 		   JOIN directors d ON d.id = s.director_id
 		  WHERE s.credential_hash = $1`,
-		credentialHash).Scan(&sess.DirectorID, &sess.Username, &sess.ExpiresAt)
+		hashText(credentialHash)).Scan(&sess.DirectorID, &sess.Username, &sess.ExpiresAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return sess, ErrNotFound
 	}
@@ -109,7 +110,14 @@ func (s *PGStore) SessionByHash(ctx context.Context, credentialHash []byte) (Ses
 
 func (s *PGStore) DeleteSession(ctx context.Context, credentialHash []byte) error {
 	return db.WithTx(ctx, s.Pool, func(tx pgx.Tx) error {
-		_, err := tx.Exec(ctx, `DELETE FROM director_sessions WHERE credential_hash = $1`, credentialHash)
+		_, err := tx.Exec(ctx, `DELETE FROM director_sessions WHERE credential_hash = $1`, hashText(credentialHash))
 		return err
 	})
+}
+
+// hashText is how a credential hash is stored: as its hex. The column is
+// unique, so it is indexed, and Aurora DSQL cannot index bytea
+// (docs/decisions.md, D047).
+func hashText(credentialHash []byte) string {
+	return hex.EncodeToString(credentialHash)
 }

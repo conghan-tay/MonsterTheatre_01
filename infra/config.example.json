@@ -1,0 +1,9 @@
+{
+  "region": "ap-southeast-1",
+  "temporalAddress": "your-namespace.a1b2c.tmprl.cloud:7233",
+  "temporalNamespace": "your-namespace.a1b2c",
+  "voiceIdA": "the-first-elevenlabs-voice-id",
+  "voiceIdB": "the-second-elevenlabs-voice-id",
+  "llmModel": "claude-sonnet-5-5",
+  "ttsModel": "eleven_v4_turbo"
+}

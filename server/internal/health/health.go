@@ -50,3 +50,15 @@ func Handler(logger *slog.Logger, checks ...Check) http.Handler {
 		_ = json.NewEncoder(w).Encode(resp)
 	})
 }
+
+// Live answers 200 whenever the process is serving requests. It is what the
+// load balancer asks. The dependency checks are deliberately not part of it:
+// were they, one dependency being briefly unreachable would have the load
+// balancer take the server out of service and close every WebSocket.
+func Live() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok\n"))
+	})
+}

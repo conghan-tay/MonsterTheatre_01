@@ -108,6 +108,7 @@ Versions were checked against the Go module proxy, the npm registry, and Docker 
 | `github.com/aws/aws-sdk-go-v2` | v1.47.1 | AWS SDK core |
 | `github.com/aws/aws-sdk-go-v2/config` | v1.33.7 | AWS credential and region loading |
 | `github.com/aws/aws-sdk-go-v2/service/s3` | v1.114.1 | S3 implementation of the object store |
+| `github.com/aws/aws-sdk-go-v2/feature/dsql/auth` | v1.2.1 | Brought in by the DSQL connector: signs the IAM database tokens |
 | `golang.org/x/crypto` | v0.57.0 | Password hashing (argon2id) |
 | `github.com/anthropics/anthropic-sdk-go` | v1.80.0 | First real implementation of the language-model adapter |
 | `github.com/stretchr/testify` | v1.12.1 | Test assertions; also used by the Temporal test suite |
@@ -125,6 +126,7 @@ Deliberately not added: a web framework (the standard library router is enough),
 | `@playwright/test` | 1.64.0 | Browser E2E tests |
 | `aws-cdk-lib` | 2.272.0 | Infrastructure as code for the AWS deployment |
 | `aws-cdk` | 2.1145.0 | CDK command line |
+| `tsx` | ^4 | Runs the CDK app and its template tests without a build step |
 
 ### Containers and services
 
@@ -132,7 +134,9 @@ Deliberately not added: a web framework (the standard library router is enough),
 | --- | --- | --- |
 | `postgres` image | 17-alpine | Local database only |
 | Aurora DSQL | — | Database on AWS (D032). PostgreSQL-compatible, no version to choose |
-| `redis` image | 8-alpine | Local Redis. Confirm the matching ElastiCache engine at step 15 |
+| `valkey/valkey` image | 8-alpine (8.1.10) | Local stand-in for ElastiCache. Replaced `redis:8-alpine` at step 15: ElastiCache has Redis OSS only up to 7.1 (D051) |
+| ElastiCache | Valkey 8.1, `cache.t4g.micro` | The two Redis streams on AWS. Checked with `DescribeCacheEngineVersions` in `ap-southeast-1` on 2026-10-12: Valkey 7.2 to 9.1 |
+| CloudFront | — | The public HTTPS address, in front of an internal load balancer (D049) |
 | Temporal Cloud | — | Hosted workflow service for the AWS deployment |
 | Anthropic API | Model set by `LLM_MODEL` | Choice generation and tag enhancement |
 | ElevenLabs API | `eleven_v4_turbo`, Text to Dialogue convert endpoint | Speech |
@@ -326,7 +330,7 @@ Makefile           dev, test, e2e, migrate
 
 ### Step 14 — Theatre web pages
 
-**Done 2026-10-11**, except the run by hand in Chrome and Safari, which is the user's. Built as listed, web-only, with one harness addition: the test stack takes a script directory so a browser test can slow a turn. The audience page lives at the share link and always opens on Enter theatre; sound goes through one audio element started inside that click; clips are fetched whole during the countdown (D044). Three Playwright tests where two were listed: a full performance, replay (by a newcomer, after a reload, and on the director's page), and an invalid link. One real-provider performance was driven through the pages in Playwright's Chromium and completed: lines of 101 to 152 characters, about 3 s to write each turn's lines and 3 to 4 s to tag and voice the winner, eight clips of 9 to 11 s, a premiere of about 85 s. Not checked: what it sounds like, Safari, any browser driven by a person, the Tap to hear audio path in a browser that really blocks sound, and `next build`.
+**Done 2026-10-11**, except the run by hand in Chrome and Safari, which is the user's; they made it on 2026-10-13 on the AWS deployment, also on an Android phone, and the premiere played with sound in all three (step 15). Built as listed, web-only, with one harness addition: the test stack takes a script directory so a browser test can slow a turn. The audience page lives at the share link and always opens on Enter theatre; sound goes through one audio element started inside that click; clips are fetched whole during the countdown (D044). Three Playwright tests where two were listed: a full performance, replay (by a newcomer, after a reload, and on the director's page), and an invalid link. One real-provider performance was driven through the pages in Playwright's Chromium and completed: lines of 101 to 152 characters, about 3 s to write each turn's lines and 3 to 4 s to tag and voice the winner, eight clips of 9 to 11 s, a premiere of about 85 s. Not checked: what it sounds like, Safari, any browser driven by a person, the Tap to hear audio path in a browser that really blocks sound, and `next build`.
 
 **What to build**
 - On a `recovering` snapshot, show that the performance is recovering and send `resync` every few seconds (no more than one a second is answered) until the phase changes.
@@ -356,6 +360,17 @@ Tests added: three Go end-to-end tests and one browser test, a pure test of the 
 
 ### Step 15 — AWS deployment
 
+**Done 2026-10-13.** Built and deployed in test mode on 2026-10-12, and in live mode on 2026-10-13. Every item of the definition of done below is met, with the changes from its text listed here. What was decided on the way is D047 to D052.
+
+- **Built and tested locally:** the S3 object store with its seekable body; the DSQL connection path; `migrate` for DSQL (goose's DSQL dialect, `CREATE INDEX` written as `ASYNC`, a wait for index builds) and `migrate grant`; session hashes as text, because DSQL cannot index `bytea`; Temporal Cloud sign-in by API key; `/livez`; both container images; the CDK app (two stacks, 15 template tests); a mode of the Go end-to-end suite that runs against a deployment; the browser tests against `next build` and `next start`, which had never been run.
+- **Changed from the text below:** there is no domain, so HTTPS is CloudFront's, in front of an internal load balancer (D049); the tasks have public addresses and there is no NAT gateway (D050); the cache is Valkey, locally too (D051); against a deployment 32 of the suite's 46 top-level tests run and 14 skip, each saying why.
+- **Done on AWS, 2026-10-12:** `cdk bootstrap`; `MonsterTheatreData` deployed; all nine migrations applied to the cluster with both indexes valid; the application's database role created and granted; the S3 smoke test passed against the bucket.
+- **Also done on AWS, 2026-10-12:** `MonsterTheatreApp` deployed in test mode. The worker connected to Temporal Cloud; server and worker connect to DSQL as `monster_app`. The first deployment answered 504 because of a wrong security-group rule, since corrected (D049). `cdk diff` is empty.
+- **The end-to-end suite against the deployment, 2026-10-12:** 32 top-level tests passed and 14 skipped, with no failure and no change needed to a test or to the product. It covers login, rooms and portraits through S3, joining, the WebSocket through CloudFront, voting, full performances on Temporal Cloud, and the premiere's recordings. The simultaneous-joins part of S4 admitted exactly ten of fifteen in six runs out of six; the cluster's own metric counted 108 transaction conflicts in the five minutes that included those runs, so the retries in `db.WithTx` ran for real.
+- **Torn down 2026-10-12, at the user's request:** `cdk destroy MonsterTheatreApp` completed in about 20 minutes and left nothing billed by the hour: no cache, load balancer, tasks, CloudFront distribution, or VPC. The data stack, the cluster's rows and grants, the secrets, and the bucket are untouched.
+- **The live run, 2026-10-13:** the application stack was deployed again with `-c mode=live` (the worker's startup line read first: `anthropic`, `claude-sonnet-5-5`; `elevenlabs`, `eleven_v4_turbo`; 10-second votes). The user then ran one performance over the CloudFront address as director with three audience members: Chrome 155 and Safari 26.5 on a MacBook Air, and Chrome 154 on a Samsung Galaxy S22+. They report that all eight turns completed and the premiere played with sound on every device, with nothing looking wrong. From the deployment's side: the performance row is `completed`, 2 minutes 16 seconds after Start; all eight turns were written by `claude-sonnet-5-5` with tags applied; eight recordings of 133 to 198 kB are in the bucket; the server and worker logs hold no warning or error. This was the first run of the pages in Safari and on a phone.
+- **Not shown by any of this:** Firefox; more than one server behind the load balancer; any load; the 14 end-to-end tests that skip against a deployment; an outage of Temporal Cloud or the cache on AWS; a WebSocket held open through CloudFront for longer than one performance.
+
 One server instance is deployed, but nothing on the live path requires that: the load balancer needs no sticky routing for WebSockets (D046). Before a second instance is added, move the failed-login lock out of server memory (system design, section 9).
 
 **What to build**
@@ -382,8 +397,8 @@ These are items 11 to 16 in [the review](review.md), placed where they come up:
 | --- | --- |
 | Whether to show a "recovering" message | Settled: a `recovering` snapshot (D041, step 13), shown by the page as a line of text (step 14) |
 | What the page shows between rounds | Settled in step 14: the winning line with its counts, then "Writing the next lines…" |
-| Database cleanup | Step 15, or defer |
-| Whether goose runs unmodified against Aurora DSQL | Step 15 |
+| Database cleanup | Deferred at step 15; still open |
+| Whether goose runs unmodified against Aurora DSQL | Settled at step 15 (D048): it does, through its DSQL dialect, with index statements rewritten as `ASYNC`. Run on the cluster 2026-10-12 |
 | Piping audio from the object store | Settled in step 12: piped (D040) |
 | Who builds clip URLs | Settled in step 9: the clip list carries them (D037) |
 | Caching of audio responses | Settled in step 12: private, seven days, immutable |

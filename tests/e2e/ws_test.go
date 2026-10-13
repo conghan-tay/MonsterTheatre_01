@@ -9,7 +9,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/conghan-tay/MonsterTheatre_01/tests/e2e/client"
-	"github.com/conghan-tay/MonsterTheatre_01/tests/e2e/harness"
 )
 
 // noSuchRoomID is a well-formed room ID that no room has.
@@ -119,7 +118,7 @@ func TestWebSocketAcceptsTheWebAppOrigin(t *testing.T) {
 	defer cancel()
 
 	director, room, _ := newRoom(t, ctx)
-	conn, err := director.ConnectFrom(ctx, client.RoomSocketPath(room.RoomID), harness.PublicBaseURL)
+	conn, err := director.ConnectFrom(ctx, client.RoomSocketPath(room.RoomID), stack.PublicBaseURL)
 	require.NoError(t, err)
 	defer conn.Close()
 	requireWaitingSnapshot(t, ctx, conn)

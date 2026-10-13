@@ -12,7 +12,6 @@ import (
 
 	"github.com/conghan-tay/MonsterTheatre_01/tests/e2e/client"
 	"github.com/conghan-tay/MonsterTheatre_01/tests/e2e/fixtures"
-	"github.com/conghan-tay/MonsterTheatre_01/tests/e2e/harness"
 )
 
 type validationError struct {
@@ -60,7 +59,7 @@ func TestDirectorCreatesARoom(t *testing.T) {
 	var created client.RoomView
 	require.NoError(t, resp.Decode(&created))
 	require.NotEmpty(t, created.RoomID)
-	require.True(t, strings.HasPrefix(created.ShareLink, harness.PublicBaseURL+"/join/"+created.RoomID+"/"),
+	require.True(t, strings.HasPrefix(created.ShareLink, stack.PublicBaseURL+"/join/"+created.RoomID+"/"),
 		"share link %q points at the join page for this room", created.ShareLink)
 
 	got, err := director.GetRoom(ctx, created.RoomID)

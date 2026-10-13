@@ -1,0 +1,4 @@
+node_modules/
+cdk.out/
+# Your own settings (copy config.example.json). Not secret, but yours.
+config.json

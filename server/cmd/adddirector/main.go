@@ -55,7 +55,7 @@ func run(ctx context.Context, username string) (string, error) {
 		return "", err
 	}
 
-	pool, err := db.Open(ctx, config.Load().DatabaseURL)
+	pool, _, err := db.OpenConfigured(ctx, config.Load())
 	if err != nil {
 		return "", err
 	}

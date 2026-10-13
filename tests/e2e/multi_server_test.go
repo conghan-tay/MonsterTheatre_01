@@ -27,6 +27,7 @@ func enteredOn(t *testing.T, ctx context.Context, server, shareLink, nickname st
 
 // A join handled by one server reaches the director's page on another.
 func TestAJoinOnOneServerReachesTheDirectorOnAnother(t *testing.T) {
+	requireLocal(t, "one server is deployed")
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -74,6 +75,7 @@ func TestAJoinOnOneServerReachesTheDirectorOnAnother(t *testing.T) {
 // A run found dead by a browser on one server is announced to browsers
 // waiting on another.
 func TestADeadRunFoundOnOneServerIsAnnouncedOnAnother(t *testing.T) {
+	requireLocal(t, "one server is deployed")
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -110,6 +112,7 @@ func TestADeadRunFoundOnOneServerIsAnnouncedOnAnother(t *testing.T) {
 // member on another: the same updates reach both, a vote cast through the
 // second server is counted, and a recording can be fetched from it.
 func TestAPerformanceAcrossTwoServers(t *testing.T) {
+	requireLocal(t, "one server is deployed")
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()

@@ -42,6 +42,7 @@ func requireRecovering(t *testing.T, msg client.Message, performanceID string) {
 //
 // This test stops the shared worker, so it does not run in parallel.
 func TestARunSurvivesAWorkerRestart(t *testing.T) {
+	requireLocal(t, "the worker is stopped and restarted")
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	restartWorkerAfter(t)
@@ -79,6 +80,7 @@ func TestARunSurvivesAWorkerRestart(t *testing.T) {
 //
 // This test stops the shared worker, so it does not run in parallel.
 func TestConnectingWhileTheWorkerIsDownSaysRecovering(t *testing.T) {
+	requireLocal(t, "the fake providers read their scripts from the worker's disk, and the worker is stopped")
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	restartWorkerAfter(t)
@@ -224,6 +226,7 @@ func TestAMissingWorkflowIsRepairedByStartNotByConnecting(t *testing.T) {
 // timeout does: the first browser to connect finds out, the row is marked
 // failed, and everyone in the room is told.
 func TestConnectingToADeadRunMarksItFailed(t *testing.T) {
+	requireLocal(t, "a workflow is terminated from outside")
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()

@@ -1,4 +1,4 @@
-.PHONY: dev infra infra-down migrate server worker web director test test-verbose e2e e2e-verbose web-check web-e2e
+.PHONY: dev infra infra-down migrate server worker web director test test-verbose e2e e2e-verbose web-check web-e2e web-e2e-prod infra-check
 
 # Start everything; Ctrl-C stops everything.
 dev:
@@ -54,3 +54,14 @@ web-check:
 web-e2e:
 	cd web && { [ -d node_modules ] || npm install; } && npx playwright install chromium \
 		&& E2E_RUN_ID=$$(date +%s) npx playwright test
+
+# The same browser tests against the production build (`next build`, then
+# `next start`), which is what the web container runs.
+web-e2e-prod:
+	cd web && { [ -d node_modules ] || npm install; } && npx playwright install chromium \
+		&& WEB_E2E_PRODUCTION=1 E2E_RUN_ID=$$(date +%s) npx playwright test
+
+# Type-check the CDK app and test the templates it produces. Needs no AWS
+# account: nothing is deployed or looked up.
+infra-check:
+	cd infra && { [ -d node_modules ] || npm install; } && npm run check && npm test

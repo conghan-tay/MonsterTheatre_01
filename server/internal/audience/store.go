@@ -4,6 +4,7 @@ package audience
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"time"
 
@@ -86,7 +87,7 @@ func (s *PGStore) Admit(ctx context.Context, roomID string, credentialHash []byt
 		_, err = tx.Exec(ctx,
 			`INSERT INTO audience_sessions (id, room_id, credential_hash, nickname, created_at, last_seen_at, expires_at)
 			 VALUES ($1, $2, $3, $4, $5, $5, $6)`,
-			id, roomID, credentialHash, nickname, now, expiresAt)
+			id, roomID, hashText(credentialHash), nickname, now, expiresAt)
 		return err
 	})
 	if err != nil {
@@ -99,7 +100,7 @@ func (s *PGStore) SessionByHash(ctx context.Context, credentialHash []byte) (Ses
 	var sess Session
 	err := s.Pool.QueryRow(ctx,
 		`SELECT id, room_id, expires_at FROM audience_sessions WHERE credential_hash = $1`,
-		credentialHash).Scan(&sess.ID, &sess.RoomID, &sess.ExpiresAt)
+		hashText(credentialHash)).Scan(&sess.ID, &sess.RoomID, &sess.ExpiresAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return sess, ErrNotFound
 	}
@@ -130,4 +131,11 @@ func (s *PGStore) Nicknames(ctx context.Context, roomID string) ([]string, error
 		return nil, err
 	}
 	return pgx.CollectRows(rows, pgx.RowTo[string])
+}
+
+// hashText is how a credential hash is stored: as its hex. The column is
+// unique, so it is indexed, and Aurora DSQL cannot index bytea
+// (docs/decisions.md, D047).
+func hashText(credentialHash []byte) string {
+	return hex.EncodeToString(credentialHash)
 }

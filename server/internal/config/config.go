@@ -12,13 +12,21 @@ import (
 // Config holds the settings shared by the server, worker, and migrate commands.
 // Every field has a default that works against the local development stack.
 type Config struct {
-	HTTPAddr          string
-	DatabaseURL       string
+	HTTPAddr    string
+	DatabaseURL string
+	// DSQLEndpoint is the Aurora DSQL cluster's endpoint. Set, it replaces
+	// DatabaseURL: the pool is built by the DSQL connector, which signs in
+	// with the process's AWS identity as DSQLUser (docs/decisions.md, D032).
+	DSQLEndpoint      string
+	DSQLUser          string
 	RedisURL          string
 	TemporalAddress   string
 	TemporalNamespace string
 	TemporalTaskQueue string
-	LogLevel          string
+	// TemporalAPIKey is a Temporal Cloud API key. Set, the connection uses
+	// TLS and the key; empty is the local dev server, which needs neither.
+	TemporalAPIKey string
+	LogLevel       string
 	// CookieSecure marks session cookies Secure (HTTPS only). It is on unless
 	// COOKIE_SECURE is explicitly "false" or "0", which local HTTP needs.
 	CookieSecure bool
@@ -29,6 +37,9 @@ type Config struct {
 	PublicBaseURL string
 	// ObjectStoreDir is where the filesystem object store keeps portraits and audio.
 	ObjectStoreDir string
+	// S3Bucket is the bucket portraits and audio are kept in. Set, it
+	// replaces ObjectStoreDir.
+	S3Bucket string
 	// VoiceIDA and VoiceIDB are the two fixed voices, recorded on each room
 	// when it is created.
 	VoiceIDA string
@@ -66,15 +77,19 @@ func Load() Config {
 	return Config{
 		HTTPAddr:           env("HTTP_ADDR", ":8080"),
 		DatabaseURL:        env("DATABASE_URL", "postgres://monster:monster@localhost:5432/monstertheatre?sslmode=disable"),
+		DSQLEndpoint:       os.Getenv("DSQL_ENDPOINT"),
+		DSQLUser:           env("DSQL_USER", "admin"),
 		RedisURL:           env("REDIS_URL", "redis://localhost:6379/0"),
 		TemporalAddress:    env("TEMPORAL_ADDRESS", "localhost:7233"),
 		TemporalNamespace:  env("TEMPORAL_NAMESPACE", "default"),
 		TemporalTaskQueue:  env("TEMPORAL_TASK_QUEUE", "performance"),
+		TemporalAPIKey:     os.Getenv("TEMPORAL_API_KEY"),
 		LogLevel:           env("LOG_LEVEL", "info"),
 		CookieSecure:       envBool("COOKIE_SECURE", true),
 		ShareLinkSecret:    os.Getenv("SHARE_LINK_SECRET"),
 		PublicBaseURL:      env("PUBLIC_BASE_URL", "http://localhost:3000"),
 		ObjectStoreDir:     env("OBJECT_STORE_DIR", ".data/objects"),
+		S3Bucket:           os.Getenv("S3_BUCKET"),
 		VoiceIDA:           env("VOICE_ID_A", "voice-a-placeholder"),
 		VoiceIDB:           env("VOICE_ID_B", "voice-b-placeholder"),
 		LLMProvider:        env("LLM_PROVIDER", "fake"),

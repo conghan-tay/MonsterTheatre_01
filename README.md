@@ -203,7 +203,7 @@ Both are isolated from `make dev` (their own database, their own Temporal server
 
 ## Deploying to AWS
 
-**Status, 2026-10-12: the data stack is deployed and kept. The application stack was deployed in test mode, passed the end-to-end suite (32 run, 14 skipped), and was then destroyed to stop the hourly cost; `cdk deploy MonsterTheatreApp` brings it back with a new address. Nothing has been run in live mode.** Design: [system design](docs/system-design.md), sections 2 and 7, and decisions D047 to D052.
+**Status, 2026-10-13: every command below has been run. The application stack passed the end-to-end suite in test mode on 2026-10-12 (32 run, 14 skipped), was destroyed, and was deployed again in live mode on 2026-10-13, where one performance with the real providers completed from three devices. Whether it is up right now depends on the last teardown; `aws cloudformation describe-stacks --stack-name MonsterTheatreApp` says.** Design: [system design](docs/system-design.md), sections 2 and 7, and decisions D047 to D052.
 
 What runs where: CloudFront (the public HTTPS address) in front of an internal load balancer; three Fargate tasks (web, server, worker); Aurora DSQL; one Valkey node on ElastiCache; a private S3 bucket; Temporal Cloud. Region `ap-southeast-1`.
 

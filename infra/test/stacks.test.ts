@@ -282,3 +282,17 @@ test("no resource name or description contains an em dash", () => {
   assert.doesNotMatch(JSON.stringify(data.toJSON()), /—/);
   assert.doesNotMatch(JSON.stringify(app.toJSON()), /—/);
 });
+
+// Switching a deployment between test and live must touch the app stack
+// only. If the data stack exported the provider keys' names in live mode
+// alone, going back to test would mean removing exports the running app
+// stack still uses, which CloudFormation refuses.
+test("the data stack is the same in both modes", () => {
+  const test = synth("test").data.toJSON();
+  const live = synth("live").data.toJSON();
+  assert.deepEqual(test, live);
+  const exported = JSON.stringify(test.Outputs);
+  for (const secret of ["AnthropicApiKey", "ElevenLabsApiKey", "TemporalApiKey", "ShareLinkSecret"]) {
+    assert.match(exported, new RegExp(`"Ref":"${secret}`), `${secret} is exported`);
+  }
+});

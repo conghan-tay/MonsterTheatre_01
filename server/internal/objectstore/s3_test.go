@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -24,6 +25,9 @@ type fakeS3 struct {
 	ranges []string
 	heads  int
 	puts   []*s3.PutObjectInput
+	// lists and deleteCalls count the calls DeletePrefix makes.
+	lists       int
+	deleteCalls int
 }
 
 type fakeObject struct {
@@ -68,6 +72,43 @@ func (f *fakeS3) PutObject(_ context.Context, in *s3.PutObjectInput, _ ...func(*
 	f.puts = append(f.puts, in)
 	f.objects[*in.Bucket+"/"+*in.Key] = fakeObject{body: body, contentType: aws.ToString(in.ContentType)}
 	return &s3.PutObjectOutput{}, nil
+}
+
+// ListObjectsV2 returns keys in order, at most maxPage a call, and continues
+// from the token, which is the last key of the previous page.
+const maxPage = 1000
+
+func (f *fakeS3) ListObjectsV2(_ context.Context, in *s3.ListObjectsV2Input, _ ...func(*s3.Options)) (*s3.ListObjectsV2Output, error) {
+	f.lists++
+	var keys []string
+	for full := range f.objects {
+		key, found := strings.CutPrefix(full, *in.Bucket+"/")
+		if found && strings.HasPrefix(key, aws.ToString(in.Prefix)) && key > aws.ToString(in.ContinuationToken) {
+			keys = append(keys, key)
+		}
+	}
+	slices.Sort(keys)
+	out := &s3.ListObjectsV2Output{IsTruncated: aws.Bool(false)}
+	if len(keys) > maxPage {
+		keys = keys[:maxPage]
+		out.IsTruncated = aws.Bool(true)
+		out.NextContinuationToken = aws.String(keys[len(keys)-1])
+	}
+	for _, key := range keys {
+		out.Contents = append(out.Contents, types.Object{Key: aws.String(key)})
+	}
+	return out, nil
+}
+
+func (f *fakeS3) DeleteObjects(_ context.Context, in *s3.DeleteObjectsInput, _ ...func(*s3.Options)) (*s3.DeleteObjectsOutput, error) {
+	if len(in.Delete.Objects) > maxPage {
+		return nil, fmt.Errorf("fake S3: %d keys in one delete; the limit is %d", len(in.Delete.Objects), maxPage)
+	}
+	f.deleteCalls++
+	for _, obj := range in.Delete.Objects {
+		delete(f.objects, *in.Bucket+"/"+*obj.Key)
+	}
+	return &s3.DeleteObjectsOutput{}, nil
 }
 
 func TestS3PutThenGetReturnsBodySizeAndContentType(t *testing.T) {
@@ -220,4 +261,59 @@ func TestS3BodyAnswersARangeRequestThroughServeContent(t *testing.T) {
 	require.Equal(t, "bytes 2-5/10", rec.Header().Get("Content-Range"))
 	require.Equal(t, "2345", rec.Body.String())
 	require.Equal(t, []string{"bytes=2-"}, api.ranges)
+}
+
+func keysOf(f *fakeS3) []string {
+	var keys []string
+	for key := range f.objects {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+	return keys
+}
+
+func TestS3DeletePrefixRemovesOnlyWhatIsUnderThePrefix(t *testing.T) {
+	api := newFakeS3()
+	store := NewS3(api, "theatre")
+	ctx := context.Background()
+	for _, key := range []string{"rooms/r1/portrait-a", "rooms/r1/portrait-b", "rooms/r10/portrait-a", "performances/p1/turn-1.mp3"} {
+		require.NoError(t, store.Put(ctx, key, strings.NewReader("x"), "text/plain"))
+	}
+
+	removed, err := store.DeletePrefix(ctx, "rooms/r1/")
+	require.NoError(t, err)
+	require.Equal(t, 2, removed)
+	require.Equal(t, []string{"theatre/performances/p1/turn-1.mp3", "theatre/rooms/r10/portrait-a"}, keysOf(api),
+		"r10 is a different room, though its key starts with the same letters")
+
+	removed, err = store.DeletePrefix(ctx, "rooms/r1/")
+	require.NoError(t, err)
+	require.Zero(t, removed, "nothing left under it")
+}
+
+func TestS3DeletePrefixWorksThroughMoreKeysThanOnePageHolds(t *testing.T) {
+	api := newFakeS3()
+	store := NewS3(api, "theatre")
+	ctx := context.Background()
+	const many = 2*maxPage + 5
+	for i := range many {
+		api.objects[fmt.Sprintf("theatre/performances/p%05d/turn-1.mp3", i)] = fakeObject{}
+	}
+	api.objects["theatre/rooms/r1/portrait-a"] = fakeObject{}
+
+	removed, err := store.DeletePrefix(ctx, "performances/")
+	require.NoError(t, err)
+	require.Equal(t, many, removed)
+	require.Equal(t, []string{"theatre/rooms/r1/portrait-a"}, keysOf(api))
+	require.Equal(t, 3, api.deleteCalls, "one delete per page listed, none over the limit")
+}
+
+func TestS3DeletePrefixRefusesAPrefixThatIsNotADirectory(t *testing.T) {
+	api := newFakeS3()
+	store := NewS3(api, "theatre")
+	for _, prefix := range []string{"", "/", "rooms", "rooms/r1", "../", "rooms/../", "/rooms/", "rooms//"} {
+		_, err := store.DeletePrefix(context.Background(), prefix)
+		require.ErrorIs(t, err, ErrInvalidKey, "%q", prefix)
+	}
+	require.Zero(t, api.lists, "nothing was asked of S3")
 }

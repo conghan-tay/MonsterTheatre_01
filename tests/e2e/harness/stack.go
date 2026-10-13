@@ -427,6 +427,54 @@ func (s *Stack) StoredObject(key string) ([]byte, error) {
 	return os.ReadFile(filepath.Join(s.workDir, "objects", filepath.FromSlash(key)))
 }
 
+// ScratchDatabase creates an empty, migrated database of its own in the test
+// PostgreSQL, for a test that must not share rows with the others (one that
+// deletes everything, say). It returns the connection string; drop removes
+// the database again.
+func (s *Stack) ScratchDatabase(ctx context.Context) (url string, drop func(), err error) {
+	suffix := make([]byte, 6)
+	if _, err := rand.Read(suffix); err != nil {
+		return "", nil, err
+	}
+	name := "monstertheatre_scratch_" + hex.EncodeToString(suffix)
+
+	admin, err := pgx.Connect(ctx, adminDatabaseURL)
+	if err != nil {
+		return "", nil, err
+	}
+	defer admin.Close(ctx)
+	// The name is made here from hex digits, never from input.
+	if _, err := admin.Exec(ctx, "CREATE DATABASE "+name); err != nil {
+		return "", nil, err
+	}
+	drop = func() {
+		conn, err := pgx.Connect(context.Background(), adminDatabaseURL)
+		if err != nil {
+			return
+		}
+		defer conn.Close(context.Background())
+		_, _ = conn.Exec(context.Background(), "DROP DATABASE IF EXISTS "+name+" WITH (FORCE)")
+	}
+
+	url = "postgres://monster:monster@localhost:5432/" + name + "?sslmode=disable"
+	migrate := s.command(ctx, s.bin("migrate"), "up")
+	migrate.Env = append(migrate.Env, "DATABASE_URL="+url)
+	if out, err := migrate.CombinedOutput(); err != nil {
+		drop()
+		return "", nil, fmt.Errorf("migrate scratch database: %w\n%s", err, out)
+	}
+	return url, drop, nil
+}
+
+// RunAdmin runs the dbadmin command against the given database and object
+// directory and returns what it printed.
+func (s *Stack) RunAdmin(ctx context.Context, databaseURL, objectDir string, args ...string) (string, error) {
+	cmd := s.command(ctx, s.bin("dbadmin"), args...)
+	cmd.Env = append(cmd.Env, "DATABASE_URL="+databaseURL, "OBJECT_STORE_DIR="+objectDir)
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
 // StartWorker starts the worker process. Start calls it; tests call it again
 // after StopWorker.
 func (s *Stack) StartWorker() error {
@@ -486,7 +534,7 @@ func (s *Stack) startContainers(ctx context.Context) error {
 
 func (s *Stack) build(ctx context.Context) error {
 	cmd := exec.CommandContext(ctx, "go", "build", "-o", filepath.Join(s.workDir, "bin")+string(os.PathSeparator),
-		"./cmd/server", "./cmd/worker", "./cmd/migrate", "./cmd/adddirector")
+		"./cmd/server", "./cmd/worker", "./cmd/migrate", "./cmd/adddirector", "./cmd/dbadmin")
 	cmd.Dir = filepath.Join(s.repoRoot, "server")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("build server binaries: %w\n%s", err, out)

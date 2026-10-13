@@ -39,6 +39,8 @@ Other targets:
 | `make web-e2e-prod` | The same browser tests against the production build (`next build`, then `next start`) |
 | `make web-check` | Lints and type-checks the web app |
 | `make infra-check` | Type-checks the CDK app and tests the templates it produces; needs no AWS account |
+| `make aws-test` | Tests `scripts/aws.sh` with stand-ins for the AWS and CDK commands; needs no AWS account |
+| `make aws-status` and other `make aws-<command>` | The AWS deployment; see "Deploying to AWS" |
 | `make server` / `make worker` / `make web` | Runs one process on its own |
 
 Configuration comes from environment variables, all with local defaults. See [.env.example](.env.example).
@@ -203,7 +205,7 @@ Both are isolated from `make dev` (their own database, their own Temporal server
 
 ## Deploying to AWS
 
-**Status, 2026-10-13: every command below has been run. The application stack passed the end-to-end suite in test mode on 2026-10-12 (32 run, 14 skipped), was destroyed, and was deployed again in live mode on 2026-10-13, where one performance with the real providers completed from three devices. Whether it is up right now depends on the last teardown; `aws cloudformation describe-stacks --stack-name MonsterTheatreApp` says.** Design: [system design](docs/system-design.md), sections 2 and 7, and decisions D047 to D052.
+**Status, 2026-10-13: the deployment has been made, tested, and run live (below); not every command of the script has been run against the real account, and the ones that have not say so. The application stack passed the end-to-end suite in test mode on 2026-10-12 (32 run, 14 skipped), was destroyed, and was deployed again in live mode on 2026-10-13, where one performance with the real providers completed from three devices. Whether it is up right now depends on the last teardown; `./scripts/aws.sh status` says.** Design: [system design](docs/system-design.md), sections 2 and 7, and decisions D047 to D052.
 
 What runs where: CloudFront (the public HTTPS address) in front of an internal load balancer; three Fargate tasks (web, server, worker); Aurora DSQL; one Valkey node on ElastiCache; a private S3 bucket; Temporal Cloud. Region `ap-southeast-1`.
 
@@ -215,20 +217,45 @@ There are two stacks. `MonsterTheatreData` (database, bucket, secrets, task role
 2. In Temporal Cloud, create a namespace in AWS `ap-southeast-1` with API-key authentication on, and an API key for it.
 3. `cd infra && npm install && cp config.example.json config.json`, then fill `config.json` in: the namespace's address and name, and the two ElevenLabs voice IDs. It is not secret and is not committed.
 
+### The script
+
+Everything below goes through one script, which reads the endpoint, bucket, role ARNs, address, and mode from the stacks themselves:
+
+```sh
+./scripts/aws.sh status        # what is deployed, in which mode, at what address, and what it is costing
+```
+
+`make aws-<command>` is the same thing (`make aws-status`, `make aws-deploy-app ARGS=test`). The script signs in as the AWS profile `mt-admin` unless `AWS_PROFILE` says otherwise, refuses to run as the account's root user, and never reads a secret's value. An assistant working in this repository has the same commands as a skill, `.agents/skills/monster-theatre-aws/`, with the rules for when to ask first.
+
+| To | Run |
+| --- | --- |
+| See what is deployed | `./scripts/aws.sh status` |
+| Create or update the data stack, apply migrations, grant the database role | `./scripts/aws.sh deploy-data` |
+| Deploy the application with stand-in providers (spends nothing) | `./scripts/aws.sh deploy-app test` |
+| Deploy the application with Claude and ElevenLabs | `./scripts/aws.sh deploy-app live` |
+| Check a deployment: routes, services, the worker's providers, `cdk diff` | `./scripts/aws.sh verify` |
+| Run the end-to-end suite against it (test mode only) | `./scripts/aws.sh e2e` |
+| Deploy test, run the suite, clear its leftovers, go live | `./scripts/aws.sh cycle` |
+| Remove data | `./scripts/aws.sh clear-data test\|rooms\|all` |
+| Tear down the application stack | `./scripts/aws.sh destroy-app` (and `leftovers` to check nothing remains) |
+| Tear down the data stack | `./scripts/aws.sh destroy-data --yes-delete-everything` |
+| Read logs, count rows, look at data | `./scripts/aws.sh logs worker`, `counts`, `query "SELECT ..."` |
+
 ### Deploy
 
-```sh
-cd infra
-npx cdk bootstrap aws://ACCOUNT_ID/ap-southeast-1      # once per account
-npx cdk deploy MonsterTheatreData
-```
-
-Its outputs are needed below:
+Once per account:
 
 ```sh
-aws cloudformation describe-stacks --region ap-southeast-1 --stack-name MonsterTheatreData \
-  --query 'Stacks[0].Outputs[].[OutputKey,OutputValue]' --output table
+cd infra && npx cdk bootstrap aws://ACCOUNT_ID/ap-southeast-1
 ```
+
+Then the data stack, with its schema and the application's database role:
+
+```sh
+./scripts/aws.sh deploy-data
+```
+
+It ends by saying which of the three keys still hold a placeholder.
 
 #### Put the three keys into Secrets Manager
 
@@ -294,43 +321,43 @@ aws secretsmanager list-secrets --region ap-southeast-1 \
 
 Do not use `get-secret-value` to check: it prints the key.
 
-Create the schema and the application's database role. Both run as the cluster's `admin` role, with your AWS identity:
+Then the application. In **test** mode it runs the stand-in providers with the test suite's short timings, and the worker is not given the provider keys, so it cannot spend anything on Claude or ElevenLabs. In **live** mode every press of Start is a paid run:
 
 ```sh
-cd server
-export DSQL_ENDPOINT=<DsqlEndpoint output>
-go run ./cmd/migrate up
-go run ./cmd/migrate grant <ServerRoleArn output> <WorkerRoleArn output>
+./scripts/aws.sh deploy-app test
+./scripts/aws.sh deploy-app live
 ```
 
-Then the application. Without `-c mode=live` it runs the stand-in providers with the test suite's short timings, and the worker is not given the provider keys, so it cannot spend anything on Claude or ElevenLabs:
+Either one takes 15 to 20 minutes from nothing. Run against a stack that is already up, it switches the mode in place in about five minutes and the address stays the same. It finishes by checking the deployment and printing the worker's startup line, which names the providers it will call. `status` prints the command for creating a director account.
 
-```sh
-cd infra
-npx cdk deploy MonsterTheatreApp                 # test mode
-npx cdk deploy MonsterTheatreApp -c mode=live    # real providers: paid
-```
-
-The `Url` output is the address to open. Create a director with `DSQL_ENDPOINT` still set: `make director USERNAME=alice`.
-
-A key changed later reaches a task only when it restarts: `aws ecs update-service --region ap-southeast-1 --cluster <ClusterName output> --service <service> --force-new-deployment`.
+A key changed later reaches a task only when it restarts, which any `deploy-app` does.
 
 ### Checking a deployment
 
-The object store against the real bucket (writes one small object under `smoke/` and deletes it):
-
 ```sh
-cd server && S3_SMOKE_BUCKET=<BucketName output> AWS_REGION=ap-southeast-1 go test ./internal/objectstore/ -run Smoke -v
+./scripts/aws.sh verify     # routes, services, the worker's providers, cdk diff
+./scripts/aws.sh smoke      # the object store against the real bucket: writes one small object and deletes it
+./scripts/aws.sh e2e        # the end-to-end suite, against a deployment in test mode
 ```
 
-The end-to-end suite against a deployment in **test mode**. It creates directors and reads rows and objects from this machine, as `admin` on the cluster:
+`e2e` refuses a deployment in live mode, where each of its performances would be a paid run. It creates directors and reads rows and objects from this machine, as `admin` on the cluster. Of its 52 top-level tests, 20 skip themselves there, each saying why, and stay covered by `make e2e`: six need fake-provider scripts on the worker's disk, three stop the worker, three need a second server, one terminates a workflow, one asks `/healthz`, which is not reachable from outside, and six need a database of their own to empty.
+
+The whole sequence in one command: `./scripts/aws.sh cycle` deploys in test mode, runs the suite, stops if anything failed, clears what the suite left behind, and switches to live. `cycle --teardown-between` destroys and recreates the application stack between the two instead of switching in place, which takes about 35 minutes longer and changes the address.
+
+### Clearing data
 
 ```sh
-cd tests/e2e && E2E_BASE_URL=<Url output> E2E_DSQL_ENDPOINT=<DsqlEndpoint output> \
-  E2E_S3_BUCKET=<BucketName output> go test . -count=1 -v
+./scripts/aws.sh clear-data test          # says what it would remove
+./scripts/aws.sh clear-data test --yes    # removes it
 ```
 
-Of its 46 top-level tests, 14 skip themselves there, each saying why, and stay covered by `make e2e`: six need fake-provider scripts on the worker's disk, three stop the worker, three need a second server, one terminates a workflow, and one asks `/healthz`, which is not reachable from outside.
+| Scope | Removes | Keeps |
+| --- | --- | --- |
+| `test` | The directors the test suites create (named exactly `director-` plus 12 hex digits, or `web-e2e-` plus digits), and their sessions, rooms, audience sessions, performances, portraits, and recordings | Every other director and all they own |
+| `rooms` | Every room, audience session, performance, and stored object | All directors and their logins |
+| `all` | Every row in the five tables and every stored object | The schema, the grants, the migration record, the secrets |
+
+Without `--yes` nothing is changed. `all` takes `--yes-delete-everything` instead. Do not clear while a performance is running. Locally the same thing is `cd server && go run ./cmd/dbadmin clear -scope test`, which works on the dev database and `.data/objects`.
 
 ### Cost
 
@@ -351,13 +378,25 @@ Temporal Cloud is billed separately by Temporal and is not included. A day with 
 
 ### Tearing down
 
-Between demos, remove what is billed by the hour. The database, the bucket, the secrets, and the database grants are untouched, and the next `cdk deploy MonsterTheatreApp` brings it back with a new CloudFront address, so share links sent before stop working:
+Between demos, remove what is billed by the hour. The database, the bucket, the secrets, and the database grants are untouched. The next `deploy-app` brings it back with a new CloudFront address, so share links sent before stop working:
 
 ```sh
-cd infra && npx cdk destroy MonsterTheatreApp
+./scripts/aws.sh destroy-app
 ```
 
-To remove everything: turn off the data stack's termination protection (CloudFormation console) and the cluster's deletion protection (Aurora DSQL console), then `npx cdk destroy MonsterTheatreData`. This deletes every room, recording, and director. The secrets stay recoverable for a while under their names; to create the stack again before that ends, delete each with `aws secretsmanager delete-secret --force-delete-without-recovery`.
+It takes 16 to 20 minutes and then counts what the stack made, straight from each service, to check that nothing is left.
+
+To remove everything else as well:
+
+```sh
+./scripts/aws.sh destroy-data --yes-delete-everything
+```
+
+This turns off the stack's termination protection and the cluster's deletion protection, deletes every room, recording, and director, and deletes the four secrets for good, so that `deploy-data` can create them again at once. The three keys must then be put in again, and every share link ever sent stops working. It refuses while the application stack exists. **This command has not yet been run against the real account; it is covered by tests with stand-in commands only.**
+
+### Without the script
+
+What the script runs, for reference: `npx cdk deploy|destroy <stack> [-c mode=live]` in `infra/`; `go run ./cmd/migrate up` and `go run ./cmd/migrate grant <ServerRoleArn> <WorkerRoleArn>` in `server/` with `DSQL_ENDPOINT` set; and the end-to-end suite with `E2E_BASE_URL`, `E2E_DSQL_ENDPOINT`, and `E2E_S3_BUCKET` set. The stack outputs they need come from `aws cloudformation describe-stacks`.
 
 ## Layout
 

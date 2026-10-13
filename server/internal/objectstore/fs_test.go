@@ -117,3 +117,39 @@ func TestFSGetReturnsABodyThatSeeks(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "6789", string(rest))
 }
+
+func TestFSDeletePrefixRemovesOnlyWhatIsUnderThePrefix(t *testing.T) {
+	store := newStore(t)
+	ctx := context.Background()
+	for _, key := range []string{"rooms/r1/portrait-a", "rooms/r1/portrait-b", "rooms/r10/portrait-a", "performances/p1/turn-1.mp3"} {
+		require.NoError(t, store.Put(ctx, key, strings.NewReader("x"), "text/plain"))
+	}
+
+	removed, err := store.DeletePrefix(ctx, "rooms/r1/")
+	require.NoError(t, err)
+	require.Equal(t, 2, removed, "two objects; their content-type files are not counted")
+
+	_, err = store.Get(ctx, "rooms/r1/portrait-a")
+	require.ErrorIs(t, err, ErrNotFound)
+	for _, key := range []string{"rooms/r10/portrait-a", "performances/p1/turn-1.mp3"} {
+		obj, err := store.Get(ctx, key)
+		require.NoError(t, err, "%s is untouched", key)
+		obj.Body.Close()
+	}
+
+	removed, err = store.DeletePrefix(ctx, "rooms/r1/")
+	require.NoError(t, err)
+	require.Zero(t, removed, "nothing left under it")
+}
+
+func TestFSDeletePrefixRefusesAPrefixThatIsNotADirectory(t *testing.T) {
+	store := newStore(t)
+	require.NoError(t, store.Put(context.Background(), "rooms/r1/portrait-a", strings.NewReader("x"), "text/plain"))
+	for _, prefix := range []string{"", "/", "rooms", "rooms/r1", "../", "rooms/../", "/rooms/", "rooms//"} {
+		_, err := store.DeletePrefix(context.Background(), prefix)
+		require.ErrorIs(t, err, ErrInvalidKey, "%q", prefix)
+	}
+	obj, err := store.Get(context.Background(), "rooms/r1/portrait-a")
+	require.NoError(t, err, "nothing was removed")
+	obj.Body.Close()
+}

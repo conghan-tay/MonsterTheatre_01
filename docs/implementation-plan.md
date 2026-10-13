@@ -389,6 +389,16 @@ Before starting this step, load the relevant AWS skills as the project's instruc
 - A full performance with real providers and at least two remote browsers completes over the public URL.
 - An estimate of the monthly running cost is recorded, with instructions for tearing the stack down between demos.
 
+### After step 15 — operating the deployment
+
+**Done 2026-10-13.** Not one of the fifteen steps. The deployment had been made by hand; this makes its common jobs one command each, so that a person or an assistant can do them quickly and the same way every time.
+
+- **`scripts/aws.sh`:** `status`, `deploy-data`, `deploy-app test|live`, `verify`, `e2e`, `cycle`, `clear-data`, `destroy-app`, `destroy-data`, and a few for looking (`logs`, `counts`, `query`, `leftovers`). It reads what it needs from the stacks' outputs, refuses the root user, refuses the end-to-end suite against a live deployment, and never reads a secret's value. 33 tests with stand-in commands (`make aws-test`).
+- **`server/cmd/dbadmin`:** `counts`; `clear` in three scopes (what the test suites left; everything but directors; everything), a dry run unless told; and `query`, one read-only statement. The object stores gained a way to delete by prefix, used only by this command.
+- **A project skill,** `.agents/skills/monster-theatre-aws/`, with the commands, their cost and duration, when to ask first, and what has gone wrong before.
+- **One change to the deployment:** the data stack now exports the two provider keys' names in both modes, so a running stack can be switched from live back to test in place.
+- **Run for real:** the in-place cycle (test, the suite at 32 passed and 20 skipped, clearing its leftovers, live) in under seven minutes, and the teardown. The first real runs found two faults in the script that its stand-in tests could not, both since fixed with a test. `destroy-data`, clearing `rooms` or `all` on the cluster, and a cycle with a teardown in between have not been run on AWS.
+
 ## 4. Points to settle along the way
 
 These are items 11 to 16 in [the review](review.md), placed where they come up:

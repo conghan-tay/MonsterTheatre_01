@@ -1,4 +1,4 @@
-.PHONY: dev infra infra-down migrate server worker web director test test-verbose e2e e2e-verbose web-check web-e2e web-e2e-prod infra-check
+.PHONY: dev infra infra-down migrate server worker web director test test-verbose e2e e2e-verbose web-check web-e2e web-e2e-prod infra-check aws-test
 
 # Start everything; Ctrl-C stops everything.
 dev:
@@ -65,3 +65,14 @@ web-e2e-prod:
 # account: nothing is deployed or looked up.
 infra-check:
 	cd infra && { [ -d node_modules ] || npm install; } && npm run check && npm test
+
+# The AWS deployment: `make aws-status`, `make aws-deploy-app ARGS=test`,
+# `make aws-destroy-app`, and so on. Each is ./scripts/aws.sh with that
+# command; the script's first lines list them all.
+aws-%:
+	./scripts/aws.sh $* $(ARGS)
+
+# Tests for scripts/aws.sh, with stand-ins for the AWS and CDK commands.
+# Touches no AWS account. (Listed before the pattern above, so it wins.)
+aws-test:
+	./scripts/aws_test.sh

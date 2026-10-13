@@ -63,6 +63,13 @@ export class DataStack extends Stack {
       generateSecretString: { passwordLength: 64, excludePunctuation: true },
     });
 
+    // Exported whatever the mode. The app stack reads the provider keys
+    // only in live mode; were these exported only then, switching a running
+    // deployment back to test would mean removing exports still in use,
+    // which CloudFormation refuses.
+    this.exportValue(this.anthropicApiKey.secretArn);
+    this.exportValue(this.elevenLabsApiKey.secretArn);
+
     const taskRole = (id: string, description: string) =>
       new iam.Role(this, id, { assumedBy: new iam.ServicePrincipal("ecs-tasks.amazonaws.com"), description });
     this.serverRole = taskRole("ServerTaskRole", "Monster Theatre server task");

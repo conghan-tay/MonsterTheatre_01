@@ -17,6 +17,9 @@ type S3API interface {
 	HeadObject(ctx context.Context, in *s3.HeadObjectInput, opts ...func(*s3.Options)) (*s3.HeadObjectOutput, error)
 	GetObject(ctx context.Context, in *s3.GetObjectInput, opts ...func(*s3.Options)) (*s3.GetObjectOutput, error)
 	PutObject(ctx context.Context, in *s3.PutObjectInput, opts ...func(*s3.Options)) (*s3.PutObjectOutput, error)
+	// The last two are used only by DeletePrefix.
+	ListObjectsV2(ctx context.Context, in *s3.ListObjectsV2Input, opts ...func(*s3.Options)) (*s3.ListObjectsV2Output, error)
+	DeleteObjects(ctx context.Context, in *s3.DeleteObjectsInput, opts ...func(*s3.Options)) (*s3.DeleteObjectsOutput, error)
 }
 
 // S3 stores objects in one bucket, under the same keys as the filesystem
@@ -78,6 +81,51 @@ func (s *S3) Get(ctx context.Context, key string) (*Object, error) {
 		Size:        size,
 		ContentType: aws.ToString(head.ContentType),
 	}, nil
+}
+
+// DeletePrefix lists the keys under the prefix a page at a time and deletes
+// each page as it goes. A page is at most 1,000 keys, which is also the most
+// one delete request may name.
+func (s *S3) DeletePrefix(ctx context.Context, prefix string) (int, error) {
+	if err := checkPrefix(prefix); err != nil {
+		return 0, err
+	}
+	removed := 0
+	var token *string
+	for {
+		page, err := s.client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+			Bucket:            aws.String(s.bucket),
+			Prefix:            aws.String(prefix),
+			ContinuationToken: token,
+		})
+		if err != nil {
+			return removed, fmt.Errorf("list objects: %w", err)
+		}
+		if len(page.Contents) > 0 {
+			keys := make([]types.ObjectIdentifier, len(page.Contents))
+			for i, obj := range page.Contents {
+				keys[i] = types.ObjectIdentifier{Key: obj.Key}
+			}
+			out, err := s.client.DeleteObjects(ctx, &s3.DeleteObjectsInput{
+				Bucket: aws.String(s.bucket),
+				Delete: &types.Delete{Objects: keys, Quiet: aws.Bool(true)},
+			})
+			if err != nil {
+				return removed, fmt.Errorf("delete objects: %w", err)
+			}
+			// S3 answers 200 even when it could not delete some of the keys.
+			if len(out.Errors) > 0 {
+				first := out.Errors[0]
+				return removed, fmt.Errorf("delete objects: %d not deleted, the first %s: %s",
+					len(out.Errors), aws.ToString(first.Key), aws.ToString(first.Message))
+			}
+			removed += len(keys)
+		}
+		if !aws.ToBool(page.IsTruncated) {
+			return removed, nil
+		}
+		token = page.NextContinuationToken
+	}
 }
 
 // isMissing reports whether S3 said there is no such object. HeadObject and

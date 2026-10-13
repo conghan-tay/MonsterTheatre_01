@@ -74,6 +74,35 @@ func (s *FS) Get(_ context.Context, key string) (*Object, error) {
 	return &Object{Body: file, Size: info.Size(), ContentType: string(contentType)}, nil
 }
 
+// DeletePrefix removes the directory the prefix names, with everything in it.
+func (s *FS) DeletePrefix(_ context.Context, prefix string) (int, error) {
+	if err := checkPrefix(prefix); err != nil {
+		return 0, err
+	}
+	dir := filepath.Join(s.root, filepath.FromSlash(prefix))
+	removed := 0
+	err := filepath.WalkDir(dir, func(_ string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		// Each object has a second file holding its content type.
+		if !entry.IsDir() && !strings.HasSuffix(entry.Name(), contentTypeSuffix) {
+			removed++
+		}
+		return nil
+	})
+	if errors.Is(err, fs.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("list objects: %w", err)
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		return 0, fmt.Errorf("delete objects: %w", err)
+	}
+	return removed, nil
+}
+
 // path maps a key to a file path, refusing anything that is not a plain
 // relative path inside the root.
 func (s *FS) path(key string) (string, error) {

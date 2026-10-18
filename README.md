@@ -47,7 +47,7 @@ Configuration comes from environment variables, all with local defaults. See [.e
 
 ## The web app
 
-`make dev` serves it at http://localhost:3000. A director logs in, creates a room from one form, and gets the room's page with its share link and a Start button. Anyone who opens the share link gets the audience page. The director's page lists who has joined, by nickname, as they join. Both show the performance live: the three lines to vote on with a countdown, the winning line, and at the end the premiere, which plays the eight recordings in order. Create an account first (next section).
+`make dev` serves it at http://localhost:3000. A director logs in, creates a room from one form, and gets the room's page with its share link and a Start button. Anyone who opens the share link gets the audience page. The director's page lists who has joined, by nickname, as they join. Both show the performance live: the three lines to vote on with a countdown, the winning line, and at the end the premiere, which plays the eight recordings in order. While each one plays, its speaker takes the stage: their portrait fills the window, with the line beneath it. Create an account first (next section).
 
 The browser only ever talks to port 3000: the web app proxies `/api/*` to the Go server, which is the routing a load balancer does in production.
 

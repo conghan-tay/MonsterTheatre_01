@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { scriptToShow } from "../src/lib/script";
+import { scriptToShow, stageLine } from "../src/lib/script";
 import type { Line } from "../src/lib/theatre";
 
 // Which lines of the script a page shows, and in what order. This is a pure
@@ -30,4 +30,13 @@ test("at the premiere with nothing playing, the whole script is in reading order
 test("the lines it was given are left as they were", () => {
   scriptToShow(lines, "voting", null);
   expect(turns(lines)).toEqual([1, 2, 3]);
+});
+
+test("the stage shows the line being heard", () => {
+  expect(stageLine(lines, 2)).toBe("two");
+  expect(stageLine(lines, 1)).toBe("one");
+});
+
+test("the stage shows no line for a turn not in the script", () => {
+  expect(stageLine(lines, 4)).toBeUndefined();
 });

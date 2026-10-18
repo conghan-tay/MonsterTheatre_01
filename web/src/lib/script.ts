@@ -16,3 +16,9 @@ export function scriptToShow(lines: Line[], phase: Phase, playingTurn: number | 
   if (playingTurn !== null) return lines.filter((line) => line.turn === playingTurn);
   return lines;
 }
+
+// stageLine is the text of the line being heard at the premiere, shown under
+// its speaker's portrait on the stage; nothing if the script lacks it.
+export function stageLine(lines: Line[], playingTurn: number): string | undefined {
+  return lines.find((line) => line.turn === playingTurn)?.text;
+}

@@ -409,6 +409,21 @@ Before starting this step, load the relevant AWS skills as the project's instruc
 - **Tests:** four new workflow tests: the next round opens while a line is still being voiced; the premiere waits, and everything is saved in turn order; a child per turn; speech failing on turn 8. One changed: speech failing on turn 2 now stops in turn 3. One new E2E test, turn 2's round opens before turn 1's line is stored, and four browser tests of `nextResult`. Four existing tests changed because they relied on speech holding the parent: speech failure, connecting while the worker is down, refusing audio mid-run, and the browser test of the winner view.
 - **Not measured:** the time saved with the real providers. No paid run was made.
 
+### After step 15 — the speaker takes the stage
+
+**Done 2026-10-18.** Not one of the fifteen steps. Asked for by the user. Decision: D054. Web only.
+
+- **`web/src/components/Stage.tsx`:** while a premiere recording plays, a near-black layer over the whole window shows the speaker's portrait, as large as it fits at its own shape, and the line beneath it. It is drawn into the body through a portal; `Theatre` renders it from `usePremiere`'s playing clip, and `stageLine` (`web/src/lib/script.ts`) finds the line.
+- **Tests:** two rule tests for `stageLine`. One browser test holds back turns 2 and 3's recordings, so that turn 1, then turn 2, stays on stage. It checks, at 1280×720 and 390×844:
+  - The layer is the whole window.
+  - The one image is the right character's, at its own shape, and most of the window.
+  - The line sits just beneath it, and the text is only the line.
+  - It goes away when playback ends.
+
+  The browser tests' portraits are now 20×30 and 30×20 instead of 1×1, so that the shape is tested.
+- **Not checked:** Safari, Firefox, real phones, and real portraits.
+
+## 4. Points to settle along the way
 
 These are items 11 to 16 in [the review](review.md), placed where they come up:
 

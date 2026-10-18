@@ -58,6 +58,13 @@ func requireFailed(t *testing.T, ctx context.Context, director *client.DirectorC
 	t.Helper()
 	failed, err := conn.NextUpdate(ctx)
 	require.NoError(t, err, "waiting for the failed update")
+	checkFailed(t, ctx, director, room, started, failed, revision, turn, lines, code)
+	return failed
+}
+
+// checkFailed is requireFailed for a failed update already read.
+func checkFailed(t *testing.T, ctx context.Context, director *client.DirectorClient, room client.RoomView, started client.StartResponse, failed client.Message, revision, turn, lines int, code string) {
+	t.Helper()
 	require.Equal(t, client.PhaseFailed, failed.State.Phase, "message: %s", failed.Raw)
 	require.Equal(t, revision, failed.Revision, "the failure is one revision after the last update; message: %s", failed.Raw)
 	require.Equal(t, turn, failed.State.Turn, "message: %s", failed.Raw)
@@ -110,7 +117,6 @@ func requireFailed(t *testing.T, ctx context.Context, director *client.DirectorC
 		return err == nil && reply.Type == client.TypeError
 	}, 5*time.Second, 100*time.Millisecond, "last reply: %s", reply.Raw)
 	require.Equal(t, "vote_not_delivered", reply.Code)
-	return failed
 }
 
 func audioKey(performanceID string, turn int) string {
@@ -129,12 +135,29 @@ func TestSpeechFailingPastItsLimitFailsTheRun(t *testing.T) {
 		Failures: []fixtures.Failure{{Op: fixtures.OpSpeech, Turn: 2, Attempts: fixtures.Always}},
 	})
 
-	// Turn 1 and turn 2's round go as usual: the line is only voiced after
-	// its winner is announced.
-	readUpdates(t, ctx, conn, 1, 6)
-	// Turn 2's line was chosen and shown, so it is among the lines kept,
-	// although it was never voiced.
-	requireFailed(t, ctx, director, room, conn, started, 7, 2, 2, "speech_failed")
+	// Turns 1 and 2 go as usual.
+	before := readUpdates(t, ctx, conn, 1, 6)[5]
+	// Turn 2's line is voiced in the background while the run goes on, so
+	// the failure lands a few seconds later, in turn 3 or after (D053). Until
+	// then the updates are those of a normal run.
+	last := 6
+	for {
+		msg, err := conn.NextUpdate(ctx)
+		require.NoError(t, err, "waiting for revision %d", last+1)
+		if msg.State.Phase == client.PhaseFailed {
+			require.GreaterOrEqual(t, msg.State.Turn, 3, "message: %s", msg.Raw)
+			// Turn 2's line was chosen and shown, so it is among the lines
+			// kept, although it was never voiced.
+			checkFailed(t, ctx, director, room, started, msg, last+1, before.State.Turn, len(before.State.Lines), "speech_failed")
+			break
+		}
+		require.Equal(t, last+1, msg.Revision, "message: %s", msg.Raw)
+		phase, turn := expectedStep(msg.Revision)
+		require.Equal(t, phase, msg.State.Phase, "message: %s", msg.Raw)
+		require.Equal(t, turn, msg.State.Turn, "message: %s", msg.Raw)
+		require.Less(t, msg.Revision, lastRevision, "the run did not reach its premiere; message: %s", msg.Raw)
+		last, before = msg.Revision, msg
+	}
 
 	_, err := stack.StoredObject(audioKey(started.PerformanceID, 1))
 	require.NoError(t, err, "turn 1 was voiced before the failure")
@@ -144,6 +167,34 @@ func TestSpeechFailingPastItsLimitFailsTheRun(t *testing.T) {
 	// Step 12: a failed run's recordings are never served.
 	resp, err := director.FetchAudio(ctx, audioURL(started.PerformanceID, 1))
 	requireRefused(t, resp, err, http.StatusConflict, "performance_not_completed", "turn 1 of a failed run")
+}
+
+// D053: a turn's line is tagged and voiced in the background, and the next
+// round opens without waiting for it. The premiere waits for every line.
+func TestTheNextRoundOpensBeforeTheLineIsVoiced(t *testing.T) {
+	requireLocal(t, "the fake providers read their scripts from the worker's disk")
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	// Voicing turn 1 takes two failed attempts first, about three seconds.
+	_, room, conn, started := scriptedRoom(t, ctx, fixtures.Script{
+		Failures: []fixtures.Failure{{Op: fixtures.OpSpeech, Turn: 1, Attempts: 2}},
+	})
+
+	// Revision 5 is turn 2's round, open while turn 1 is still being voiced.
+	readUpdates(t, ctx, conn, 1, 5)
+	_, err := stack.StoredObject(audioKey(started.PerformanceID, 1))
+	require.Error(t, err, "turn 2's round opened before turn 1's line was voiced")
+
+	readUpdates(t, ctx, conn, 6, lastRevision-5)
+	row, _, err := stack.PerformanceRow(ctx, room.RoomID)
+	require.NoError(t, err)
+	require.Equal(t, "completed", row.Status)
+	for turn := 1; turn <= turns; turn++ {
+		_, err := stack.StoredObject(audioKey(started.PerformanceID, turn))
+		require.NoError(t, err, "turn %d was voiced before the premiere", turn)
+	}
 }
 
 // S9 (first part): choice generation that fails briefly is retried, and the

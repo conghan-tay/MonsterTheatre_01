@@ -86,10 +86,12 @@ func TestConnectingWhileTheWorkerIsDownSaysRecovering(t *testing.T) {
 	restartWorkerAfter(t)
 
 	director, room, _ := newRoom(t, ctx)
-	// Voicing turn 1 takes two retries, a few seconds, so that when the
-	// worker returns the performance is still in turn 1 for a moment.
+	// Writing turn 2's lines takes two retries, a few seconds, so that when
+	// the worker returns the performance is still in turn 1 or just past it
+	// for a moment. (Voicing turn 1 no longer holds it there: that runs in
+	// the background, D053.)
 	fixtures.Script{
-		Failures: []fixtures.Failure{{Op: fixtures.OpSpeech, Turn: 1, Attempts: 2}},
+		Failures: []fixtures.Failure{{Op: fixtures.OpChoices, Turn: 2, Attempts: 2}},
 	}.Write(t, stack.ScriptDir, room.RoomID)
 	member := enteredMember(t, ctx, room.ShareLink)
 	first, err := member.ConnectRoom(ctx, room.RoomID)
@@ -99,8 +101,9 @@ func TestConnectingWhileTheWorkerIsDownSaysRecovering(t *testing.T) {
 
 	status, started := start(t, ctx, director.Client, room.RoomID)
 	require.Equal(t, http.StatusCreated, status)
-	_, err = first.WaitForPhase(ctx, client.PhaseVoting, 1)
+	opened, err := first.WaitForPhase(ctx, client.PhaseVoting, 1)
 	require.NoError(t, err)
+	require.Len(t, opened.State.Choices, 3)
 	vote(t, ctx, first, 1, "c2")
 
 	require.NoError(t, stack.StopWorker())
@@ -128,9 +131,20 @@ func TestConnectingWhileTheWorkerIsDownSaysRecovering(t *testing.T) {
 		real, err = late.Resync(ctx)
 		return err == nil && real.State.Phase != client.PhaseRecovering
 	}, 30*time.Second, resyncPause, "last snapshot: %s", real.Raw)
-	require.Equal(t, 1, real.State.Turn, "snapshot: %s", real.Raw)
-	require.Contains(t, []string{client.PhaseVoting, client.PhasePreparingLine}, real.State.Phase, "snapshot: %s", real.Raw)
-	require.Equal(t, "c2", real.State.YourVote, "snapshot: %s", real.Raw)
+	// Either still in turn 1, with this member's vote, or turn 2's lines are
+	// being written, and the vote shows in turn 1's line: it was the only
+	// vote, so its choice won.
+	switch real.State.Turn {
+	case 1:
+		require.Contains(t, []string{client.PhaseVoting, client.PhasePreparingLine}, real.State.Phase, "snapshot: %s", real.Raw)
+		require.Equal(t, "c2", real.State.YourVote, "snapshot: %s", real.Raw)
+	case 2:
+		require.Equal(t, client.PhaseGenerating, real.State.Phase, "snapshot: %s", real.Raw)
+		require.Len(t, real.State.Lines, 1, "snapshot: %s", real.Raw)
+		require.Equal(t, opened.State.Choices[1].Text, real.State.Lines[0].Text, "the member's vote, c2, won turn 1; snapshot: %s", real.Raw)
+	default:
+		require.Failf(t, "the snapshot is past turn 2's writing", "snapshot: %s", real.Raw)
+	}
 	require.Equal(t, started.PerformanceID, real.State.PerformanceID)
 
 	// And from there the run's updates, each one revision on.

@@ -129,7 +129,7 @@ curl -b cookies.txt -X POST -H 'Content-Type: application/json' -d '{}' \
 
 The response is `{"performanceId": "...", "roomId": "...", "status": "running"}`, with `201` the first time and `200` after that: a room has one performance, and pressing Start again returns it.
 
-The worker then runs eight turns. Each has a ten-second voting window, so a run takes about 80 seconds. The choice with the most votes wins; a tie, or a round nobody voted in, is settled at random. An open room WebSocket (previous section) receives 25 updates: `generating`, `voting`, and `preparing_line` for each turn, then `premiere`. The run is visible in the Temporal UI at http://localhost:8233 as `performance/<performanceId>`, and the eight recordings land in `.data/objects/performances/<performanceId>/`.
+The worker then runs eight turns. Each has a ten-second voting window, so a run takes about 80 seconds. The choice with the most votes wins; a tie, or a round nobody voted in, is settled at random. An open room WebSocket (previous section) receives 25 updates: `generating`, `voting`, and `preparing_line` for each turn, then `premiere`. The run is visible in the Temporal UI at http://localhost:8233 as `performance/<performanceId>`, and the eight recordings land in `.data/objects/performances/<performanceId>/`. Each winning line is tagged and voiced in the background by a child workflow of its own, `performance/<performanceId>/line-<turn>`, while the next turn goes ahead; the premiere waits for all eight.
 
 To vote, send a message on the room WebSocket while a round is open. From the browser console, with `ws` connected as in the previous section:
 

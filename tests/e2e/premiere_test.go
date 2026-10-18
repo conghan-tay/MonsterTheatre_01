@@ -166,11 +166,15 @@ func TestAudioIsRefusedBeforeCompletionAndToOutsiders(t *testing.T) {
 		requireRefused(t, resp, err, http.StatusUnauthorized, "not_logged_in", when+", as a member of another room")
 	}
 
-	// Turn 2 has begun, so turn 1's recording is saved: what follows is
-	// refused by rule, not for want of a file.
+	// Once turn 1's recording is saved, what follows is refused by rule, not
+	// for want of a file. It is voiced in the background (D053), so turn 2
+	// beginning does not mean it is there yet; it soon is, and the run is
+	// still in its early turns.
 	readUpdates(t, ctx, conn, 1, 4)
-	_, err = stack.StoredObject(audioKey(started.PerformanceID, 1))
-	require.NoError(t, err, "turn 1's recording is in the object store")
+	require.Eventually(t, func() bool {
+		_, err := stack.StoredObject(audioKey(started.PerformanceID, 1))
+		return err == nil
+	}, 5*time.Second, 50*time.Millisecond, "turn 1's recording is in the object store")
 
 	for who, browser := range map[string]*client.Client{"the director": director.Client, "an audience member": member.Client} {
 		resp, err := browser.FetchAudio(ctx, turnOne)

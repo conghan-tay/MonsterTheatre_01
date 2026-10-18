@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Audience, ServerMessage, TheatreState } from "./theatre";
+import { nextResult, type Audience, type Result, type ServerMessage, type TheatreState } from "./theatre";
 
 export type Connection = "connecting" | "open" | "reconnecting";
 
@@ -23,6 +23,10 @@ const RECOVERING_RESYNC_MS = 3000;
 // Pass null to stay disconnected, for a page that has not entered yet.
 export function useRoomSocket(roomId: string | null) {
   const [state, setState] = useState<TheatreState | null>(null);
+  // The last round's result, while the next turn's lines are written. It is
+  // worked out here, message by message, because the two updates come
+  // milliseconds apart and the page may never render the first on its own.
+  const [result, setResult] = useState<Result | null>(null);
   const [connection, setConnection] = useState<Connection>("connecting");
   // The choice sent or known for each turn. A vote is shown as soon as it is
   // clicked and withdrawn if the server says it could not be passed on.
@@ -39,6 +43,12 @@ export function useRoomSocket(roomId: string | null) {
     let attempt = 0;
     let retry: ReturnType<typeof setTimeout> | undefined;
     let held = -1; // the revision held; -1 before the first snapshot
+    let kept: Result | null = null; // the result shown, as nextResult says
+    const take = (state: TheatreState) => {
+      kept = nextResult(kept, state);
+      setResult(kept);
+      setState(state);
+    };
 
     const send = (ws: WebSocket, message: object) => {
       if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(message));
@@ -65,7 +75,7 @@ export function useRoomSocket(roomId: string | null) {
           case "snapshot": {
             held = message.revision;
             const { state } = message;
-            setState(state);
+            take(state);
             if (state.yourVote) setVotes((v) => ({ ...v, [state.turn]: state.yourVote! }));
             break;
           }
@@ -73,7 +83,7 @@ export function useRoomSocket(roomId: string | null) {
             if (message.revision <= held) break;
             if (message.revision > held + 1) send(ws, { type: "resync" });
             held = message.revision;
-            setState(message.state);
+            take(message.state);
             break;
           case "audience":
             setAudience({ count: message.count, nicknames: message.nicknames });
@@ -141,5 +151,5 @@ export function useRoomSocket(roomId: string | null) {
     ws.send(JSON.stringify({ type: "vote", turn, choiceId }));
   }, []);
 
-  return { state, connection, votes, vote, voteError, audience };
+  return { state, result, connection, votes, vote, voteError, audience };
 }

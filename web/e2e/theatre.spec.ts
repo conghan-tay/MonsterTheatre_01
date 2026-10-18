@@ -75,11 +75,13 @@ test.describe.serial("a performance, from the pages", () => {
     const roomId = await createRoom(directorPage, `A biscuit goes missing ${Date.now()}`);
     shareLink = await directorPage.getByLabel("Share link").inputValue();
 
-    // Turn 1's line takes two failed attempts to voice, a few seconds, so
-    // the page stays on its winner long enough to be read here.
+    // Turn 2's lines take two failed attempts to write, a few seconds, so
+    // the page stays on turn 1's winner long enough to be read here. (The
+    // winning line is voiced in the background, so slowing that would not
+    // hold the page: D053.)
     fs.writeFileSync(
       path.join(scriptDir, `${roomId}.json`),
-      JSON.stringify({ failures: [{ op: "speech", turn: 1, attempts: 2 }] }),
+      JSON.stringify({ failures: [{ op: "choices", turn: 2, attempts: 2 }] }),
     );
 
     // Two people open the link. Nothing happens until they enter, and
@@ -125,14 +127,15 @@ test.describe.serial("a performance, from the pages", () => {
       await expect(page.getByRole("button", { name: "Turn 1, first option." })).toBeDisabled();
     }
 
-    // The round closes: everyone sees which line won and how.
+    // The round closes: everyone sees which line won and how, and it stays
+    // up while the next lines are written.
     for (const page of everyone) {
       const winner = page.getByRole("region", { name: "The chosen line" });
       await expect(winner).toContainText("Turn 1, second option.", { timeout: 10_000 });
       await expect(winner).toContainText("It had the most votes.");
       await expect(winner.getByRole("listitem").filter({ hasText: "Turn 1, second option." })).toContainText("2 votes");
       await expect(winner.getByRole("listitem").filter({ hasText: "Turn 1, first option." })).toContainText("1 vote");
-      await expect(page.getByText("Preparing the next line…")).toBeVisible();
+      await expect(page.getByText("Writing the next lines…")).toBeVisible();
       await expect(choices(page)).toHaveCount(0);
     }
 

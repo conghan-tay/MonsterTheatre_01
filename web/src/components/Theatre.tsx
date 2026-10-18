@@ -28,7 +28,7 @@ export function Theatre({
   beforeStart: ReactNode;
   onAudience?: (audience: Audience) => void;
 }) {
-  const { state, connection, votes, vote, voteError, audience } = useRoomSocket(room.roomId);
+  const { state, result, connection, votes, vote, voteError, audience } = useRoomSocket(room.roomId);
   const premiere = usePremiere(state?.phase === "premiere" ? state.premiere : undefined);
 
   useEffect(() => {
@@ -72,6 +72,12 @@ export function Theatre({
 
         {state?.phase === "generating" && state.speaker && (
           <>
+            {result && (
+              <div className="mb-6">
+                <TurnHeading turn={result.turn} name={name(result.speaker)} beat={result.beat} />
+                <ChosenLine winner={result.winner} choices={result.choices} />
+              </div>
+            )}
             <TurnHeading turn={state.turn} name={name(state.speaker)} beat={state.beat} />
             <p className="mt-2 text-stone-600">Writing the next lines…</p>
           </>

@@ -48,6 +48,7 @@ The log below is kept in full, including entries that were later replaced. These
 | D050 | No NAT gateway: the tasks have public addresses and accept nothing from the internet |
 | D051 | Valkey 8.1 on ElastiCache and locally, as one node |
 | D052 | Two stacks: one kept between demos, one destroyed; real providers only when asked for |
+| D053 | Each turn's line is tagged and voiced in a child workflow that runs in the background; the premiere waits for all eight, and a line that cannot be voiced stops the run at once |
 
 Superseded or withdrawn: D002, D004, D006, D010, D011, D012, D014, D016, D019, D020, D021, and the data-lake half of D003.
 
@@ -958,3 +959,33 @@ This algorithm was run through the spike's three scenarios and was correct in ev
 **Tradeoffs and consequences:** The secrets have fixed names, so destroying the data stack and creating it again within Secrets Manager's recovery window fails until the old ones are purged. The project's instructions name a Secrets Manager skill and a tool, `asm-exec`, for handling secrets; neither was available, and the user approved this approach instead: no secret value passes through any command run during the work.
 
 **Status:** accepted — approved by the user in the step 15 plan, 2026-10-12.
+
+## D053 — Tagging and speech in a child workflow per turn, in the background
+
+**Decision:** After a round's winner is announced, the performance workflow starts a child workflow, `PrepareLine`, with ID `performance/{performanceId}/line-{turn}`, and goes straight on to the next turn without waiting for it. The child tags the line and voices it, as the parent used to. After turn 8 the parent waits for all eight children (fan-out, fan-in), then saves the script and publishes the premiere as before. If a child fails, the parent stops whatever it is doing, writing lines or holding a round open, and the run fails with `speech_failed`. The page keeps a round's result on screen while the next turn's lines are written.
+
+**Context / requirement:** The user measured tagging and speech together at more than 3.6 s per turn on a live run, during which the audience waits on the winning line with nothing to do (review item 12). Nothing in the turn loop needs the tagged line or the recording before the premiere: the next lines are written from the untagged winning text.
+
+**Chosen approach:**
+- One child per turn, started from the workflow's own context. The tag and speech activities keep their options and their rules: a tagging failure still falls back to the untagged line.
+- Each child has a five-minute execution timeout. Its activities bound it first, at about four minutes at worst. The default parent-close policy terminates a child still running when the parent ends.
+- The rest of the run happens in a context the parent cancels when a child fails. The run's failure is then reported as `speech_failed`, whatever the cancellation did to the step under way. The `failed` update carries the turn the run had reached, which is one or more past the turn whose line failed.
+- Phases, messages, and revisions are unchanged.
+- The page, not the server, keeps the result. On the `preparing_line` update it holds the winner, counts, and choices. It keeps them through the next turn's `generating` and drops them on anything else (`nextResult`, `web/src/lib/theatre.ts`). The socket hook applies it per message, because the two updates come milliseconds apart.
+
+**Why it fits:** It removes the tagging and speech wait from turns 1 to 7. Only turn 8's is still waited for, before the premiere. That saves an estimated 25 s a run at the measured 3.6 s per turn, though the saving has not been measured with the real providers. Provider calls are unchanged. Each turn's line has its own history in the Temporal UI.
+
+**Alternatives considered:**
+- Background activities in the parent, without child workflows: the same timing with less machinery. The user asked for child workflows.
+- Holding `preparing_line` for a minimum time: gives back most of the time saved.
+- Carrying the previous winner in the `generating` state, so a browser that connects late also sees it: a change to the message contract, not wanted.
+- Finding a failed line only at the next turn boundary, or only at the fan-in: both spend rounds and provider calls on a run that has already failed. The user chose to stop at once.
+
+**Tradeoffs and consequences:**
+- A speech failure reaches the audience a few seconds later than before, during the next turn rather than right after the winner. A round that is open at that moment is abandoned.
+- A browser that connects while the next lines are being written does not see the previous result.
+- There can now be two Claude calls at once (one turn's tags, the next turn's lines). Two ElevenLabs calls overlap only if a speech retry runs past the next round. Neither has been checked against the accounts' rate limits.
+- Each child adds a few Temporal actions to a run's bill. Not checked against the bill.
+- The workflow code changed without `workflow.GetVersion`. A run in flight when a worker with the new code starts cannot be replayed, and stays `recovering` until its 30-minute timeout. None was in flight: the app stack was destroyed, and nothing runs locally between sessions.
+
+**Status:** accepted — the user asked for child workflows and fan-out, fan-in, and chose the two behaviours above, 2026-10-18.

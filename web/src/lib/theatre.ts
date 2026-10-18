@@ -52,3 +52,20 @@ export type ServerMessage =
   | { type: "error"; code: string; message: string };
 
 export const TURNS = 8;
+
+// A round's result, kept on screen after its phase has passed.
+export type Result = { turn: number; speaker: Speaker; beat?: string; winner: Winner; choices: Choice[] };
+
+// nextResult is the result a page shows given the one it holds and the state
+// it has just been told. A winning line is tagged and voiced in the
+// background, so the next turn's lines are written straight after it is
+// announced; the result stays up while they are, and goes when the next
+// round opens (docs/decisions.md, D053). Only a browser that was told the
+// result keeps it: the next turn's state does not carry it.
+export function nextResult(held: Result | null, state: TheatreState): Result | null {
+  if (state.phase === "preparing_line" && state.speaker && state.winner) {
+    return { turn: state.turn, speaker: state.speaker, beat: state.beat, winner: state.winner, choices: state.choices ?? [] };
+  }
+  if (state.phase === "generating" && held && state.turn === held.turn + 1) return held;
+  return null;
+}

@@ -121,11 +121,11 @@ A lifecycle rule expires objects after seven days.
 
 ### Temporal workflow state
 
-Room context, current turn and phase, the current round's choices and deadline, who has voted for what, the winners so far, the tagged lines and audio keys so far, and a revision number that increases with every published update.
+Room context, current turn and phase, the current round's choices and deadline, who has voted for what, the winners so far, the tagged lines and audio keys of the turns whose child workflows have finished, and a revision number that increases with every published update. Each turn's child workflow has its own history: the tagging and speech activities and their result.
 
 ## 4. Performance workflow
 
-One workflow per performance, with ID `performance/{performanceId}`.
+One workflow per performance, with ID `performance/{performanceId}`, and one child workflow per turn, `performance/{performanceId}/line-{turn}`, which tags and voices that turn's winning line in the background (D053).
 
 ```mermaid
 flowchart TD
@@ -138,10 +138,14 @@ flowchart TD
     Open --> Wait[Collect vote signals until the timer fires]
     Wait --> Pick[Pick winner in workflow]
     Pick --> Won[Publish: preparing_line, winner and counts]
-    Won --> Tag[Activity: enhance winning line with audio tags]
-    Tag --> Speak[Activity: text to speech, save audio to S3]
-    Speak --> Loop
-    Loop -->|No| Fix[Fix the premiere's start time, 5 s ahead]
+    Won --> Child[Start child workflow for the line, without waiting]
+    Child --> Loop
+    Child -.-> Tag
+    subgraph Line["Child workflow, one per turn"]
+        Tag[Activity: enhance winning line with audio tags] --> Speak[Activity: text to speech, save audio to S3]
+    end
+    Loop -->|No| FanIn[Wait for all eight child workflows]
+    FanIn --> Fix[Fix the premiere's start time, 5 s ahead]
     Fix --> Save[Activity: save script, audio keys and start time, mark completed]
     Save --> Prem[Publish: premiere, with that start time]
     Prem --> End([End])
@@ -153,8 +157,9 @@ Notes on each part:
 - **Timer before publish.** The workflow computes the deadline (its current time plus the window), starts the 10-second timer, and then publishes that deadline, so browsers show the same deadline the workflow enforces.
 - **Collecting votes.** A vote arrives as a signal carrying a voter ID (an audience session ID or the director's ID), turn number, and choice ID. The signal also carries the time the server received the vote. The workflow records the first vote from each voter for the current turn and ignores repeats, unknown choices, wrong turn numbers, and late votes.
 - **Deciding lateness.** A vote is in time if the server's receipt time is at or before the deadline, and not before the round opened. (Choice IDs are the same every turn, so without the second half a vote sent before the choices were shown would count.) The workflow does not rely on whether it saw the vote before or after the timer: the step 2 spike showed that after a worker outage those arrive together and their order is lost (D033). When the timer is delivered, the workflow first handles every vote still buffered, then closes the round. A vote that reaches the workflow after the round has closed is ignored whatever its stamp says.
+- **Tagging and speech run in the background.** Once the winner is published, the workflow starts the turn's child workflow and goes straight on to the next turn: nothing needs the recording before the premiere, and the next lines are written from the untagged text. After turn 8 it waits for all eight children, then saves and publishes the premiere. The script and the audio keys are put together in turn order, whatever order the children finished in. If a child fails, the workflow cancels whatever it is doing at that moment (writing lines or holding a round open) and fails the run with `speech_failed`. A child still running when the workflow ends is terminated with it.
 - **Picking the winner.** Done in workflow code: most votes wins; a tie or an empty round is settled with Temporal's replay-safe random source, so a replay after a crash reaches the same answer.
-- **When a provider fails.** Choice generation is retried with growing pauses for a whole retry window (two minutes by default), which rides out a brief outage; if the window runs out, the run fails. There is no stand-in for lines the model did not write (D038). Tag enhancement retries, then falls back to the untagged line, which is still the real line. Text to speech retries; if it still fails the run fails. An error that retrying cannot fix, such as a rejected API key, stops at once.
+- **When a provider fails.** Choice generation is retried with growing pauses for a whole retry window (two minutes by default), which rides out a brief outage; if the window runs out, the run fails. There is no stand-in for lines the model did not write (D038). Tag enhancement retries, then falls back to the untagged line, which is still the real line. Text to speech retries; if it still fails, the turn's child workflow fails and the run stops at once, in whatever turn it has reached. An error that retrying cannot fix, such as a rejected API key, stops at once.
 - **Checking what the model returns.** Whichever model is configured, its answers are checked before they are used. Choices must be exactly three, each non-empty, at most `MAX_LINE_LENGTH` characters (160 by default), on one line, without square brackets, and all different. A tagged line, with its square-bracket tags removed, must be the original line word for word. An answer that fails its check is a failed attempt, retried like any other.
 - **The premiere's start time.** The workflow fixes it (its current time plus the countdown) before the save, and the one write that marks the row `completed` stores it with the script. The premiere update then carries the same value, so a browser that connects later is told the same time as those who were watching (D039). The save therefore comes out of the countdown: milliseconds normally, more if the database is being retried.
 - **Failure.** If the workflow cannot continue, it runs one last activity to mark the performance row `failed` with the reason, then publishes a `failed` update carrying that reason, and ends as a failed workflow so the operator sees it in Temporal. The row is marked first, so a browser told of the failure finds the row agreeing. Reasons: `choices_failed`, `speech_failed`, and `internal_error` for anything else. A workflow run timeout bounds a run that hangs; a run ended that way cannot mark its own row, which the connect-time rule in section 6 handles.
@@ -168,9 +173,9 @@ Every publish moves the performance into a new phase and increases the revision 
 
 | When | Phase in the update | What the update carries | What the browser shows |
 | --- | --- | --- | --- |
-| A turn begins | `generating` | Turn number, speaker, story beat | "Writing the next lines…" |
+| A turn begins | `generating` | Turn number, speaker, story beat | The previous round's result, if the page was told it, and "Writing the next lines…" |
 | Three choices are ready | `voting` | The choices and the deadline | The three choices and a countdown |
-| The timer has fired and the winner is picked | `preparing_line` | The winner, vote counts, and how it was decided | The winning line while it is tagged and voiced |
+| The timer has fired and the winner is picked | `preparing_line` | The winner, vote counts, and how it was decided | The winning line, its counts, and how it was decided; the page keeps these on screen through the next turn's `generating` (D053) |
 | All eight turns are saved | `premiere` | The start time, fixed five seconds ahead just before the save, and the ordered clip list, each clip with its URL | Countdown, then playback; or, once the start time has passed, the recording ready to play from the beginning |
 | The run cannot continue | `failed` | `failure`: a reason code and a sentence for the audience | A failure message |
 
@@ -180,7 +185,7 @@ One more phase is never published: `recovering`, which the server sends in a sna
 
 There is no phase for "finished". A performance stays in its last phase, `premiere` or `failed`, for good, and the row's status (`completed` or `failed`) is what tells the server to answer from the row instead of the workflow (section 6).
 
-A normal run publishes three updates per turn and one for the premiere: revisions 1 to 25. Tagging, text to speech, and saving to the database publish nothing of their own; the browser stays in `preparing_line` until the next turn's `generating` arrives (or `premiere` after turn eight).
+A normal run publishes three updates per turn and one for the premiere: revisions 1 to 25. Tagging, text to speech, and saving to the database publish nothing of their own. Tagging and speech run in the background, so `preparing_line` is followed within milliseconds by the next turn's `generating`; after turn eight it stays until `premiere`, while the last line is voiced.
 
 ### Retries and timeouts
 
@@ -191,13 +196,13 @@ Proposed starting values, to tune while building:
 | Generate choices | 30 s | As many as fit in the retry window (`CHOICES_RETRY_WINDOW`, default 2 min), pausing 1 s, 2 s, 4 s, 8 s, then 15 s between them | Run fails |
 | Enhance tags | 20 s | 2 | Untagged line |
 | Text to speech | 60 s | 3 | Run fails |
+| A turn's child workflow (tags, then speech) | 5 min in all | 1 | Run fails |
 | Publish update | 5 s | 3 | Continue without it |
 | Database read or write | 10 s | Until the run timeout | — |
 | Whole workflow run | 30 min | — | Run ends |
 
 If a worker dies in the middle of an activity, Temporal waits for that activity's timeout before trying it again on another worker. Worst-case resumption is therefore the longest timeout above, not the worker's restart time.
 
-A possible later improvement: since nothing is played until the premiere, tagging and speech for a turn could run in the background while the next turn's voting proceeds, shortening the wait between rounds. Start with the simple sequential loop.
 
 ## 5. Interfaces
 
@@ -399,7 +404,7 @@ Two pages show a room live, and both use one component for it (`web/src/componen
 
 - **Entering.** The audience page always opens on an **Enter theatre** button, after a reload too. A browser lets a page make sound only once the person has clicked on it, so every page load needs a click; that click also posts to the join endpoint, which gives a returning browser its session back and uses no seat. The director's page connects without a click, and its click is **Start**.
 - **Sound.** The page has one audio element. It is started, on a moment of silence, inside the click, and every clip is then played through it: Chrome allows later playback on a page that has been clicked, and Safari allows it for the element that was played during the click. If the browser still refuses at the premiere (a director who reloaded mid-run has not clicked), the page shows **Tap to hear audio**, and the tap starts the performance from its first clip.
-- **What each phase shows.** `waiting`: Start for the director, "Waiting for the director" for the audience. `generating`: whose turn it is and "Writing the next lines…". `voting`: the three lines as buttons and the seconds left; the first click is the vote and the buttons then stop taking clicks. `preparing_line`: the winning line, how it was decided, each line's count, and "Preparing the next line…". `premiere`: a countdown if its start time is ahead, otherwise **Play performance**; **Play again** once it has played. `failed`: the reason. `recovering`: a line saying so. The script so far is listed under all of them.
+- **What each phase shows.** `waiting`: Start for the director, "Waiting for the director" for the audience. `generating`: the previous round's result, if this page was told it (D053), then whose turn it is and "Writing the next lines…". `voting`: the three lines as buttons and the seconds left; the first click is the vote and the buttons then stop taking clicks. `preparing_line`: the winning line, how it was decided, each line's count, and "Preparing the next line…" (after turn 8 only, in practice: earlier, the next turn's `generating` follows within milliseconds). `premiere`: a countdown if its start time is ahead, otherwise **Play performance**; **Play again** once it has played. `failed`: the reason. `recovering`: a line saying so. The script so far is listed under all of them.
 - **The script.** While the turns run, the winning lines so far are listed newest first. At the premiere, while a recording plays, only the line being spoken is shown, replaced by the next when it starts; with nothing playing (the countdown, a finished room before it is played, and after the last line) the whole script is listed in the order it is spoken. The rule is one function, `web/src/lib/script.ts`.
 - **Nicknames and the audience list.** The audience page asks for a nickname with the Enter theatre click, on every load, filled in from what that browser last typed for the room (kept in the browser's own storage, since the page cannot read the session cookie). What is in the field when Enter is pressed becomes the session's name. The director's room page shows the count and the names from the `audience` message, so they change as people join, without a reload. The audience is shown neither.
 - **Limits on the forms.** Each text field with a limit shows how much of it is used, as `12 / 200`, counted by character as the server counts.
@@ -444,6 +449,8 @@ Two pages show a room live, and both use one component for it (`web/src/componen
 - The local and deployed databases behave differently under contention: conflict retries only run for real on Aurora DSQL. They were first exercised at deployment (fifteen simultaneous joins, ten admitted, six runs of six); nothing heavier has been tried.
 - On AWS there is one cache node and one task of each kind, so any one of them failing interrupts the service until it is replaced. Old database rows are never removed (review item 13).
 - The public address is CloudFront's own and changes if the distribution is recreated, which changes every share link already sent.
+- Workflow code is changed without Temporal's versioning. A run in flight when a worker with changed code starts cannot be replayed, and says `recovering` until its 30-minute timeout. Deploy between runs (D053).
+- A browser that connects while a turn's lines are being written does not see the previous round's result; only browsers that were told it keep it on screen (D053).
 
 ## 10. Next step
 

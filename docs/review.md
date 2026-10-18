@@ -41,7 +41,7 @@ Items 7 to 10 are decided. Items 11 to 17 are settled while building; 11, 12, 14
 9. **Start that half-completes.** Decided 2026-10-08: when a browser connects and the workflow is not found, the server starts it with the same ID. **Reversed 2026-10-11** (D043): a connecting browser never starts a workflow. The room says `recovering` until the director presses Start again, which already repaired it.
 10. **A workflow that ends without marking its row.** Decided 2026-10-08: when a browser connects and the workflow is closed, the server marks the row `failed` (system design, section 6).
 11. **Recovery status.** The brief no longer requires a visible "recovering" state. Connected browsers just see updates pause. Decided 2026-10-11 for the server: a browser that connects while the workflow cannot be asked is sent a snapshot with phase `recovering` and stays connected (D041). The page shows "The performance is recovering" and asks again every three seconds (step 14).
-12. **Waiting between rounds.** Decided 2026-10-11, as suggested: after each vote come tagging, speech, and the next generation, with nothing to listen to, and the page shows the winning line, how it was decided, each line's count, and "Preparing the next line…", then "Writing the next lines…" for the next turn. With real providers the first lasted about 3 s and the second about 3 s. Running tagging and speech in the background during the next round is a later improvement noted in the system design.
+12. **Waiting between rounds.** Decided 2026-10-11, as suggested: after each vote come tagging, speech, and the next generation, with nothing to listen to, and the page shows the winning line, how it was decided, each line's count, and "Preparing the next line…", then "Writing the next lines…" for the next turn. With real providers the first lasted about 3 s and the second about 3 s. Done 2026-10-18: tagging and speech now run in the background, a child workflow per turn, while the next turn goes ahead; the result stays on the page while the next lines are written (D053).
 13. **Database cleanup.** S3 objects expire after seven days; nothing removes old database rows. Not urgent for a demo. Deferred at step 15, 2026-10-12: still open, and listed among the accepted limits in the system design.
 14. **Audio pass-through or buffer.** Decided 2026-10-11: piped. The server streams the object to the response and reads only the bytes a range request asks for (D040).
 15. **Clip URLs.** Decided 2026-10-09: the `premiere` clip list carries URLs; the browser does not build them (D037).
@@ -69,7 +69,7 @@ Items 7 to 10 are decided. Items 11 to 17 are settled while building; 11, 12, 14
 | B9 Contradictory in-round vote feedback | Resolved. The snapshot includes the browser's own vote |
 | B10 Smaller gaps | Gone or resolved. The audio format question is closed (item 6) |
 | Setup workflow weight | Resolved. Room creation is one plain request (D025) |
-| Pacing between rounds | Still open as item 12 |
+| Pacing between rounds | Resolved; see item 12 |
 
 ## Suggested order
 

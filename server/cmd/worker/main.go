@@ -64,6 +64,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 
 	w := worker.New(temporalClient, cfg.TemporalTaskQueue, worker.Options{})
 	w.RegisterWorkflowWithOptions(workflow.Performance, sdkworkflow.RegisterOptions{Name: performance.WorkflowName})
+	w.RegisterWorkflowWithOptions(workflow.PrepareLine, sdkworkflow.RegisterOptions{Name: workflow.PrepareLineName})
 	w.RegisterActivity(acts)
 
 	if err := w.Start(); err != nil {

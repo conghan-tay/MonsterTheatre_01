@@ -399,7 +399,16 @@ Before starting this step, load the relevant AWS skills as the project's instruc
 - **One change to the deployment:** the data stack now exports the two provider keys' names in both modes, so a running stack can be switched from live back to test in place.
 - **Run for real:** the in-place cycle (test, the suite at 32 passed and 20 skipped, clearing its leftovers, live) in under seven minutes, and the teardown. The first real runs found two faults in the script that its stand-in tests could not, both since fixed with a test. `destroy-data`, clearing `rooms` or `all` on the cluster, and a cycle with a teardown in between have not been run on AWS.
 
-## 4. Points to settle along the way
+### After step 15 — tagging and speech in the background
+
+**Done 2026-10-18.** Not one of the fifteen steps. Asked for by the user after a live run in which tagging and speech took more than 3.6 s per turn (review item 12). Decision: D053.
+
+- **Child workflow `PrepareLine`** (`server/internal/workflow/prepare.go`), one per turn, ID `performance/{performanceId}/line-{turn}`. It tags and voices the winning line, with the same activity options and the same fallback for tagging. The parent starts it and goes on to the next turn. After turn 8 it waits for all eight, then saves the script and publishes the premiere. Registered on the worker.
+- **A line that cannot be voiced stops the run at once,** in whatever turn it has reached, as `speech_failed`.
+- **The page keeps a round's result on screen** while the next turn's lines are written (`nextResult` in `web/src/lib/theatre.ts`, applied in `useRoomSocket`).
+- **Tests:** four new workflow tests: the next round opens while a line is still being voiced; the premiere waits, and everything is saved in turn order; a child per turn; speech failing on turn 8. One changed: speech failing on turn 2 now stops in turn 3. One new E2E test, turn 2's round opens before turn 1's line is stored, and four browser tests of `nextResult`. Four existing tests changed because they relied on speech holding the parent: speech failure, connecting while the worker is down, refusing audio mid-run, and the browser test of the winner view.
+- **Not measured:** the time saved with the real providers. No paid run was made.
+
 
 These are items 11 to 16 in [the review](review.md), placed where they come up:
 

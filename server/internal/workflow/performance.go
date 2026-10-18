@@ -99,6 +99,15 @@ type run struct {
 	votes map[string]string
 	// counts is how many votes each of the current turn's choices has.
 	counts map[string]int
+
+	// prepared holds each turn's line once its child workflow has tagged and
+	// voiced it; ready counts them.
+	prepared [performance.Turns]PreparedLine
+	ready    int
+	// lineFailure is the first child workflow that failed. Recording it
+	// cancels whatever the run was waiting on (stop), and the run ends.
+	lineFailure error
+	stop        workflow.CancelFunc
 }
 
 // Performance runs one performance from Start to the premiere. If it cannot
@@ -106,7 +115,14 @@ type run struct {
 // ending as a failed workflow.
 func Performance(ctx workflow.Context, in performance.WorkflowInput) error {
 	r := &run{in: in, state: performance.State{Phase: performance.PhaseWaiting, PerformanceID: in.PerformanceID}}
-	err := r.play(ctx)
+	playing, stop := workflow.WithCancel(ctx)
+	r.stop = stop
+	err := r.play(ctx, playing)
+	// A line that could not be voiced is why the run stopped, whatever its
+	// cancellation then did to the step that was under way.
+	if r.lineFailure != nil {
+		err = &stopped{code: performance.FailureSpeech, err: r.lineFailure}
+	}
 	if err != nil {
 		r.fail(ctx, err)
 	}
@@ -140,8 +156,10 @@ func (r *run) fail(ctx workflow.Context, cause error) {
 	})
 }
 
-// play is the performance itself.
-func (r *run) play(ctx workflow.Context) error {
+// play is the performance itself. It runs in ctx, which is cancelled if a
+// line cannot be voiced; root is the workflow's own context, which the line
+// workflows are started from and waited on in.
+func (r *run) play(root, ctx workflow.Context) error {
 	in := r.in
 	// Registered before anything else, so a browser connecting at any moment
 	// of the run can be answered.
@@ -163,7 +181,6 @@ func (r *run) play(ctx workflow.Context) error {
 	}
 
 	var script performance.Script
-	var audioKeys []string
 	var history []providers.Line
 
 	for turn := 1; turn <= performance.Turns; turn++ {
@@ -234,34 +251,31 @@ func (r *run) play(ctx workflow.Context) error {
 			Winner:  &performance.Winner{ChoiceID: winner.ID, Text: winner.Text, Counts: counts, DecidedBy: decidedBy},
 		})
 
-		// Tagging and speech publish nothing: browsers stay on the winning
-		// line until the next turn begins.
-		//
-		// If tagging fails, the line is spoken as chosen. That is still the
-		// real line, only delivered plainly.
-		var tagged string
-		err = workflow.ExecuteActivity(workflow.WithActivityOptions(ctx, tagsOptions), a.EnhanceTags, activities.TagsInput{
-			RoomID: in.RoomID, Turn: turn, Speaker: plan.Speaker, Beat: plan.Beat, Character: speaker, Text: winner.Text,
-		}).Get(ctx, &tagged)
-		tagsApplied := err == nil
-		if err != nil {
-			workflow.GetLogger(ctx).Warn("tagging failed; speaking the line without tags", "turn", turn, "error", err)
-			tagged = winner.Text
-		}
-		var audioKey string
-		err = workflow.ExecuteActivity(workflow.WithActivityOptions(ctx, speechOptions), a.Synthesize, activities.SpeechInput{
-			PerformanceID: in.PerformanceID, RoomID: in.RoomID, Turn: turn, VoiceID: speaker.VoiceID, Text: tagged,
-		}).Get(ctx, &audioKey)
-		if err != nil {
-			return &stopped{code: performance.FailureSpeech, err: err}
-		}
+		// The line is tagged and voiced in the background, and the next turn
+		// goes ahead meanwhile: nothing needs the recording before the
+		// premiere, and the next lines are written from the untagged text.
+		r.prepareLine(root, LineInput{
+			PerformanceID: in.PerformanceID, RoomID: in.RoomID, Turn: turn,
+			Speaker: plan.Speaker, Beat: plan.Beat, Character: speaker, Text: winner.Text,
+		})
 
-		audioKeys = append(audioKeys, audioKey)
 		script.Turns = append(script.Turns, performance.ScriptTurn{
 			Turn: turn, Speaker: plan.Speaker, Beat: plan.Beat,
 			Choices: choices, Counts: counts, Winner: winner, DecidedBy: decidedBy,
-			TaggedText: tagged, TagsApplied: tagsApplied, Model: generated.Model,
+			Model: generated.Model,
 		})
+	}
+
+	// Fan in: the premiere waits for every line. Browsers stay on the last
+	// winning line until then.
+	if err := workflow.Await(ctx, func() bool { return r.ready == performance.Turns }); err != nil {
+		return err
+	}
+	audioKeys := make([]string, performance.Turns)
+	for i, line := range r.prepared {
+		script.Turns[i].TaggedText = line.TaggedText
+		script.Turns[i].TagsApplied = line.TagsApplied
+		audioKeys[i] = line.AudioKey
 	}
 
 	// The start time is fixed first and saved with the script, so that a
@@ -291,6 +305,32 @@ func (r *run) play(ctx workflow.Context) error {
 		Premiere: &performance.Premiere{StartsAt: startsAt, Clips: clips},
 	})
 	return nil
+}
+
+// prepareLine starts a turn's line workflow and returns at once. A
+// coroutine waits for it: it keeps the result, or, if the line could not be
+// voiced, records why and stops the run.
+//
+// Any failure of the child counts as speech failing: tagging falls back
+// rather than fail, so speech, or the child's own timeout, is all that can.
+func (r *run) prepareLine(root workflow.Context, in LineInput) {
+	child := workflow.ExecuteChildWorkflow(workflow.WithChildOptions(root, workflow.ChildWorkflowOptions{
+		WorkflowID:               LineWorkflowID(in.PerformanceID, in.Turn),
+		WorkflowExecutionTimeout: lineTimeout,
+	}), PrepareLineName, in)
+	workflow.Go(root, func(ctx workflow.Context) {
+		var line PreparedLine
+		if err := child.Get(ctx, &line); err != nil {
+			if r.lineFailure == nil {
+				workflow.GetLogger(ctx).Error("a line could not be voiced; stopping the run", "turn", in.Turn, "error", err)
+				r.lineFailure = err
+				r.stop()
+			}
+			return
+		}
+		r.prepared[in.Turn-1] = line
+		r.ready++
+	})
 }
 
 // publish moves the performance into a new phase: it replaces the state

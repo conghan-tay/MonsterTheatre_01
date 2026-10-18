@@ -9,8 +9,10 @@ import (
 
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
+	"go.temporal.io/sdk/workflow"
 
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/activities"
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/performance"
@@ -54,15 +56,27 @@ type recorder struct {
 	tagsErr    error
 	speechErr  error
 	failErr    error
+
+	// children are the IDs of the child workflows started, in order.
+	children []string
 }
 
-// newRun returns a test environment with every activity mocked.
-func newRun(t *testing.T) (*testsuite.TestWorkflowEnvironment, *recorder) {
+// newRun returns a test environment with every activity mocked. Each before
+// runs first, so a test can mock one call more specifically than the
+// defaults do: the first mock that matches a call is the one used.
+func newRun(t *testing.T, before ...func(*testsuite.TestWorkflowEnvironment)) (*testsuite.TestWorkflowEnvironment, *recorder) {
 	t.Helper()
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()
 	rec := &recorder{env: env}
 	var a *activities.Activities
+	env.RegisterWorkflowWithOptions(PrepareLine, workflow.RegisterOptions{Name: PrepareLineName})
+	env.SetOnChildWorkflowStartedListener(func(info *workflow.Info, _ workflow.Context, _ converter.EncodedValues) {
+		rec.children = append(rec.children, info.WorkflowExecution.ID)
+	})
+	for _, b := range before {
+		b(env)
+	}
 
 	env.OnActivity(a.FetchContext, mock.Anything, "room-1").Return(activities.RoomContext{
 		Scene:              providers.Scene{Topic: "A biscuit"},
@@ -577,12 +591,19 @@ func TestAnErrorNotWorthRetryingFailsTheRunAtOnce(t *testing.T) {
 func TestSpeechFailingThreeTimesFailsTheRun(t *testing.T) {
 	env, rec := newRun(t)
 	rec.failTurn, rec.speechErr = 2, errors.New("the speech service is down")
+	began := env.Now()
 
 	env.ExecuteWorkflow(Performance, testInput)
 
-	// Turn 2's winner was announced (revision 6) before its speech failed.
-	state := requireFailedRun(t, env, rec, performance.FailureSpeech, 2, 6)
+	// Turn 2's line is voiced in the background while turn 3 goes ahead:
+	// turn 3's round opened (revision 8) before the third attempt failed, a
+	// few seconds in. The run stops there, in the middle of that round.
+	state := requireFailedRun(t, env, rec, performance.FailureSpeech, 3, 8)
 	require.Len(t, state.Lines, 2, "turn 2's line was chosen, though never voiced")
+	require.Less(t, env.Now().Sub(began), 3*testWindow, "it did not wait for turn 3's round to close")
+	for _, asked := range rec.choices {
+		require.LessOrEqual(t, asked.Turn, 3, "no lines were asked for after the failure")
+	}
 
 	attempts := 0
 	for _, asked := range rec.speech {
@@ -591,6 +612,70 @@ func TestSpeechFailingThreeTimesFailsTheRun(t *testing.T) {
 		}
 	}
 	require.Equal(t, 3, attempts)
+}
+
+func TestSpeechFailingOnTheLastTurnFailsTheRunBeforeThePremiere(t *testing.T) {
+	env, rec := newRun(t)
+	rec.failTurn, rec.speechErr = 8, errors.New("the speech service is down")
+
+	env.ExecuteWorkflow(Performance, testInput)
+
+	// Nothing follows turn 8's winner (revision 24) but the wait for every
+	// line, and that is where the failure is found.
+	state := requireFailedRun(t, env, rec, performance.FailureSpeech, 8, 24)
+	require.Len(t, state.Lines, 8)
+}
+
+func TestTheNextRoundOpensWhileALineIsStillBeingVoiced(t *testing.T) {
+	const slow = 75 * time.Second
+	var a *activities.Activities
+	env, rec := newRun(t, func(env *testsuite.TestWorkflowEnvironment) {
+		env.OnActivity(a.Synthesize, mock.Anything, mock.MatchedBy(func(in activities.SpeechInput) bool { return in.Turn == 1 })).
+			Return(activities.AudioKey("perf-1", 1), nil).After(slow)
+	})
+	finished := map[string]time.Time{}
+	env.SetOnChildWorkflowCompletedListener(func(info *workflow.Info, _ converter.EncodedValue, _ error) {
+		finished[info.WorkflowExecution.ID] = env.Now()
+	})
+	began := env.Now()
+
+	env.ExecuteWorkflow(Performance, testInput)
+	require.NoError(t, env.GetWorkflowError())
+
+	// Every round opened on time, one window after the last, although turn
+	// 1's line took longer than seven rounds to voice.
+	for turn := 1; turn <= performance.Turns; turn++ {
+		voting := rec.publishes[3*turn-2]
+		require.Equal(t, performance.PhaseVoting, voting.update.State.Phase)
+		require.Equal(t, time.Duration(turn-1)*testWindow, voting.at.Sub(began), "turn %d", turn)
+	}
+	lineOne := finished["performance/perf-1/line-1"]
+	require.Equal(t, testWindow+slow, lineOne.Sub(began), "turn 1's line was voiced after turn 8's round closed")
+
+	// The premiere waited for it, and everything is saved in turn order.
+	premiere := rec.publishes[len(rec.publishes)-1]
+	require.Equal(t, performance.PhasePremiere, premiere.update.State.Phase)
+	require.False(t, premiere.at.Before(lineOne), "premiere at %s, before turn 1 was voiced at %s", premiere.at, lineOne)
+	require.Len(t, rec.completed, 1)
+	saved := rec.completed[0]
+	require.Len(t, saved.Script.Turns, performance.Turns)
+	for i, turn := range saved.Script.Turns {
+		require.Equal(t, i+1, turn.Turn)
+		require.Equal(t, "[tag] "+turn.Winner.Text, turn.TaggedText)
+		require.Equal(t, activities.AudioKey("perf-1", i+1), saved.AudioKeys[i])
+	}
+}
+
+func TestEachTurnsLineIsPreparedInAChildWorkflowOfItsOwn(t *testing.T) {
+	env, rec := newRun(t)
+	env.ExecuteWorkflow(Performance, testInput)
+	require.NoError(t, env.GetWorkflowError())
+
+	var want []string
+	for turn := 1; turn <= performance.Turns; turn++ {
+		want = append(want, fmt.Sprintf("performance/perf-1/line-%d", turn))
+	}
+	require.Equal(t, want, rec.children)
 }
 
 func TestTaggingFailureSpeaksTheLineAsChosen(t *testing.T) {

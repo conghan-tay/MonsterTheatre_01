@@ -5,7 +5,8 @@ import { CharacterCard } from "@/components/CharacterCard";
 import { Button, ErrorNotice } from "@/components/ui";
 import type { RoomView } from "@/lib/api";
 import { unlockAudio } from "@/lib/audio";
-import { scriptToShow } from "@/lib/script";
+import { Stage } from "@/components/Stage";
+import { scriptToShow, stageLine } from "@/lib/script";
 import { TURNS, type Audience, type Choice, type Speaker, type Winner } from "@/lib/theatre";
 import { usePremiere } from "@/lib/usePremiere";
 import { useRoomSocket } from "@/lib/useRoomSocket";
@@ -48,8 +49,20 @@ export function Theatre({
     void premiere.play();
   };
 
+  // While a line is heard at the premiere, its speaker takes the stage.
+  const staged = state?.phase === "premiere" && premiere.status === "playing" ? premiere.current : null;
+  const stagedCharacter = staged ? (staged.speaker === "A" ? room.characterA : room.characterB) : null;
+
   return (
     <div className="space-y-8">
+      {staged && stagedCharacter && (
+        <Stage
+          turn={staged.turn}
+          name={stagedCharacter.name}
+          portraitUrl={stagedCharacter.portraitUrl}
+          line={stageLine(state?.lines ?? [], staged.turn)}
+        />
+      )}
       <section aria-label="Characters" className="grid gap-6 sm:grid-cols-2">
         <CharacterCard slot="A" character={room.characterA} speaking={speaking === "A"} />
         <CharacterCard slot="B" character={room.characterB} speaking={speaking === "B"} />

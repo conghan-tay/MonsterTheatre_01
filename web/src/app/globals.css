@@ -1,1 +1,11 @@
 @import "tailwindcss";
+
+/* The stage's change of speaker (src/components/Stage.tsx). */
+@keyframes stage-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}

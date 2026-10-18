@@ -49,6 +49,7 @@ The log below is kept in full, including entries that were later replaced. These
 | D051 | Valkey 8.1 on ElastiCache and locally, as one node |
 | D052 | Two stacks: one kept between demos, one destroyed; real providers only when asked for |
 | D053 | Each turn's line is tagged and voiced in a child workflow that runs in the background; the premiere waits for all eight, and a line that cannot be voiced stops the run at once |
+| D054 | While a premiere line plays, its speaker takes the stage: the portrait as large as the window allows at its own shape, the line beneath it, the rest of the page dark and blurred |
 
 Superseded or withdrawn: D002, D004, D006, D010, D011, D012, D014, D016, D019, D020, D021, and the data-lake half of D003.
 
@@ -989,3 +990,31 @@ This algorithm was run through the spike's three scenarios and was correct in ev
 - The workflow code changed without `workflow.GetVersion`. A run in flight when a worker with the new code starts cannot be replayed, and stays `recovering` until its 30-minute timeout. None was in flight: the app stack was destroyed, and nothing runs locally between sessions.
 
 **Status:** accepted — the user asked for child workflows and fan-out, fan-in, and chose the two behaviours above, 2026-10-18.
+
+## D054 — The speaker takes the stage during the premiere
+
+**Decision:** While a recording plays at the premiere, the page shows only the speaker's portrait and, beneath it, the line being spoken. They sit on a near-black layer over the whole window, through which the page shows only as a dark blur. The speaker's name is not shown; the portrait's alternative text gives it to screen readers. The layer is there only while a recording plays. Before the first line, after the last, or if playback is blocked or fails, the page is as before.
+
+**Context / requirement:** The user asked for the premiere to look like a stage: "Viewers should only see the portrait of the speaking character and the text of the dialogue the character is speaking beneath the portrait. Everything else goes away or is out of focus in the background. The portrait should take up most of the window, while still respecting its own aspect ratio." The user chose the dark backdrop and the line without the name on 2026-10-18.
+
+**Chosen approach:**
+- `web/src/components/Stage.tsx`, rendered by `Theatre` while `usePremiere` says a clip is playing. The line comes from the script (`stageLine`, `web/src/lib/script.ts`).
+- The layer is drawn into the page body through a React portal, so no layout around it can move or shrink it. The pages' spacing rules did shrink it by 2 rem before this was done.
+- The portrait's box takes the image's own shape. It is as wide as the stage, or as tall as the window less 15 rem kept for the line, whichever is smaller. A portrait smaller than that is scaled up, and the line sits directly beneath it.
+- Each new speaker fades in over 300 ms. There is no fade when the browser asks for reduced motion.
+- Between two lines the previous speaker stays up while the next recording is still loading.
+
+**Why it fits:** It needs nothing from the server. The portraits are the ones the character cards have already loaded, and the playing clip and the script are already on the page. Nothing can be pressed during playback, so covering the page hides no control.
+
+**Alternatives considered:**
+- A frosted blur showing the page more clearly, or a plain light backdrop: the user chose the dark stage.
+- Showing the name above the line: the user chose the line only.
+- Filling the whole stage with the image box and letting the image sit inside it: on a phone, a wide portrait then floated far above its line.
+
+**Tradeoffs and consequences:**
+- A small upload is scaled up and looks soft. Portraits are kept at whatever size they were uploaded.
+- A line longer than about three lines on a desktop, or six on a phone, scrolls inside its space rather than shrinking the portrait. Lines are at most 300 characters, 160 by default.
+- There is still no pause or stop during playback.
+- It was checked in Chromium only, at 1280×720 and 390×844.
+
+**Status:** accepted — the user's request, and the plan approved on 2026-10-18.

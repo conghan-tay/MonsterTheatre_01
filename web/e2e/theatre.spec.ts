@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import zlib from "node:zlib";
 import { expect, test, type Browser, type Page } from "@playwright/test";
 import { director, scriptDir } from "../playwright.config";
 
@@ -10,11 +11,42 @@ import { director, scriptDir } from "../playwright.config";
 // of silence.
 const TURNS = 8;
 
-// A 1x1 PNG. The server checks that an upload really is an image.
-const PNG = Buffer.from(
-  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
-  "base64",
-);
+// A one-colour PNG of the given size; the server checks that an upload
+// really is an image. The two characters get portraits of
+// different shapes, so the stage can be seen to keep each one's own.
+function png(width: number, height: number): Buffer {
+  const crcTable = Array.from({ length: 256 }, (_, n) => {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    return c >>> 0;
+  });
+  const crc = (bytes: Buffer) => {
+    let c = 0xffffffff;
+    for (const b of bytes) c = crcTable[(c ^ b) & 0xff] ^ (c >>> 8);
+    return (c ^ 0xffffffff) >>> 0;
+  };
+  const chunk = (type: string, data: Buffer) => {
+    const body = Buffer.concat([Buffer.from(type), data]);
+    const length = Buffer.alloc(4);
+    length.writeUInt32BE(data.length);
+    const sum = Buffer.alloc(4);
+    sum.writeUInt32BE(crc(body));
+    return Buffer.concat([length, body, sum]);
+  };
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0);
+  header.writeUInt32BE(height, 4);
+  header.set([8, 2, 0, 0, 0], 8); // 8-bit RGB
+  const row = Buffer.concat([Buffer.from([0]), Buffer.alloc(width * 3, 0x80)]);
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk("IHDR", header),
+    chunk("IDAT", zlib.deflateSync(Buffer.concat(Array(height).fill(row)))),
+    chunk("IEND", Buffer.alloc(0)),
+  ]);
+}
+const TALL = png(20, 30);
+const WIDE = png(30, 20);
 
 // Logs the director in and creates a room, ending on the room page.
 async function createRoom(page: Page, topic: string): Promise<string> {
@@ -28,10 +60,10 @@ async function createRoom(page: Page, topic: string): Promise<string> {
   await page.getByLabel("Topic").fill(topic);
   const a = page.getByRole("group", { name: "Character A" });
   await a.getByLabel("Name").fill("Grumble");
-  await a.getByLabel("Portrait").setInputFiles({ name: "a.png", mimeType: "image/png", buffer: PNG });
+  await a.getByLabel("Portrait").setInputFiles({ name: "a.png", mimeType: "image/png", buffer: TALL });
   const b = page.getByRole("group", { name: "Character B" });
   await b.getByLabel("Name").fill("Fizz");
-  await b.getByLabel("Portrait").setInputFiles({ name: "b.png", mimeType: "image/png", buffer: PNG });
+  await b.getByLabel("Portrait").setInputFiles({ name: "b.png", mimeType: "image/png", buffer: WIDE });
   await page.getByRole("button", { name: "Create room" }).click();
 
   await expect(page).toHaveURL(/\/rooms\/[0-9a-f-]{36}$/);
@@ -199,6 +231,77 @@ test.describe.serial("a performance, from the pages", () => {
     await expect(directorPage.getByText("3 of 10 joined")).toBeVisible();
     await directorPage.getByRole("button", { name: "Play performance" }).click();
     await expectPlayedThrough(directorPage);
+  });
+
+  test("while a line plays, its speaker takes the stage", async ({ browser }) => {
+    // Turns 2 and 3's recordings are held back. Once turn 1's has played the
+    // player waits for turn 2's with turn 1 still on stage, for as long as
+    // this needs; then the same for turn 2 while it waits for turn 3's.
+    const page = await audienceMember(browser, shareLink, "Eve");
+    audience.push(page);
+    const hold = async (turn: number) => {
+      let release!: () => void;
+      const released = new Promise<void>((resolve) => (release = resolve));
+      await page.route(`**/turns/${turn}/audio`, async (route) => {
+        await released;
+        await route.continue();
+      });
+      return release;
+    };
+    const releaseTwo = await hold(2);
+    const releaseThree = await hold(3);
+    await page.getByRole("button", { name: "Enter theatre" }).click();
+    await page.getByRole("button", { name: "Play performance" }).click();
+
+    const stage = page.getByRole("region", { name: "Stage" });
+    const portrait = stage.getByRole("img");
+    // The stage is the whole window; the portrait most of its height, or of
+    // its width, drawn at its own shape.
+    const expectStaged = async (name: string, shape: number) => {
+      await expect(portrait).toHaveCount(1);
+      await expect(portrait).toHaveAccessibleName(name);
+      const viewport = page.viewportSize()!;
+      expect(await stage.boundingBox()).toEqual({ x: 0, y: 0, width: viewport.width, height: viewport.height });
+      await expect.poll(() => portrait.evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth > 0)).toBe(true);
+      const shown = await portrait.evaluate((img: HTMLImageElement) => {
+        const { width, height } = img.getBoundingClientRect();
+        const scale = Math.min(width / img.naturalWidth, height / img.naturalHeight);
+        return { fit: getComputedStyle(img).objectFit, width: img.naturalWidth * scale, height: img.naturalHeight * scale };
+      });
+      expect(shown.fit).toBe("contain");
+      expect(shown.width / shown.height).toBeCloseTo(shape, 2);
+      expect(Math.max(shown.width / viewport.width, shown.height / viewport.height)).toBeGreaterThan(0.6);
+      // The line sits just under the portrait, not at the far edge.
+      const gap = (await stage.getByRole("paragraph").boundingBox())!.y - (await portrait.boundingBox())!.y - shown.height;
+      expect(gap).toBeLessThan(40);
+      // Pictures are taken once a change of speaker has faded in.
+      await page.waitForFunction(() => document.getAnimations().every((a) => a.playState === "finished"));
+    };
+
+    // Turn 1 is Grumble's, whose portrait is two wide by three high, and
+    // the audience chose its second option. Only that line is shown.
+    await expect(stage).toBeVisible();
+    await expect(stage).toHaveText("Turn 1, second option.");
+    await expectStaged("Portrait of Grumble", 2 / 3);
+    await page.screenshot({ path: test.info().outputPath("stage-desktop-tall.png") });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expectStaged("Portrait of Grumble", 2 / 3);
+    await page.screenshot({ path: test.info().outputPath("stage-phone-tall.png") });
+
+    // Turn 2 is Fizz's, three wide by two high. Nobody voted from turn 2 on,
+    // so its line was picked at random.
+    releaseTwo();
+    await expect(portrait).toHaveAccessibleName("Portrait of Fizz");
+    await expect(stage).toHaveText(/^Turn 2, (first|second|third) option\.$/);
+    await expectStaged("Portrait of Fizz", 3 / 2);
+    await page.screenshot({ path: test.info().outputPath("stage-phone-wide.png") });
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await expectStaged("Portrait of Fizz", 3 / 2);
+    await page.screenshot({ path: test.info().outputPath("stage-desktop-wide.png") });
+
+    releaseThree();
+    await expectPlayedThrough(page);
+    await expect(stage).toHaveCount(0);
   });
 
   test("a link that is not valid says so", async ({ browser }) => {

@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"slices"
 	"syscall"
 	"time"
 
@@ -29,6 +30,7 @@ import (
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/providers/anthropic"
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/providers/elevenlabs"
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/providers/fake"
+	"github.com/conghan-tay/MonsterTheatre_01/server/internal/providers/wavespeed"
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/rooms"
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/temporalclient"
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/workflow"
@@ -80,6 +82,8 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		"tts_provider", cfg.TTSProvider,
 		"llm_model", cfg.LLMModel,
 		"tts_model", cfg.TTSModel,
+		"lipsync_provider", cfg.LipSyncProvider,
+		"lipsync_resolution", cfg.LipSyncResolution,
 		"vote_window", cfg.VoteWindow.String(),
 		"choices_retry_window", cfg.ChoicesRetryWindow.String(),
 		"max_line_length", cfg.MaxLineLength,
@@ -110,6 +114,9 @@ func buildActivities(ctx context.Context, cfg config.Config) (*activities.Activi
 	if cfg.PremiereCountdown <= 0 {
 		return nil, backends{}, nil, errors.New(`PREMIERE_COUNTDOWN must be a positive duration such as "5s"`)
 	}
+	if cfg.LipSyncPollInterval <= 0 {
+		return nil, backends{}, nil, errors.New(`LIPSYNC_POLL_INTERVAL must be a positive duration such as "20s"`)
+	}
 	if cfg.ChoicesRetryWindow <= 0 {
 		return nil, backends{}, nil, errors.New(`CHOICES_RETRY_WINDOW must be a positive duration such as "2m"`)
 	}
@@ -120,6 +127,10 @@ func buildActivities(ctx context.Context, cfg config.Config) (*activities.Activi
 		return nil, backends{}, nil, err
 	}
 	dialogue, speech, err := buildProviders(cfg, lineLength)
+	if err != nil {
+		return nil, backends{}, nil, err
+	}
+	lipSync, err := buildLipSync(cfg)
 	if err != nil {
 		return nil, backends{}, nil, err
 	}
@@ -139,17 +150,20 @@ func buildActivities(ctx context.Context, cfg config.Config) (*activities.Activi
 	redisClient := redis.NewClient(redisOpts)
 
 	acts := &activities.Activities{
-		Rooms:              &rooms.PGStore{Pool: pool},
-		Performances:       &performance.PGStore{Pool: pool},
-		Stream:             redisClient,
-		Objects:            objects,
-		Dialogue:           dialogue,
-		Speech:             speech,
-		VoteWindow:         cfg.VoteWindow,
-		PremiereCountdown:  cfg.PremiereCountdown,
-		ChoicesRetryWindow: cfg.ChoicesRetryWindow,
-		LineLimit:          cfg.MaxLineLength,
-		Now:                time.Now,
+		Rooms:               &rooms.PGStore{Pool: pool},
+		Performances:        &performance.PGStore{Pool: pool},
+		Stream:              redisClient,
+		Objects:             objects,
+		Dialogue:            dialogue,
+		Speech:              speech,
+		LipSync:             lipSync,
+		LipSyncPollInterval: cfg.LipSyncPollInterval,
+		LipSyncResolution:   cfg.LipSyncResolution,
+		VoteWindow:          cfg.VoteWindow,
+		PremiereCountdown:   cfg.PremiereCountdown,
+		ChoicesRetryWindow:  cfg.ChoicesRetryWindow,
+		LineLimit:           cfg.MaxLineLength,
+		Now:                 time.Now,
 	}
 	return acts, backends{database: database, objectStore: objectStore}, func() {
 		redisClient.Close()
@@ -196,4 +210,26 @@ func buildProviders(cfg config.Config, lineLength int) (providers.DialogueModel,
 		return nil, nil, fmt.Errorf(`TTS_PROVIDER %q is not supported; use "fake" or "elevenlabs"`, cfg.TTSProvider)
 	}
 	return dialogue, speech, nil
+}
+
+// buildLipSync chooses the lip-sync service, after checking the resolution
+// asked for. Like the other providers, the real one needs its key, which is
+// read here and never logged; the stand-in is used unless WaveSpeed is
+// asked for by name.
+func buildLipSync(cfg config.Config) (providers.LipSync, error) {
+	if !slices.Contains(providers.LipSyncResolutions, cfg.LipSyncResolution) {
+		return nil, fmt.Errorf(`LIPSYNC_RESOLUTION %q is not supported; use "480p" or "720p"`, cfg.LipSyncResolution)
+	}
+	switch cfg.LipSyncProvider {
+	case "fake":
+		return &fake.LipSync{Scripts: fake.Scripts{Dir: cfg.FakeScriptDir}}, nil
+	case "wavespeed":
+		key := os.Getenv("WAVESPEED_API_KEY")
+		if key == "" {
+			return nil, errors.New("LIPSYNC_PROVIDER is wavespeed but WAVESPEED_API_KEY is not set")
+		}
+		return &wavespeed.LipSync{APIKey: key}, nil
+	default:
+		return nil, fmt.Errorf(`LIPSYNC_PROVIDER %q is not supported; use "fake" or "wavespeed"`, cfg.LipSyncProvider)
+	}
 }

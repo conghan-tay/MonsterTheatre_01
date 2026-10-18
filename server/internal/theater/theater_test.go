@@ -402,6 +402,29 @@ func TestServeWSSendsACompletedPerformanceAsItsPremiere(t *testing.T) {
 	require.Equal(t, performance.LastRevision+1, readMessage(t, ctx, ws).Revision)
 }
 
+func TestACompletedLipSyncRunIsSentAtItsOwnPremiereRevision(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	svc, _, url := served(t, 0, 0)
+	svc.Performances = &fakePerformances{row: &performance.Performance{
+		ID: "perf-1", RoomID: "room", Status: performance.StatusCompleted,
+		Script: performance.Script{PremiereRevision: 29, Turns: []performance.ScriptTurn{
+			{Turn: 1, Speaker: "A", Winner: performance.Choice{ID: "c2", Text: "hello"}, VideoKey: "performances/perf-1/turn-1.mp4"},
+		}},
+	}}
+
+	ws := dial(t, ctx, url)
+	snapshot := readMessage(t, ctx, ws)
+	require.Equal(t, 29, snapshot.Revision, "the revision the premiere was published at, past 25 for its progress updates")
+	require.Equal(t, "/api/v1/performances/perf-1/turns/1/video", snapshot.State.Premiere.Clips[0].VideoURL)
+
+	// The last progress update, still on its way when the row was read, is
+	// older than the premiere and is dropped, not shown after it.
+	svc.Hub.Broadcast("room", 28, updateJSON(28))
+	svc.Hub.Broadcast("room", 30, updateJSON(30))
+	require.Equal(t, 30, readMessage(t, ctx, ws).Revision)
+}
+
 func TestServeWSSendsAFailedPerformanceWithItsReason(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

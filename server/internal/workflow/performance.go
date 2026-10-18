@@ -257,6 +257,7 @@ func (r *run) play(root, ctx workflow.Context) error {
 		r.prepareLine(root, LineInput{
 			PerformanceID: in.PerformanceID, RoomID: in.RoomID, Turn: turn,
 			Speaker: plan.Speaker, Beat: plan.Beat, Character: speaker, Text: winner.Text,
+			LipSync: in.LipSync, Resolution: room.LipSyncResolution,
 		})
 
 		script.Turns = append(script.Turns, performance.ScriptTurn{
@@ -266,16 +267,34 @@ func (r *run) play(root, ctx workflow.Context) error {
 		})
 	}
 
-	// Fan in: the premiere waits for every line. Browsers stay on the last
-	// winning line until then.
-	if err := workflow.Await(ctx, func() bool { return r.ready == performance.Turns }); err != nil {
-		return err
+	// Fan in: the premiere waits for every line. Without lip sync,
+	// browsers stay on the last winning line until then. With it, the wait
+	// can be minutes, so they are told how many lines are ready, each time
+	// that changes (docs/decisions.md, D055).
+	for r.ready < performance.Turns {
+		if in.LipSync {
+			r.publish(ctx, performance.State{
+				Phase: performance.PhasePreparingPremiere, Turn: performance.Turns,
+				Progress: &performance.Progress{Ready: r.ready, Total: performance.Turns},
+			})
+		}
+		ready := r.ready
+		if err := workflow.Await(ctx, func() bool { return r.ready != ready }); err != nil {
+			return err
+		}
 	}
 	audioKeys := make([]string, performance.Turns)
 	for i, line := range r.prepared {
 		script.Turns[i].TaggedText = line.TaggedText
 		script.Turns[i].TagsApplied = line.TagsApplied
+		script.Turns[i].VideoKey = line.VideoKey
 		audioKeys[i] = line.AudioKey
+	}
+	if in.LipSync {
+		// The premiere is the next publish. Its revision is saved, so that
+		// a browser told of the finished room from the row is given the
+		// same one, and drops any progress update still on its way.
+		script.PremiereRevision = r.revision + 1
 	}
 
 	// The start time is fixed first and saved with the script, so that a
@@ -299,6 +318,9 @@ func (r *run) play(root, ctx workflow.Context) error {
 		clips[i] = performance.Clip{
 			Turn: i + 1, Speaker: plan.Speaker, URL: performance.AudioURL(in.PerformanceID, i+1),
 		}
+		if r.prepared[i].VideoKey != "" {
+			clips[i].VideoURL = performance.VideoURL(in.PerformanceID, i+1)
+		}
 	}
 	r.publish(ctx, performance.State{
 		Phase: performance.PhasePremiere, Turn: performance.Turns,
@@ -314,9 +336,13 @@ func (r *run) play(root, ctx workflow.Context) error {
 // Any failure of the child counts as speech failing: tagging falls back
 // rather than fail, so speech, or the child's own timeout, is all that can.
 func (r *run) prepareLine(root workflow.Context, in LineInput) {
+	timeout := lineTimeout
+	if in.LipSync {
+		timeout += lipSyncTimeout
+	}
 	child := workflow.ExecuteChildWorkflow(workflow.WithChildOptions(root, workflow.ChildWorkflowOptions{
 		WorkflowID:               LineWorkflowID(in.PerformanceID, in.Turn),
-		WorkflowExecutionTimeout: lineTimeout,
+		WorkflowExecutionTimeout: timeout,
 	}), PrepareLineName, in)
 	workflow.Go(root, func(ctx workflow.Context) {
 		var line PreparedLine

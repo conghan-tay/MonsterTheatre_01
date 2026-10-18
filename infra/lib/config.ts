@@ -12,6 +12,8 @@ export interface Config {
   readonly voiceIdB: string;
   readonly llmModel: string;
   readonly ttsModel: string;
+  /** Lip-sync videos' resolution in live mode, "480p" (the default) or "720p". */
+  readonly lipSyncResolution?: string;
 }
 
 /**
@@ -39,6 +41,9 @@ export function loadConfig(path: string): Config {
     if (typeof raw[key] !== "string" || raw[key] === "") {
       throw new Error(`${path}: "${key}" must be a non-empty string`);
     }
+  }
+  if (raw.lipSyncResolution !== undefined && raw.lipSyncResolution !== "480p" && raw.lipSyncResolution !== "720p") {
+    throw new Error(`${path}: "lipSyncResolution" must be "480p" or "720p" if given`);
   }
   return raw as unknown as Config;
 }

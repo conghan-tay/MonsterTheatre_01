@@ -7,7 +7,7 @@ import type { RoomView } from "@/lib/api";
 import { unlockAudio } from "@/lib/audio";
 import { Stage } from "@/components/Stage";
 import { scriptToShow, stageLine } from "@/lib/script";
-import { TURNS, type Audience, type Choice, type Speaker, type Winner } from "@/lib/theatre";
+import { TURNS, progressText, type Audience, type Choice, type Speaker, type Winner } from "@/lib/theatre";
 import { usePremiere } from "@/lib/usePremiere";
 import { useRoomSocket } from "@/lib/useRoomSocket";
 
@@ -60,6 +60,7 @@ export function Theatre({
           turn={staged.turn}
           name={stagedCharacter.name}
           portraitUrl={stagedCharacter.portraitUrl}
+          videoUrl={premiere.video}
           line={stageLine(state?.lines ?? [], staged.turn)}
         />
       )}
@@ -114,6 +115,19 @@ export function Theatre({
             <TurnHeading turn={state.turn} name={name(state.speaker)} beat={state.beat} />
             <ChosenLine winner={state.winner} choices={state.choices ?? []} />
             <p className="mt-3 text-stone-600">Preparing the next line…</p>
+          </>
+        )}
+
+        {state?.phase === "preparing_premiere" && state.progress && (
+          <>
+            {result && (
+              <div className="mb-6">
+                <TurnHeading turn={result.turn} name={name(result.speaker)} beat={result.beat} />
+                <ChosenLine winner={result.winner} choices={result.choices} />
+              </div>
+            )}
+            <p className="text-stone-700">{progressText(state.progress)}</p>
+            <p className="mt-1 text-sm text-stone-500">The premiere starts when every clip is ready.</p>
           </>
         )}
 

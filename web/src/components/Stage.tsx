@@ -7,7 +7,13 @@ import { createPortal } from "react-dom";
 // portrait, as large as the window allows at its own shape, and the line
 // beneath it, over a darkened, blurred page (docs/decisions.md, D054).
 //
-// The speaker's name is not shown; the portrait's alternative text says it.
+// With lip sync, the line's video is shown in the portrait's place, muted:
+// the sound is the recording, played through the page's one audio element
+// as without lip sync (D056). It starts as it appears, which is as the
+// recording starts.
+//
+// The speaker's name is not shown; the portrait's alternative text, or the
+// video's label, says it.
 // Each new line fades in, keyed by its turn, unless the browser asks for
 // reduced motion.
 //
@@ -18,11 +24,13 @@ export function Stage({
   turn,
   name,
   portraitUrl,
+  videoUrl,
   line,
 }: {
   turn: number;
   name: string;
   portraitUrl: string;
+  videoUrl?: string | null;
   line?: string;
 }) {
   return createPortal(
@@ -32,7 +40,11 @@ export function Stage({
       className="fixed inset-0 z-50 flex items-center justify-center bg-stone-950/95 px-4 pt-[max(1.5rem,env(safe-area-inset-top))] pb-[max(1.5rem,env(safe-area-inset-bottom))] backdrop-blur-md sm:px-8"
     >
       <div key={turn} className="flex w-full flex-col items-center gap-6 motion-safe:animate-[stage-in_300ms_ease-out]">
-        <Portrait key={portraitUrl} url={portraitUrl} name={name} />
+        {videoUrl ? (
+          <Picture key={videoUrl} kind="video" url={videoUrl} name={name} />
+        ) : (
+          <Picture key={portraitUrl} kind="image" url={portraitUrl} name={name} />
+        )}
         {line && (
           <p className="max-h-36 max-w-3xl overflow-y-auto text-center text-xl leading-snug text-stone-50 sm:text-3xl">
             {line}
@@ -48,13 +60,32 @@ export function Stage({
 // line's own most (max-h-36).
 const RESERVED = "15rem";
 
-// Portrait is drawn at its own shape: as wide as the stage, or as tall as the
-// window less the room kept for the line, whichever comes first. It is
-// scaled up if it is smaller than that.
-function Portrait({ url, name }: { url: string; name: string }) {
-  // Width over height, known once the image has loaded. The character cards
-  // have already loaded it, so that is at once.
+// Picture is the portrait or the video, drawn at its own shape: as wide as
+// the stage, or as tall as the window less the room kept for the line,
+// whichever comes first. It is scaled up if it is smaller than that.
+function Picture({ kind, url, name }: { kind: "image" | "video"; url: string; name: string }) {
+  // Width over height, known once the image or the video's first frame has
+  // loaded. Both are already in memory, so that is at once.
   const [shape, setShape] = useState<number | null>(null);
+  const className = "object-contain " + (shape === null ? "invisible" : "");
+  const style = {
+    aspectRatio: shape ?? 1,
+    width: `min(100%, calc((100dvh - ${RESERVED}) * ${shape ?? 1}))`,
+  };
+  if (kind === "video") {
+    return (
+      <video
+        src={url}
+        aria-label={`${name} speaking`}
+        muted
+        autoPlay
+        playsInline
+        onLoadedMetadata={(e) => setShape(e.currentTarget.videoWidth / e.currentTarget.videoHeight)}
+        className={className}
+        style={style}
+      />
+    );
+  }
   return (
     // A plain img: the portrait is private, served by the API with the
     // session cookie.
@@ -63,11 +94,8 @@ function Portrait({ url, name }: { url: string; name: string }) {
       src={url}
       alt={`Portrait of ${name}`}
       onLoad={(e) => setShape(e.currentTarget.naturalWidth / e.currentTarget.naturalHeight)}
-      className={"object-contain " + (shape === null ? "invisible" : "")}
-      style={{
-        aspectRatio: shape ?? 1,
-        width: `min(100%, calc((100dvh - ${RESERVED}) * ${shape ?? 1}))`,
-      }}
+      className={className}
+      style={style}
     />
   );
 }

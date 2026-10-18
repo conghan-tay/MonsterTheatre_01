@@ -423,6 +423,19 @@ Before starting this step, load the relevant AWS skills as the project's instruc
   The browser tests' portraits are now 20×30 and 30×20 instead of 1×1, so that the shape is tested.
 - **Not checked:** Safari, Firefox, real phones, and real portraits.
 
+### After step 15 — lip sync with WaveSpeed InfiniteTalk
+
+**Done 2026-10-18.** Not one of the fifteen steps. Asked for by the user. Decisions: D055, D056.
+
+- **Start:** an **Include lip-sync video** checkbox, unticked by default. It is sent as `{"lipSync": true}`, and `{}` means no lip sync, exactly as before.
+- **Child workflow:** after speech, three activities run: `UploadLipSyncInputs` (retried), `SubmitLipSync` (one attempt), and `AwaitLipSync`. The last polls every 20 s with a heartbeat each time, for at most 15 minutes, then stores the video. A line whose video fails keeps its portrait.
+- **Before the premiere:** a `preparing_premiere` phase with `progress`, and turn 8's result kept on the page. The premiere's revision is saved with the script.
+- **Server:** clips carry `videoUrl`, and `/turns/{n}/video` serves the video. A lip-sync run's timeout is 45 minutes.
+- **Providers:** `providers/wavespeed` is the client; `providers/fake` gives a one-second stand-in clip, which the fake script can slow or fail. The new settings are `LIPSYNC_PROVIDER`, `LIPSYNC_RESOLUTION`, and `LIPSYNC_POLL_INTERVAL`.
+- **Page:** the stage plays a muted video alongside the recording.
+- **AWS (code only, nothing deployed):** a fifth secret, `monster-theatre/wavespeed-api-key`, which live mode passes to the worker with WaveSpeed selected. `deploy-app live` refuses while it is a placeholder.
+- **Not verified:** any call to WaveSpeed itself. Its client was tested against a stand-in built from its documentation.
+
 ## 4. Points to settle along the way
 
 These are items 11 to 16 in [the review](review.md), placed where they come up:

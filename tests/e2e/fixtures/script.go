@@ -12,6 +12,8 @@ const (
 	OpChoices = "choices"
 	OpTags    = "tags"
 	OpSpeech  = "speech"
+	// OpLipSync fails a turn's lip-sync submission, which is tried once.
+	OpLipSync = "lipsync"
 )
 
 // Always is an attempt count no retry policy reaches: the operation fails
@@ -34,6 +36,9 @@ type Script struct {
 	Choices map[int][]string `json:"choices,omitempty"`
 	// Failures are the operations to fail.
 	Failures []Failure `json:"failures,omitempty"`
+	// LipSyncDelays maps a turn to how long its lip-sync video takes, in
+	// milliseconds after it is submitted.
+	LipSyncDelays map[int]int `json:"lipSyncDelays,omitempty"`
 }
 
 // Write stores the script where the fakes read it. scriptDir is the stack's

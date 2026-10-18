@@ -13,10 +13,10 @@ The design is in `docs/system-design.md` and decisions D047 to D052. The README'
 
 | Stack | Holds | Cost |
 | --- | --- | --- |
-| `MonsterTheatreData` | Aurora DSQL cluster, S3 bucket, four secrets, two task roles | About 2 USD a month. Kept between demos |
+| `MonsterTheatreData` | Aurora DSQL cluster, S3 bucket, five secrets, two task roles | About 2 USD a month. Kept between demos |
 | `MonsterTheatreApp` | VPC, Valkey node, three Fargate tasks, internal load balancer, CloudFront | About 0.10 USD an hour (about 75 USD a month). Destroyed between demos |
 
-Region `ap-southeast-1`. Two modes for the app stack: **test** (stand-in providers, 2-second votes, the worker is not given the provider keys, spends nothing) and **live** (Claude and ElevenLabs; every Start is a paid run of 16 Claude calls and 8 ElevenLabs calls).
+Region `ap-southeast-1`. Two modes for the app stack: **test** (stand-in providers, 2-second votes, the worker is not given the provider keys, spends nothing) and **live** (Claude and ElevenLabs; every Start is a paid run of 16 Claude calls and 8 ElevenLabs calls, and, if the director ticks "Include lip-sync video", 8 WaveSpeed InfiniteTalk videos at about 0.03 USD a second of speech at 480p). Live mode needs the WaveSpeed key set as well (`deploy-app live` refuses while it is a placeholder).
 
 ## Start every session with `status`
 
@@ -53,7 +53,7 @@ The user chose this on 2026-10-13: **naming an operation is the approval for it.
 
 Three things are never covered by that:
 
-1. **`destroy-data`**: ask, every time, immediately before. It deletes the database, every recording, and the four secrets for good; the user must then put the three keys in again and every share link dies.
+1. **`destroy-data`**: ask, every time, immediately before. It deletes the database, every recording, and the five secrets for good; the user must then put the four keys in again and every share link dies.
 2. **`clear-data all`**: ask, every time. It removes every director, including the user's own.
 3. **Starting a performance: never.** Not through the pages, the API, or a test against a live deployment. `e2e` refuses in live mode for this reason; do not work around it. The user starts performances.
 
@@ -84,7 +84,7 @@ After a cycle the deployment is live and billing. Say so, and ask whether to tea
 ## Rules
 
 - **Identity.** The script signs in as the profile `mt-admin` (override with `AWS_PROFILE`) and refuses the account's root user. If it reports an expired sign-in, ask the user "Ready for me to run `aws login --profile mt-admin`?", run it when they agree, and they finish it in the browser. It lasts up to 12 hours.
-- **Secrets.** Never read a secret's value: no `get-secret-value`, no reading `.env`. The script only checks whether a value has been put in. The user sets the three keys in their own terminal with the `read -s` commands in the README; give them those commands, never ask for a key in the conversation. A changed key reaches a task only when it restarts, which any `deploy-app` does.
+- **Secrets.** Never read a secret's value: no `get-secret-value`, no reading `.env`. The script only checks whether a value has been put in. The user sets the four keys in their own terminal with the `read -s` commands in the README; give them those commands, never ask for a key in the conversation. A changed key reaches a task only when it restarts, which any `deploy-app` does.
 - **Director accounts** take a password, so the user creates them in their own terminal. `status` prints the exact command.
 - **Long commands.** `deploy-app`, `destroy-app`, and `cycle` outlast an ordinary command limit. Run them in the background with a limit of an hour. If the local process is stopped, CloudFormation carries on regardless: run `./scripts/aws.sh wait`, then `verify` or `status`. Never start a second deploy or destroy while one is in progress; the script refuses, and that refusal is right.
 - **Docker** must be running for `deploy-app`: the images are built on this machine.

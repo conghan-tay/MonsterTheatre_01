@@ -143,8 +143,13 @@ flowchart TD
     Child -.-> Tag
     subgraph Line["Child workflow, one per turn"]
         Tag[Activity: enhance winning line with audio tags] --> Speak[Activity: text to speech, save audio to S3]
+        Speak -.->|lip sync asked for| Up[Activity: upload portrait and audio to WaveSpeed]
+        Up --> Sub[Activity: submit the video, once]
+        Sub --> Wait[Activity: poll every 20 s, then save the video to S3]
     end
     Loop -->|No| FanIn[Wait for all eight child workflows]
+    FanIn -.->|lip sync, while some are not ready| Progress[Publish: preparing_premiere, how many are ready]
+    Progress -.-> FanIn
     FanIn --> Fix[Fix the premiere's start time, 5 s ahead]
     Fix --> Save[Activity: save script, audio keys and start time, mark completed]
     Save --> Prem[Publish: premiere, with that start time]
@@ -176,7 +181,8 @@ Every publish moves the performance into a new phase and increases the revision 
 | A turn begins | `generating` | Turn number, speaker, story beat | The previous round's result, if the page was told it, and "Writing the next lines…" |
 | Three choices are ready | `voting` | The choices and the deadline | The three choices and a countdown |
 | The timer has fired and the winner is picked | `preparing_line` | The winner, vote counts, and how it was decided | The winning line, its counts, and how it was decided; the page keeps these on screen through the next turn's `generating` (D053) |
-| All eight turns are saved | `premiere` | The start time, fixed five seconds ahead just before the save, and the ordered clip list, each clip with its URL | Countdown, then playback; or, once the start time has passed, the recording ready to play from the beginning |
+| Lip sync only: the turns are over and some videos are not ready; then again each time the count changes | `preparing_premiere` | `progress: {ready, total}` | Turn 8's result and "5 of 8 clips have been generated…" (D055) |
+| All eight turns are saved | `premiere` | The start time, fixed five seconds ahead just before the save, and the ordered clip list, each clip with its URL, and its `videoUrl` where it has a lip-sync video | Countdown, then playback; or, once the start time has passed, the recording ready to play from the beginning |
 | The run cannot continue | `failed` | `failure`: a reason code and a sentence for the audience | A failure message |
 
 Before Start there is one more phase, `waiting`, which is never published: with no performance there is no workflow to publish it. It appears only in the snapshot the server builds for a room that has not started, at revision 0, so the first published update is always newer.
@@ -185,7 +191,7 @@ One more phase is never published: `recovering`, which the server sends in a sna
 
 There is no phase for "finished". A performance stays in its last phase, `premiere` or `failed`, for good, and the row's status (`completed` or `failed`) is what tells the server to answer from the row instead of the workflow (section 6).
 
-A normal run publishes three updates per turn and one for the premiere: revisions 1 to 25. Tagging, text to speech, and saving to the database publish nothing of their own. Tagging and speech run in the background, so `preparing_line` is followed within milliseconds by the next turn's `generating`; after turn eight it stays until `premiere`, while the last line is voiced.
+A normal run publishes three updates per turn and one for the premiere: revisions 1 to 25. A run with lip sync may publish `preparing_premiere` updates between turn 8 and the premiere, so its premiere's revision is higher; that revision is saved with the script and is the one a finished room's snapshot carries (D055). Tagging, text to speech, and saving to the database publish nothing of their own. Tagging and speech run in the background, so `preparing_line` is followed within milliseconds by the next turn's `generating`; after turn eight it stays until `premiere`, while the last line is voiced.
 
 ### Retries and timeouts
 
@@ -196,10 +202,13 @@ Proposed starting values, to tune while building:
 | Generate choices | 30 s | As many as fit in the retry window (`CHOICES_RETRY_WINDOW`, default 2 min), pausing 1 s, 2 s, 4 s, 8 s, then 15 s between them | Run fails |
 | Enhance tags | 20 s | 2 | Untagged line |
 | Text to speech | 60 s | 3 | Run fails |
-| A turn's child workflow (tags, then speech) | 5 min in all | 1 | Run fails |
+| A turn's child workflow (tags, then speech) | 5 min in all, 25 with lip sync | 1 | Run fails |
+| Lip sync: upload the portrait and recording | 1 min | 3 | The line has no video |
+| Lip sync: submit the video | 1 min | 1, never repeated: a lost answer may still have started a paid video | The line has no video |
+| Lip sync: wait for the video, poll every 20 s | 15 min in all, heartbeat every poll, 1 min heartbeat timeout | Retried until the 15 minutes are up; a failed video or a 4xx ends it | The line has no video |
 | Publish update | 5 s | 3 | Continue without it |
 | Database read or write | 10 s | Until the run timeout | — |
-| Whole workflow run | 30 min | — | Run ends |
+| Whole workflow run | 30 min; 45 with lip sync | — | Run ends |
 
 If a worker dies in the middle of an activity, Temporal waits for that activity's timeout before trying it again on another worker. Worst-case resumption is therefore the longest timeout above, not the worker's restart time.
 
@@ -219,6 +228,7 @@ If a worker dies in the middle of an activity, Temporal waits for that activity'
 | `POST /api/v1/audience-sessions` | Anyone with the share link | Takes the link's room ID and token, and a `nickname`: required, trimmed, 1 to 30 characters, not necessarily unique. `201` and a cookie for a new session; `200` with `restored: true` for a browser that already has one, whose nickname is replaced by the one given; `403` for any invalid link; `409` when the room has ten; `422` `invalid_nickname`, naming the field, for a missing or over-long nickname. A link is checked before a nickname. See [Audience session](audience-session.md) |
 | `GET /api/v1/rooms/{roomId}/portraits/{slot}` | Director or audience session | Portrait bytes, read from S3 by the server |
 | `GET /api/v1/performances/{id}/turns/{n}/audio` | Director or audience session of the performance's room | Turn recording as `audio/mpeg`, piped from S3 by the server, never buffered. Supports range requests (section 6). The caller is checked first, with the same `401` and `403` as reading the room. Then `404` for a turn outside 1 to 8, and `409` `performance_not_completed` while the performance is running or if it failed: no recording is served before the premiere, and a failed run's are never served. An unknown performance gets `401` without a director login and `404` with one, as an unknown room does. Responses carry `Cache-Control: private, max-age=604800, immutable`, as portraits do: a recording never changes, and only the room's people may keep one |
+| `GET /api/v1/performances/{id}/turns/{n}/video` | Director or audience session of the performance's room | The turn's lip-sync video as `video/mp4`, on the same terms as its recording, range requests included. `404` for a turn without a video: a run without lip sync, or a line whose video could not be made (D055) |
 | `GET /api/v1/rooms/{roomId}/ws` | Director or audience session of that room | Upgrades to the WebSocket described below. Refusals are ordinary JSON errors sent before the upgrade: `403` `origin_not_allowed` for a page on another origin, then the same `401`, `403`, and `404` as reading the room |
 
 Start is safe to retry: the unique room constraint stops a second row, and starting a workflow whose ID already exists is treated as success. While the row says `running`, every Start asks Temporal to start the workflow; a running one is left alone and a finished one is never run again. A row that is `completed` or `failed` is returned as it is.
@@ -276,7 +286,8 @@ The state of a running performance. A field is absent in the phases that do not 
 | `winner` | `preparing_line` | The chosen line, each choice's count, and `decidedBy`: `majority` (the most votes, not necessarily more than half), `tie`, or `no_votes` |
 | `yourVote` | Snapshots only, in `voting` and `preparing_line` | The choice ID this browser's voter has made in the current turn. Absent if they have not voted. Never in an update, which every browser in the room receives alike |
 | `lines` | From the first winner on | The winning lines so far, in order |
-| `premiere` | `premiere` | `startsAt` and the ordered `clips`. Each clip is `{turn, speaker, url}`, where `url` is a path on the server such as `/api/v1/performances/{id}/turns/1/audio` (D037). `startsAt` is in the future for a browser there at the time and in the past for one that connects afterwards; the browser counts down or offers the recording accordingly |
+| `progress` | `preparing_premiere` | `{ready, total}`: how many of a lip-sync run's videos are ready. A line whose video failed counts as ready |
+| `premiere` | `premiere` | `startsAt` and the ordered `clips`. Each clip is `{turn, speaker, url, videoUrl?}`, where `url` is a path on the server such as `/api/v1/performances/{id}/turns/1/audio` (D037), and `videoUrl`, present only for a turn with a lip-sync video, is `/api/v1/performances/{id}/turns/1/video` (D056). `startsAt` is in the future for a browser there at the time and in the past for one that connects afterwards; the browser counts down or offers the recording accordingly |
 | `failure` | `failed` | `{code, message}`. `code` is `choices_failed`, `speech_failed`, or `internal_error`; `message` is a sentence for the audience |
 
 The winning line with its audio tags is not sent to browsers. It goes to the speech service and into the final script.
@@ -404,7 +415,7 @@ Two pages show a room live, and both use one component for it (`web/src/componen
 
 - **Entering.** The audience page always opens on an **Enter theatre** button, after a reload too. A browser lets a page make sound only once the person has clicked on it, so every page load needs a click; that click also posts to the join endpoint, which gives a returning browser its session back and uses no seat. The director's page connects without a click, and its click is **Start**.
 - **Sound.** The page has one audio element. It is started, on a moment of silence, inside the click, and every clip is then played through it: Chrome allows later playback on a page that has been clicked, and Safari allows it for the element that was played during the click. If the browser still refuses at the premiere (a director who reloaded mid-run has not clicked), the page shows **Tap to hear audio**, and the tap starts the performance from its first clip.
-- **What each phase shows.** `waiting`: Start for the director, "Waiting for the director" for the audience. `generating`: the previous round's result, if this page was told it (D053), then whose turn it is and "Writing the next lines…". `voting`: the three lines as buttons and the seconds left; the first click is the vote and the buttons then stop taking clicks. `preparing_line`: the winning line, how it was decided, each line's count, and "Preparing the next line…" (after turn 8 only, in practice: earlier, the next turn's `generating` follows within milliseconds). `premiere`: a countdown if its start time is ahead, otherwise **Play performance**; **Play again** once it has played. While a recording plays, its speaker takes the stage: the portrait over the whole window, as large as it fits at its own shape, with the line beneath it and the page dark and blurred behind (D054). `failed`: the reason. `recovering`: a line saying so. The script so far is listed under all of them.
+- **What each phase shows.** `waiting`: Start for the director, with an **Include lip-sync video** checkbox, unticked, and "Waiting for the director" for the audience. `generating`: the previous round's result, if this page was told it (D053), then whose turn it is and "Writing the next lines…". `voting`: the three lines as buttons and the seconds left; the first click is the vote and the buttons then stop taking clicks. `preparing_line`: the winning line, how it was decided, each line's count, and "Preparing the next line…" (after turn 8 only, in practice: earlier, the next turn's `generating` follows within milliseconds). `preparing_premiere` (lip sync only): turn 8's result, and "5 of 8 clips have been generated…". `premiere`: a countdown if its start time is ahead, otherwise **Play performance**; **Play again** once it has played. While a recording plays, its speaker takes the stage: the portrait over the whole window, as large as it fits at its own shape, with the line beneath it and the page dark and blurred behind (D054). A line with a lip-sync video shows the video there instead, muted, while its recording plays as before (D056). `failed`: the reason. `recovering`: a line saying so. The script so far is listed under all of them.
 - **The script.** While the turns run, the winning lines so far are listed newest first. At the premiere, while a recording plays, only the line being spoken is shown, replaced by the next when it starts; with nothing playing (the countdown, a finished room before it is played, and after the last line) the whole script is listed in the order it is spoken. The rule is one function, `web/src/lib/script.ts`.
 - **Nicknames and the audience list.** The audience page asks for a nickname with the Enter theatre click, on every load, filled in from what that browser last typed for the room (kept in the browser's own storage, since the page cannot read the session cookie). What is in the field when Enter is pressed becomes the session's name. The director's room page shows the count and the names from the `audience` message, so they change as people join, without a reload. The audience is shown neither.
 - **Limits on the forms.** Each text field with a limit shows how much of it is used, as `12 / 200`, counted by character as the server counts.
@@ -419,9 +430,10 @@ Two pages show a room live, and both use one component for it (`web/src/componen
 - **WebSocket.** The handshake is authenticated by cookie, so the server also checks the `Origin` header and refuses connections from other sites (D035). The header must be present and name either the web app's origin (`PUBLIC_BASE_URL`: scheme, host, and port) or the host and port the request itself was addressed to. The check runs before any session lookup.
 - **Login.** Passwords are stored with argon2id. Five failed attempts for a username within 15 minutes lock that username until the 15 minutes have passed, and the lock applies even to the correct password. The count is held in server memory. Accepted cost: someone who knows a director's username can lock that director out for 15 minutes.
 - **Cookie `Secure` flag.** On by default and controlled by `COOKIE_SECURE`. Local development and the test stack turn it off because they serve plain HTTP.
-- **Secrets.** Language-model and ElevenLabs keys are held only by the worker; the Temporal Cloud API key by server and worker; the share-link secret by the server. On AWS all four are in Secrets Manager and reach a task as it starts; none is in a template, a task definition, or the repository, and a deployment in test mode is not given the provider keys at all (D052). Nothing is sent to browsers.
+- **Secrets.** Language-model, ElevenLabs, and WaveSpeed keys are held only by the worker; the Temporal Cloud API key by server and worker; the share-link secret by the server. On AWS all five are in Secrets Manager and reach a task as it starts; none is in a template, a task definition, or the repository, and a deployment in test mode is not given the provider keys at all (D052). Nothing is sent to browsers.
 - **Database.** On AWS the server and worker connect to Aurora DSQL with short-lived IAM tokens issued to their task roles, through a scoped database role, `monster_app`, which can read and write the five tables and cannot change the schema (D048). There is no database password to store. Migrations run as `admin`, from an administrator's machine.
-- **Storage.** The S3 bucket is private, encrypted, and refuses requests not made over TLS. Browsers reach portraits and audio only through the server's authorised endpoints.
+- **Storage.** The S3 bucket is private, encrypted, and refuses requests not made over TLS. Browsers reach portraits, audio, and videos only through the server's authorised endpoints.
+- **Lip sync (D055).** When a director asks for it, the speaker's portrait and each recording are uploaded to WaveSpeed, which keeps uploads for seven days, and the video it makes is downloaded and kept with the recordings. The WaveSpeed key is sent only to WaveSpeed's API, never to the storage hosts it uploads to or downloads from.
 - **Network.** Only CloudFront is reachable from the internet. The load balancer and the cache have no public address, and the load balancer admits only CloudFront's origin-facing addresses; the tasks have one each, for outbound calls, and their security groups admit only the load balancer (D050). The hop from CloudFront to the load balancer is plain HTTP inside AWS's network (D049).
 - **Input limits.** The validation bounds in section 5 apply to every upload and text field.
 
@@ -450,6 +462,7 @@ Two pages show a room live, and both use one component for it (`web/src/componen
 - On AWS there is one cache node and one task of each kind, so any one of them failing interrupts the service until it is replaced. Old database rows are never removed (review item 13).
 - The public address is CloudFront's own and changes if the distribution is recreated, which changes every share link already sent.
 - Workflow code is changed without Temporal's versioning. A run in flight when a worker with changed code starts cannot be replayed, and says `recovering` until its 30-minute timeout. Deploy between runs (D053).
+- Lip sync (D055): a video submission whose answer is lost is not retried, so that line has no video though WaveSpeed may have made, and charged for, one. While a line's video is waited for, the worker holds one activity slot for it; about 125 lip-sync performances at once would use the default 1000. Whether the video's lips match the separately played recording has not been checked with real videos (D056).
 - A browser that connects while a turn's lines are being written does not see the previous round's result; only browsers that were told it keep it on screen (D053).
 
 ## 10. Next step

@@ -126,3 +126,55 @@ func IsPermanent(err error) bool {
 func PermanentStatus(status int) bool {
 	return status >= 400 && status < 500 && status != 408 && status != 429
 }
+
+// LipSyncRequest asks for one lip-sync video: a portrait speaking a
+// recording. ImageURL and AudioURL are where the provider can fetch them,
+// as returned by Upload.
+type LipSyncRequest struct {
+	RoomID     string
+	Turn       int
+	ImageURL   string
+	AudioURL   string
+	Resolution string
+}
+
+// UploadRequest is one input file for the lip-sync provider.
+type UploadRequest struct {
+	RoomID      string
+	Turn        int
+	Filename    string
+	ContentType string
+	Data        []byte
+}
+
+// Lip-sync video statuses, as LipSyncResult reports them.
+const (
+	LipSyncPending   = "pending"
+	LipSyncCompleted = "completed"
+	LipSyncFailed    = "failed"
+)
+
+// LipSyncResult is where a lip-sync video stands. VideoURL is set once it
+// has completed; Error says why it failed, when the provider says.
+type LipSyncResult struct {
+	Status   string
+	VideoURL string
+	Error    string
+}
+
+// LipSync makes a video of a portrait speaking a recording. It is slow
+// (minutes), so a video is submitted once and its result asked for until it
+// is done.
+//
+// Submit is not safe to repeat: a request that failed on its way back may
+// still have started a video, and been billed. Upload, Result, and Download
+// are safe to repeat.
+type LipSync interface {
+	Upload(ctx context.Context, req UploadRequest) (string, error)
+	Submit(ctx context.Context, req LipSyncRequest) (string, error)
+	Result(ctx context.Context, id string) (LipSyncResult, error)
+	Download(ctx context.Context, url string) ([]byte, error)
+}
+
+// Lip-sync resolutions the configuration accepts.
+var LipSyncResolutions = []string{"480p", "720p"}

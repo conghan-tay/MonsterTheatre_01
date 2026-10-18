@@ -192,9 +192,14 @@ func StartWith(ctx context.Context, opts Options) (stack *Stack, err error) {
 		// start so the test stack never reaches a paid provider.
 		"LLM_PROVIDER":     "fake",
 		"TTS_PROVIDER":     "fake",
-		"FAKE_SCRIPT_DIR":  s.ScriptDir,
-		"OBJECT_STORE_DIR": filepath.Join(workDir, "objects"),
-		"VOTE_WINDOW":      "2s",
+		"LIPSYNC_PROVIDER": "fake",
+		// The stand-in's videos are ready at once or after a scripted
+		// delay; asking every 20 s, as for the real one, would only slow
+		// the tests.
+		"LIPSYNC_POLL_INTERVAL": "200ms",
+		"FAKE_SCRIPT_DIR":       s.ScriptDir,
+		"OBJECT_STORE_DIR":      filepath.Join(workDir, "objects"),
+		"VOTE_WINDOW":           "2s",
 		// How long choice generation is retried before the run fails. Short,
 		// so the test of that failure takes seconds and not minutes.
 		"CHOICES_RETRY_WINDOW": "4s",
@@ -589,7 +594,7 @@ func ensureDatabase(ctx context.Context) error {
 // childEnv is the parent environment with provider keys removed, so the test
 // stack cannot make a paid call even by mistake, plus the given overrides.
 func childEnv(overrides map[string]string) []string {
-	blocked := map[string]bool{"ANTHROPIC_API_KEY": true, "OPENAI_API_KEY": true, "ELEVENLABS_API_KEY": true}
+	blocked := map[string]bool{"ANTHROPIC_API_KEY": true, "OPENAI_API_KEY": true, "ELEVENLABS_API_KEY": true, "WAVESPEED_API_KEY": true}
 	var env []string
 	for _, kv := range os.Environ() {
 		key, _, _ := strings.Cut(kv, "=")

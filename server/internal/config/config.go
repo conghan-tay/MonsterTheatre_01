@@ -54,6 +54,14 @@ type Config struct {
 	// means that provider's own default.
 	LLMModel string
 	TTSModel string
+	// LipSyncProvider chooses the worker's lip-sync service: "fake" or
+	// "wavespeed", "fake" unless asked. LipSyncResolution is its videos'
+	// resolution, "480p" or "720p"; the worker refuses anything else.
+	LipSyncProvider   string
+	LipSyncResolution string
+	// LipSyncPollInterval is how often the worker asks whether a lip-sync
+	// video is done. The tests shorten it; zero is refused.
+	LipSyncPollInterval time.Duration
 	// FakeScriptDir holds per-room scripts for the fake providers. Empty
 	// means every room gets the fakes' defaults.
 	FakeScriptDir string
@@ -75,32 +83,37 @@ type Config struct {
 // Load reads the configuration from the environment.
 func Load() Config {
 	return Config{
-		HTTPAddr:           env("HTTP_ADDR", ":8080"),
-		DatabaseURL:        env("DATABASE_URL", "postgres://monster:monster@localhost:5432/monstertheatre?sslmode=disable"),
-		DSQLEndpoint:       os.Getenv("DSQL_ENDPOINT"),
-		DSQLUser:           env("DSQL_USER", "admin"),
-		RedisURL:           env("REDIS_URL", "redis://localhost:6379/0"),
-		TemporalAddress:    env("TEMPORAL_ADDRESS", "localhost:7233"),
-		TemporalNamespace:  env("TEMPORAL_NAMESPACE", "default"),
-		TemporalTaskQueue:  env("TEMPORAL_TASK_QUEUE", "performance"),
-		TemporalAPIKey:     os.Getenv("TEMPORAL_API_KEY"),
-		LogLevel:           env("LOG_LEVEL", "info"),
-		CookieSecure:       envBool("COOKIE_SECURE", true),
-		ShareLinkSecret:    os.Getenv("SHARE_LINK_SECRET"),
-		PublicBaseURL:      env("PUBLIC_BASE_URL", "http://localhost:3000"),
-		ObjectStoreDir:     env("OBJECT_STORE_DIR", ".data/objects"),
-		S3Bucket:           os.Getenv("S3_BUCKET"),
-		VoiceIDA:           env("VOICE_ID_A", "voice-a-placeholder"),
-		VoiceIDB:           env("VOICE_ID_B", "voice-b-placeholder"),
-		LLMProvider:        env("LLM_PROVIDER", "fake"),
-		TTSProvider:        env("TTS_PROVIDER", "fake"),
-		FakeScriptDir:      os.Getenv("FAKE_SCRIPT_DIR"),
-		VoteWindow:         envDuration("VOTE_WINDOW", 10*time.Second),
-		PremiereCountdown:  envDuration("PREMIERE_COUNTDOWN", 5*time.Second),
-		ChoicesRetryWindow: envDuration("CHOICES_RETRY_WINDOW", 2*time.Minute),
-		MaxLineLength:      envInt("MAX_LINE_LENGTH", providers.DefaultLineLimit),
-		LLMModel:           os.Getenv("LLM_MODEL"),
-		TTSModel:           os.Getenv("TTS_MODEL"),
+		HTTPAddr:          env("HTTP_ADDR", ":8080"),
+		DatabaseURL:       env("DATABASE_URL", "postgres://monster:monster@localhost:5432/monstertheatre?sslmode=disable"),
+		DSQLEndpoint:      os.Getenv("DSQL_ENDPOINT"),
+		DSQLUser:          env("DSQL_USER", "admin"),
+		RedisURL:          env("REDIS_URL", "redis://localhost:6379/0"),
+		TemporalAddress:   env("TEMPORAL_ADDRESS", "localhost:7233"),
+		TemporalNamespace: env("TEMPORAL_NAMESPACE", "default"),
+		TemporalTaskQueue: env("TEMPORAL_TASK_QUEUE", "performance"),
+		TemporalAPIKey:    os.Getenv("TEMPORAL_API_KEY"),
+		LogLevel:          env("LOG_LEVEL", "info"),
+		CookieSecure:      envBool("COOKIE_SECURE", true),
+		ShareLinkSecret:   os.Getenv("SHARE_LINK_SECRET"),
+		PublicBaseURL:     env("PUBLIC_BASE_URL", "http://localhost:3000"),
+		ObjectStoreDir:    env("OBJECT_STORE_DIR", ".data/objects"),
+		S3Bucket:          os.Getenv("S3_BUCKET"),
+		VoiceIDA:          env("VOICE_ID_A", "voice-a-placeholder"),
+		VoiceIDB:          env("VOICE_ID_B", "voice-b-placeholder"),
+		LLMProvider:       env("LLM_PROVIDER", "fake"),
+		TTSProvider:       env("TTS_PROVIDER", "fake"),
+		LipSyncProvider:   env("LIPSYNC_PROVIDER", "fake"),
+		LipSyncResolution: env("LIPSYNC_RESOLUTION", "480p"),
+		// WaveSpeed asks for at least two seconds between polls, and a
+		// video takes minutes; a video is seen at most this late (D055).
+		LipSyncPollInterval: envDuration("LIPSYNC_POLL_INTERVAL", 20*time.Second),
+		FakeScriptDir:       os.Getenv("FAKE_SCRIPT_DIR"),
+		VoteWindow:          envDuration("VOTE_WINDOW", 10*time.Second),
+		PremiereCountdown:   envDuration("PREMIERE_COUNTDOWN", 5*time.Second),
+		ChoicesRetryWindow:  envDuration("CHOICES_RETRY_WINDOW", 2*time.Minute),
+		MaxLineLength:       envInt("MAX_LINE_LENGTH", providers.DefaultLineLimit),
+		LLMModel:            os.Getenv("LLM_MODEL"),
+		TTSModel:            os.Getenv("TTS_MODEL"),
 	}
 }
 

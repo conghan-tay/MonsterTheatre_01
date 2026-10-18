@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { nextResult, type Result, type TheatreState } from "../src/lib/theatre";
+import { nextResult, progressText, type Result, type TheatreState } from "../src/lib/theatre";
 
 // Which round's result a page keeps on screen (D053). This is a pure rule,
 // tested here directly: with the stand-in providers the next turn's lines
@@ -33,4 +33,19 @@ test("it is not shown against the wrong turn", () => {
   expect(nextResult(held, { phase: "generating", turn: 3, speaker: "A" })).toBeNull();
   // A browser that connects while lines are written has no result to keep.
   expect(nextResult(null, { phase: "generating", turn: 2, speaker: "B" })).toBeNull();
+});
+
+test("the last round's result stays while the videos are made", () => {
+  const last: Result = { ...held, turn: 8, speaker: "B" };
+  const making: TheatreState = { phase: "preparing_premiere", turn: 8, progress: { ready: 2, total: 8 } };
+  expect(nextResult(last, making)).toEqual(last);
+  expect(nextResult(last, { ...making, progress: { ready: 5, total: 8 } })).toEqual(last);
+  // An earlier round's result is not shown against it.
+  expect(nextResult(held, making)).toBeNull();
+});
+
+test("the progress before the premiere reads as a count of clips", () => {
+  expect(progressText({ ready: 2, total: 8 })).toBe("2 of 8 clips have been generated…");
+  expect(progressText({ ready: 0, total: 8 })).toBe("0 of 8 clips have been generated…");
+  expect(progressText({ ready: 1, total: 8 })).toBe("1 of 8 clips has been generated…");
 });

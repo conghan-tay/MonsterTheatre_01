@@ -192,7 +192,7 @@ export class AppStack extends Stack {
     });
 
     // In test mode the worker is not even given the provider keys, so that
-    // deployment cannot spend anything on Claude or ElevenLabs.
+    // deployment cannot spend anything on Claude, ElevenLabs, or WaveSpeed.
     const providers: { environment: Record<string, string>; secrets: Record<string, ecs.Secret> } =
       mode === "live"
         ? {
@@ -201,16 +201,22 @@ export class AppStack extends Stack {
               TTS_PROVIDER: "elevenlabs",
               LLM_MODEL: config.llmModel,
               TTS_MODEL: config.ttsModel,
+              // Used only for a performance whose director ticked
+              // "Include lip-sync video" (D055).
+              LIPSYNC_PROVIDER: "wavespeed",
+              LIPSYNC_RESOLUTION: config.lipSyncResolution ?? "480p",
             },
             secrets: {
               ANTHROPIC_API_KEY: ecs.Secret.fromSecretsManager(data.anthropicApiKey),
               ELEVENLABS_API_KEY: ecs.Secret.fromSecretsManager(data.elevenLabsApiKey),
+              WAVESPEED_API_KEY: ecs.Secret.fromSecretsManager(data.waveSpeedApiKey),
             },
           }
         : {
             environment: {
               LLM_PROVIDER: "fake",
               TTS_PROVIDER: "fake",
+              LIPSYNC_PROVIDER: "fake",
               // The timings the end-to-end suite expects (tests/e2e/harness).
               VOTE_WINDOW: "2s",
               PREMIERE_COUNTDOWN: "1s",

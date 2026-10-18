@@ -189,10 +189,11 @@ test_deploy_data_deploys_then_migrates_then_grants() {
 }
 
 test_deploy_data_says_which_keys_are_still_placeholders() {
-  fresh; touch "$STATE/unset-anthropic-api-key"
+  fresh; touch "$STATE/unset-anthropic-api-key" "$STATE/unset-wavespeed-api-key"
   run deploy-data
   expect_ok
   expect_output "anthropic-api-key.*placeholder"
+  expect_output "wavespeed-api-key.*placeholder"
 }
 
 test_deploy_app_test_deploys_in_test_mode_then_verifies() {
@@ -251,6 +252,15 @@ test_live_needs_the_provider_keys_and_test_does_not() {
   fresh; touch "$STATE/unset-elevenlabs-api-key"
   run deploy-app live
   expect_refused "elevenlabs-api-key"
+  expect_not_called "npx cdk deploy"
+  run deploy-app test
+  expect_ok
+}
+
+test_live_needs_the_wavespeed_key_too() {
+  fresh; touch "$STATE/unset-wavespeed-api-key"
+  run deploy-app live
+  expect_refused "wavespeed-api-key"
   expect_not_called "npx cdk deploy"
   run deploy-app test
   expect_ok
@@ -358,7 +368,7 @@ test_destroy_data_removes_protections_then_the_stack_then_the_secrets() {
   expect_ok
   expect_order "aws cloudformation update-termination-protection --no-enable-termination-protection" "npx cdk destroy MonsterTheatreData --force"
   expect_order "aws dsql update-cluster --identifier abcdefghijklmnopqrstuvwxyz --no-deletion-protection-enabled" "npx cdk destroy MonsterTheatreData --force"
-  for name in anthropic-api-key elevenlabs-api-key temporal-api-key share-link-secret; do
+  for name in anthropic-api-key elevenlabs-api-key wavespeed-api-key temporal-api-key share-link-secret; do
     expect_order "npx cdk destroy MonsterTheatreData" "aws secretsmanager delete-secret .*monster-theatre/$name .*--force-delete-without-recovery"
   done
 }
@@ -428,9 +438,10 @@ test_cycle_stops_when_the_tests_fail() {
 }
 
 test_status_reports_without_changing_anything() {
-  fresh; app_up live; touch "$STATE/unset-anthropic-api-key"
+  fresh; app_up live; touch "$STATE/unset-anthropic-api-key" "$STATE/unset-wavespeed-api-key"
   run status
   expect_ok
+  expect_output "wavespeed-api-key.*placeholder"
   expect_output "mt-admin"
   expect_output "MonsterTheatreApp.*CREATE_COMPLETE"
   expect_output "live"

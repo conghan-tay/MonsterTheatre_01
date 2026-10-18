@@ -1068,7 +1068,7 @@ How the run treats it:
 - **Waiting:** while a line's video is waited for, the worker holds one activity slot for it. About 125 lip-sync performances at once would use the default 1000.
 - **Revisions:** a lip-sync run's premiere comes after revision 25.
 - **The deployment:** live mode now needs a fifth secret set (`deploy-app live` refuses while it is a placeholder).
-- **Unverified:** nothing here has yet been run against WaveSpeed itself. The client was tested against a stand-in of its API, built from its documentation.
+- **Checked once against WaveSpeed itself (2026-10-18, approved by the user, one 480p call):** the client, unchanged, uploaded a 907 KB PNG portrait and an 8.64 s recording, submitted once, polled, and downloaded the video. The answer shapes matched what the client expects. The video took 123 s to generate (the user had seen up to six minutes for fifteen seconds) and was 640×608, the portrait's own near-square shape rather than 16:9. Its video track was 8.52 s against the recording's 8.64 s, and it carries its own AAC copy of the speech, which the stage mutes (D056). The mouth visibly moves with the speech in frames taken across it. Not checked: the charge as billed, a failed or timed-out video, rate limits, and how long output URLs last.
 
 **Status:** accepted — requested by the user and approved in the plan on 2026-10-18.
 

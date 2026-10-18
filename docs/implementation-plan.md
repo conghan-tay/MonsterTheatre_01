@@ -434,7 +434,7 @@ Before starting this step, load the relevant AWS skills as the project's instruc
 - **Providers:** `providers/wavespeed` is the client; `providers/fake` gives a one-second stand-in clip, which the fake script can slow or fail. The new settings are `LIPSYNC_PROVIDER`, `LIPSYNC_RESOLUTION`, and `LIPSYNC_POLL_INTERVAL`.
 - **Page:** the stage plays a muted video alongside the recording.
 - **AWS (code only, nothing deployed):** a fifth secret, `monster-theatre/wavespeed-api-key`, which live mode passes to the worker with WaveSpeed selected. `deploy-app live` refuses while it is a placeholder.
-- **Not verified:** any call to WaveSpeed itself. Its client was tested against a stand-in built from its documentation.
+- **Checked once against WaveSpeed** (one 480p call, approved by the user): upload, submit, poll, and download all worked with the client as written. An 8.64 s line took 123 s to generate and came back 640×608 and 0.12 s shorter than its recording. Not checked: a real failure, rate limits, and the billed amount.
 
 ## 4. Points to settle along the way
 

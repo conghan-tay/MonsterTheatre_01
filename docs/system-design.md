@@ -145,7 +145,7 @@ flowchart TD
         Tag[Activity: enhance winning line with audio tags] --> Speak[Activity: text to speech, save audio to S3]
         Speak -.->|lip sync asked for| Up[Activity: upload portrait and audio to WaveSpeed]
         Up --> Sub[Activity: submit the video, once]
-        Sub --> Wait[Activity: poll every 20 s, then save the video to S3]
+        Sub --> Poll[Activity: poll every 20 s, then save the video to S3]
     end
     Loop -->|No| FanIn[Wait for all eight child workflows]
     FanIn -.->|lip sync, while some are not ready| Progress[Publish: preparing_premiere, how many are ready]

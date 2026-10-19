@@ -1127,9 +1127,14 @@ The dialogue so far and the turn instruction follow, uncached.
 - Caching the tags call: below the minimum, so no effect.
 
 **Tradeoffs and consequences:**
-- **The saving is small:** an estimated 1.2 US cents a performance, from about $0.016 to $0.004 on the choices calls, until a real run measures it.
+- **Measured once (2026-10-19, approved by the user):** six real choices calls on Claude Sonnet 5.5, three turns of one room with caching on and three with it off, through the adapter unchanged.
+  - **Cache use:** with caching on, turn 1 wrote 1,232 tokens to the cache, and turns 2 and 3 each read the same 1,232.
+  - **Cost of the three turns:** $0.0090 with caching against $0.0132 without, 31% less. Turn 1 costs a little more with caching ($0.0048 against $0.0043), because of the write premium.
+  - **A whole performance:** extrapolated to eight turns, about 1.6 US cents saved (about $0.020 against $0.035 on the choices calls), more than the 1.2 cents first estimated.
+  - **Output:** answers were 143 to 174 output tokens, thinking included.
+  - **Not covered:** a full performance with real voting, and retries.
 - **The log isn't accounting:** totals are lost when the worker restarts, ElevenLabs and WaveSpeed costs are not logged, and prices must be updated by hand when they change.
-- **No paid run yet:** the layout was checked against a stand-in of the API only.
+- **The layout** was checked against a stand-in of the API by the tests, and against the real API by the one measurement above.
 
 **Status:** accepted — requested by the user, with caching on by default and a per-call log with room totals, in the plan approved on 2026-10-19.
 

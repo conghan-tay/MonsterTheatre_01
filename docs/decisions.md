@@ -34,7 +34,7 @@ The log below is kept in full, including entries that were later replaced. These
 | D036 | Every update carries the whole state, not a change |
 | D037 | The premiere's clip list carries each clip's URL |
 | D038 | Choice generation has no stand-in lines: retry for a window, then fail the run |
-| D039 | A finished room's snapshot comes from its row: the premiere as published, at revision 25, with its start time stored |
+| D039 | A finished room's snapshot comes from its row: the premiere as published, at the revision it was published at (25 without lip sync), with its start time stored |
 | D040 | Stored objects are read through a body that can seek, so the standard library answers range requests |
 | D041 | A browser that cannot be given the state is sent a `recovering` snapshot and kept; it asks again with `resync` |
 | D042 | A run found dead is detected by a refused query, marked failed, and announced to its whole room |
@@ -736,6 +736,8 @@ This algorithm was run through the spike's three scenarios and was correct in ev
 **Status:** accepted — explicit user choice on 2026-10-10.
 
 ## D039 — A finished room's snapshot is its last published state
+
+**Amended 2026-10-18 ([D055](#d055--lip-sync-with-wavespeed-infinitetalk-asked-for-at-start)):** "At revision 25" holds only for a run without lip sync. A run with lip sync publishes progress before its premiere, so its premiere comes later; that revision is stored with the script, and the snapshot is sent at it.
 
 **Decision:** A browser that connects to a room whose performance has completed is sent the `premiere` state exactly as it was published, at revision 25, rebuilt from the performance row. The premiere's start time is stored on the row for this. There is no `completed` phase on the WebSocket. A failed room's snapshot is `failed` with its reason, at revision 0.
 

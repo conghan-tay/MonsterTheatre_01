@@ -150,7 +150,7 @@ curl -b cookies.txt -o turn-1.mp3 localhost:8080/api/v1/performances/PERFORMANCE
 curl -b cookies.txt -H 'Range: bytes=0-99' -o first-100-bytes localhost:8080/api/v1/performances/PERFORMANCE_ID/turns/1/audio
 ```
 
-Before that the answer is `409`: nothing is heard before the premiere. A room WebSocket opened after the run gets the same `premiere` state as its snapshot, at revision 25, read from the database; its `startsAt` is then in the past, which is how a page knows to offer the recording from the beginning. The pages then offer **Play performance** instead of a countdown.
+Before that the answer is `409`: nothing is heard before the premiere. A room WebSocket opened after the run gets the same `premiere` state as its snapshot, at the revision it was published at (25, or later in a run with lip sync), read from the database; its `startsAt` is then in the past, which is how a page knows to offer the recording from the beginning. The pages then offer **Play performance** instead of a countdown.
 
 By default the language model and speech service are stand-ins: lines read "Turn 1, first option." and the recordings are silent. Nothing is spent unless you ask for the real ones.
 

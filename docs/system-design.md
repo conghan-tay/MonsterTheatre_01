@@ -8,8 +8,8 @@ Source of truth: [Product brief](monster-theatre-product-brief.md). Significant 
 
 1. A director creates a room (scene, two characters, two portraits) and gets a share link.
 2. Audience members open the link and enter the theatre.
-3. The director starts the performance. For each of eight turns the system generates three lines, the audience votes for ten seconds, and the winning line is shown, tagged, turned into speech, and saved.
-4. After turn eight, everyone counts down from five and hears the eight recordings played in order.
+3. The director starts the performance. For each of eight turns the system generates three lines, the audience votes for ten seconds, and the winning line is shown, tagged, turned into speech, saved, and, if the director asked for lip sync at Start, made into a video of its speaker's portrait speaking it (D055).
+4. After turn eight, and once every line's video is ready if there are any, everyone counts down from five and hears the eight recordings played in order, with each speaker on the stage: their portrait, or their video when there is one (D054, D056).
 
 ### Invariants
 
@@ -21,7 +21,7 @@ Source of truth: [Product brief](monster-theatre-product-brief.md). Significant 
 - Audience slots are never released; closing a tab does not free one (D028).
 - One winner per turn, chosen once and never changed.
 - No audio is played before the premiere (D022).
-- S3 is private. Browsers get portraits and audio through the server.
+- S3 is private. Browsers get portraits, audio, and lip-sync videos through the server.
 
 ### Requirements and how the design meets them
 
@@ -40,21 +40,22 @@ Source of truth: [Product brief](monster-theatre-product-brief.md). Significant 
 
 ### Capacity
 
-One performance involves at most 11 WebSocket connections, 25 published updates, 88 vote signals, 16 language-model calls, 8 speech calls, and 8 audio files of a few hundred kilobytes each, with only a handful of performances at once. One server instance and one worker instance are enough for that, and one of each is what is deployed. The live path does not depend on there being one server, though: everything a browser is sent reaches the servers through Redis, so a room's director and audience can be connected to different instances (section 6, "More than one server"; D046). What still assumes a single server is listed in section 9.
+One performance involves at most 11 WebSocket connections, 25 published updates, 88 vote signals, 16 language-model calls, 8 speech calls, and 8 audio files of a few hundred kilobytes each; with lip sync, also 8 WaveSpeed videos of one to three megabytes each and a few more updates before the premiere; with only a handful of performances at once. One server instance and one worker instance are enough for that, and one of each is what is deployed. The live path does not depend on there being one server, though: everything a browser is sent reaches the servers through Redis, so a room's director and audience can be connected to different instances (section 6, "More than one server"; D046). What still assumes a single server is listed in section 9.
 
 ## 2. Components
 
 | Component | Role |
 | --- | --- |
 | Next.js frontend | Director setup form, audience theatre, voting, premiere player |
-| Go server | One process, of which one instance is deployed, with two modules. **Room service:** create rooms, audience sessions, Start. **Theater:** WebSocket connections, vote signalling, forwarding updates, serving portraits and audio |
+| Go server | One process, of which one instance is deployed, with two modules. **Room service:** create rooms, audience sessions, Start. **Theater:** WebSocket connections, vote signalling, forwarding updates, serving portraits, audio, and videos |
 | Go worker | A separate process from the same codebase. Runs the performance workflow and its activities (D026) |
 | Temporal Cloud | Stores and drives the performance workflow |
 | Redis Streams | Two streams, each read whole by every server and forwarded to that server's browsers. `performance-updates`: the worker publishes performance updates (D024). `room-notices`: a server publishes news of its own for the others (D046). Held by Valkey 8.1, which speaks the Redis protocol: one ElastiCache node on AWS, a container locally (D051) |
 | PostgreSQL | Rooms, audience sessions, and one row per performance. Aurora DSQL on AWS, a plain PostgreSQL container locally (D032) |
-| S3 | Portraits and the eight turn recordings |
+| S3 | Portraits and the eight turn recordings, and, with lip sync, a video per turn |
 | Language model | Choice generation and audio-tag enhancement, behind a configurable adapter (D017) |
 | ElevenLabs | Speech for each winning line: one request per turn to the Text to Dialogue convert endpoint with `eleven_v4_turbo`, the speaker's voice, and the tagged text |
+| WaveSpeed | Only when the director asks for lip sync at Start: a video of each line's speaker, made by the InfiniteTalk model from the portrait and the recording. Both are uploaded to WaveSpeed, the video is polled for, then downloaded and kept in S3 (D055) |
 | Director login | Built into the Go server: administrator-created accounts with hashed passwords, a login form, and a session cookie (D029). Handlers receive a verified director ID from one piece of middleware, so the mechanism can be swapped later |
 
 ```mermaid
@@ -64,15 +65,16 @@ flowchart LR
     ALB -->|Pages| Web[Next.js]
     ALB -->|API and one WebSocket per browser| Server["Go server (Room service and Theater)"]
     Server -->|Rooms, sessions, performance row| DB[("PostgreSQL (Aurora DSQL on AWS)")]
-    Server -->|Portraits in, portraits and audio out| S3[(S3)]
+    Server -->|Portraits in, portraits, audio, and videos out| S3[(S3)]
     Server -->|Start workflow, signal votes, query state| Temporal[Temporal Cloud]
     Temporal <-->|Workflow and activity tasks| Worker[Go worker]
     Worker -->|Publish updates| Redis[(Redis Streams)]
     Redis -->|Read updates| Server
     Worker -->|Read room, save final result| DB
-    Worker -->|Save turn audio| S3
+    Worker -->|Save turn audio and videos| S3
     Worker <-->|Choices and tags| LLM[Language model]
     Worker <-->|Text to speech| TTS[ElevenLabs]
+    Worker -->|Lip-sync videos, when the director asks| WaveSpeed[WaveSpeed InfiniteTalk]
 ```
 
 The server and the worker never talk to each other directly. The server reaches the workflow through Temporal (start, signal, query), and the workflow reaches the server through Redis.
@@ -93,7 +95,7 @@ For prototyping, everything runs locally: the Temporal dev server, Redis, and Po
 | `audience_sessions` | Session ID, room, credential hash, nickname, timestamps. See [Audience session](audience-session.md) | When someone enters; `last_seen_at` on reconnect; the nickname again each time the same browser re-enters |
 | `performances` | Performance ID, room (unique, so one per room), status (`running`, `completed`, `failed`), the failure reason on a failed run, and on completion the final script and the eight audio keys, each a `jsonb` column (Aurora DSQL has no stored array type), and the time the premiere starts | A row at Start; one update at the end |
 
-The final script is one JSON document: for each turn the speaker, beat, three choices, vote counts, winner, how it was decided (majority, tie, no votes), the tagged text, whether tags were applied (false when tagging failed and the plain line was spoken), and the model that wrote the choices.
+The final script is one JSON document: for each turn the speaker, beat, three choices, vote counts, winner, how it was decided (majority, tie, no votes), the tagged text, whether tags were applied (false when tagging failed and the plain line was spoken), the model that wrote the choices, and, in a run with lip sync, the key of the turn's video if one was made. A run with lip sync also records the revision its premiere was published at (D055).
 
 There are no snapshot, event, or vote tables. While a performance is running, its state exists only in the workflow.
 
@@ -116,12 +118,13 @@ Nothing in the schema needs triggers, extensions, or LISTEN/NOTIFY, which DSQL d
 | --- | --- | --- |
 | Portrait A and B | `rooms/{roomId}/portrait-a`, `portrait-b` | Room creation |
 | Turn recording | `performances/{performanceId}/turn-{n}.mp3` | After each turn's speech is generated |
+| Turn lip-sync video, only if lip sync was asked for | `performances/{performanceId}/turn-{n}.mp4` | When WaveSpeed has made the turn's video and it has been downloaded |
 
 A lifecycle rule expires objects after seven days.
 
 ### Temporal workflow state
 
-Room context, current turn and phase, the current round's choices and deadline, who has voted for what, the winners so far, the tagged lines and audio keys of the turns whose child workflows have finished, and a revision number that increases with every published update. Each turn's child workflow has its own history: the tagging and speech activities and their result.
+Room context, current turn and phase, the current round's choices and deadline, who has voted for what, the winners so far, the tagged lines, audio keys, and any video keys of the turns whose child workflows have finished, and a revision number that increases with every published update. Each turn's child workflow has its own history: the tagging and speech activities and their result.
 
 ## 4. Performance workflow
 
@@ -337,10 +340,10 @@ A finished performance's snapshot is built from its row, with no worker needed (
 
 | Row | Snapshot | Revision |
 | --- | --- | --- |
-| `completed` | The `premiere` state exactly as it was published: `turn` 8, the eight `lines`, and `premiere` with the stored `startsAt` and the clips. Lines and clips are rebuilt from the saved script | 25, the last revision of every completed run (three updates a turn, then the premiere), so nothing needs storing |
+| `completed` | The `premiere` state exactly as it was published: `turn` 8, the eight `lines`, and `premiere` with the stored `startsAt` and the clips. Lines and clips are rebuilt from the saved script | The revision the premiere was published at: 25 in a run without lip sync (three updates a turn, then the premiere); in a run with lip sync, later, because of its progress updates, and stored with the script (D055) |
 | `failed` | `phase: failed` with `failure` built from the stored reason. No `turn` or `lines`: a failed run saves no script | 0, because the row does not record how far the run got. A `failed` update still on its way is therefore let through; it says the same, with the turn and lines added |
 
-The row is marked `completed` a moment before the premiere update is published. A browser that connects in between gets the premiere from the row at revision 25, and the update is then dropped for it as nothing new.
+The row is marked `completed` a moment before the premiere update is published. A browser that connects in between gets the premiere from the row at that same revision, and the update, or a lip-sync progress update still on its way, is then dropped for it as nothing new.
 
 If the performance row says `running`, the workflow is asked for its state, on one condition: that it is still open. Temporal refuses the query otherwise. That gives three outcomes from one call:
 
@@ -390,16 +393,16 @@ A browser that reconnects during a round gets its own vote back in the snapshot,
 
 ### Premiere
 
-1. After the eighth recording is saved, the workflow fixes the start time five seconds ahead, saves it with the final script and audio keys to the performance row, and marks the row `completed`.
-2. It publishes `premiere` with that start time and the ordered clip list (turn, speaker, URL).
-3. Each browser counts down to the start time, then plays the eight clips in order through one audio element, each fetched from the URL the clip carries, and highlights the portrait of the clip's speaker and its line in the script. The browser never builds an audio address itself.
+1. Once every line is ready (its recording saved, and its video too in a run with lip sync, or given up on), the workflow fixes the start time five seconds ahead, saves it with the final script and audio keys to the performance row, and marks the row `completed`.
+2. It publishes `premiere` with that start time and the ordered clip list (turn, speaker, URL, and `videoUrl` where the turn has a video).
+3. Each browser counts down to the start time, then plays the eight clips in order through one audio element, each fetched from the URL the clip carries. While a clip plays, its speaker takes the stage: their portrait, or their video, muted, when the clip has one, with the line beneath it (D054, D056). The browser never builds an audio or video address itself.
 4. A browser that connects later gets the same `premiere` state as its snapshot, from the row. If the start time is still ahead it joins the countdown; if it has passed, the browser offers the recording from the beginning. This is also how a finished room is replayed, by anyone who can still enter it.
 
 Playback is not synchronised beyond the shared start time, which the brief accepts.
 
 Two delivery rules keep the premiere continuous and working across browsers:
 
-- **Preloading.** On receiving the `premiere` state, the browser fetches all eight clips whole, during the five-second countdown, and plays from those copies, so each clip is ready before the previous one ends. If a clip is still loading when its turn comes, playback waits for it; nothing is skipped. With real recordings a clip is about 150 KB.
+- **Preloading.** On receiving the `premiere` state, the browser fetches all eight clips whole, during the five-second countdown, and plays from those copies, so each clip is ready before the previous one ends. If a clip is still loading when its turn comes, playback waits for it; nothing is skipped. With real recordings a clip is about 150 KB. Videos, when there are any, are fetched whole in the same way, about 1.5 MB each at 480p; one that cannot be fetched is skipped and the portrait shown.
 - **Range requests.** The audio endpoint answers partial-content requests: it honours the `Range` header, replies `206` with `Accept-Ranges: bytes` (and `416` for a range past the end), and reads only the bytes asked for from S3. Safari's audio element expects this. The parsing and the replies are Go's `http.ServeContent`; the object store hands it a body that can seek, which over S3 means a ranged read from the offset sought (D040).
 
 ### Worker restart

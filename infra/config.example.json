@@ -5,5 +5,6 @@
   "voiceIdA": "the-first-elevenlabs-voice-id",
   "voiceIdB": "the-second-elevenlabs-voice-id",
   "llmModel": "claude-sonnet-5-5",
-  "ttsModel": "eleven_v4_turbo"
+  "ttsModel": "eleven_v4_turbo",
+  "lipSyncResolution": "480p"
 }

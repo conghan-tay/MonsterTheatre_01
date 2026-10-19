@@ -101,6 +101,9 @@ export default function RoomPage() {
 // repeat. Once the performance is running the live view replaces it.
 function StartPerformance({ roomId }: { roomId: string }) {
   const [busy, setBusy] = useState(false);
+  // Off unless the director asks: it adds minutes before the premiere and
+  // is paid for by the second (D055).
+  const [lipSync, setLipSync] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   async function start() {
@@ -110,7 +113,7 @@ function StartPerformance({ roomId }: { roomId: string }) {
     setBusy(true);
     setError(null);
     try {
-      await api.start(roomId);
+      await api.start(roomId, lipSync);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "The performance could not be started. Press Start again.");
     }
@@ -121,6 +124,21 @@ function StartPerformance({ roomId }: { roomId: string }) {
     <div className="space-y-3">
       <p className="text-stone-700">The performance has not started.</p>
       {error && <ErrorNotice>{error}</ErrorNotice>}
+      <label className="flex items-start gap-2 text-stone-700">
+        <input
+          type="checkbox"
+          className="mt-1"
+          checked={lipSync}
+          onChange={(e) => setLipSync(e.target.checked)}
+          disabled={busy}
+          aria-describedby="lip-sync-note"
+        />
+        <span>Include lip-sync video</span>
+      </label>
+      <p id="lip-sync-note" className="-mt-2 pl-6 text-sm text-stone-500">
+        Each line becomes a video of its speaker&rsquo;s portrait. It adds several minutes before the premiere and is
+        paid for per second of speech.
+      </p>
       <Button type="button" onClick={start} disabled={busy}>
         {busy ? "Starting…" : "Start performance"}
       </Button>

@@ -51,6 +51,30 @@ const audioCacheControl = "private, max-age=604800, immutable"
 // bytes asked for from the object store. Safari's audio element will not
 // play without them.
 func (s *Service) Audio(w http.ResponseWriter, r *http.Request) {
+	s.serveTurn(w, r, "recording", func(p Performance, turn int) (string, error) {
+		if turn > len(p.AudioKeys) {
+			return "", errors.New("completed performance " + p.ID + " has no audio key for turn " + strconv.Itoa(turn))
+		}
+		return p.AudioKeys[turn-1], nil
+	})
+}
+
+// Video handles GET /api/v1/performances/{performanceId}/turns/{turn}/video:
+// one turn's lip-sync video, on the same terms as its recording. A turn
+// without one, in a run without lip sync or whose video failed, is 404.
+func (s *Service) Video(w http.ResponseWriter, r *http.Request) {
+	s.serveTurn(w, r, "video", func(p Performance, turn int) (string, error) {
+		if turn > len(p.Script.Turns) {
+			return "", nil
+		}
+		return p.Script.Turns[turn-1].VideoKey, nil
+	})
+}
+
+// serveTurn answers for one turn's stored file, a recording or a video:
+// the room's people only, once the performance has completed, with ranges.
+// key finds the file's key in the row; an empty key means the turn has none.
+func (s *Service) serveTurn(w http.ResponseWriter, r *http.Request, what string, key func(Performance, int) (string, error)) {
 	p, err := s.performanceByID(r)
 	if errors.Is(err, ErrNotFound) {
 		s.noSuchRecording(w, r)
@@ -66,7 +90,7 @@ func (s *Service) Audio(w http.ResponseWriter, r *http.Request) {
 
 	turn, err := strconv.Atoi(r.PathValue("turn"))
 	if err != nil || turn < 1 || turn > Turns {
-		httpapi.WriteError(w, http.StatusNotFound, "not_found", "No such recording.")
+		httpapi.WriteError(w, http.StatusNotFound, "not_found", "No such "+what+".")
 		return
 	}
 	if p.Status != StatusCompleted {
@@ -74,19 +98,24 @@ func (s *Service) Audio(w http.ResponseWriter, r *http.Request) {
 			"The recordings can be played once the performance has completed.")
 		return
 	}
-	if turn > len(p.AudioKeys) {
-		s.internalError(w, "find recording", errors.New("completed performance "+p.ID+" has no audio key for turn "+strconv.Itoa(turn)))
+	objectKey, err := key(p, turn)
+	if err != nil {
+		s.internalError(w, "find "+what, err)
+		return
+	}
+	if objectKey == "" {
+		httpapi.WriteError(w, http.StatusNotFound, "not_found", "This turn has no "+what+".")
 		return
 	}
 
-	obj, err := s.Objects.Get(r.Context(), p.AudioKeys[turn-1])
+	obj, err := s.Objects.Get(r.Context(), objectKey)
 	if errors.Is(err, objectstore.ErrNotFound) {
-		// Recordings are removed after seven days.
-		httpapi.WriteError(w, http.StatusNotFound, "not_found", "This recording is no longer kept.")
+		// Recordings and videos are removed after seven days.
+		httpapi.WriteError(w, http.StatusNotFound, "not_found", "This "+what+" is no longer kept.")
 		return
 	}
 	if err != nil {
-		s.internalError(w, "read recording", err)
+		s.internalError(w, "read "+what, err)
 		return
 	}
 	defer obj.Body.Close()

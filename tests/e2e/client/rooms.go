@@ -136,6 +136,11 @@ func (c *Client) FetchAudio(ctx context.Context, url string) (*Response, error) 
 	return c.Get(ctx, url)
 }
 
+// FetchVideo reads a turn's lip-sync video, at the URL its clip carries.
+func (c *Client) FetchVideo(ctx context.Context, url string) (*Response, error) {
+	return c.Get(ctx, url)
+}
+
 // FetchAudioRange reads part of a recording, as an audio element does when
 // it seeks. byteRange is the Range header's value, for example "bytes=0-99".
 func (c *Client) FetchAudioRange(ctx context.Context, url, byteRange string) (*Response, error) {

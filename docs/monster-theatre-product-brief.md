@@ -138,9 +138,11 @@ Deferred: per-turn audio playback and live audio streaming, a data lake and anal
 
 Future animation should begin as offline processing of saved assets. The MVP does not promise animation compatibility.
 
+*Note 2026-10-18: an optional lip-sync video per line is now built, made from each line's portrait and recording with WaveSpeed's InfiniteTalk model and chosen by the director at Start ([D055](decisions.md#d055--lip-sync-with-wavespeed-infinitetalk-asked-for-at-start)). The text above is the brief as first written.*
+
 ## Reference documentation
 
 - [ElevenLabs: Audio tags](https://elevenlabs.io/docs/help-center/product/core-capabilities/text-to-speech/how-do-audio-tags-work-with-eleven-v3-and-v4) — expressive delivery instructions.
 - [Temporal: Sending messages to workflows](https://docs.temporal.io/sending-messages) — signals, queries, and updates.
 - [MDN: Autoplay guide](https://developer.mozilla.org/en-US/docs/Web/Media/Guides/Autoplay) — browser audio activation and playback-blocked handling.
-- [InfiniteTalk: Official repository](https://github.com/MeiGen-AI/InfiniteTalk) — future image/audio animation exploration.
+- [InfiniteTalk: Official repository](https://github.com/MeiGen-AI/InfiniteTalk) — future image/audio animation exploration. *Now used, through WaveSpeed, for lip sync (D055).*

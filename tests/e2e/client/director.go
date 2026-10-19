@@ -46,3 +46,8 @@ type StartResponse struct {
 func (c *Client) Start(ctx context.Context, roomID string) (*Response, error) {
 	return c.PostJSON(ctx, "/api/v1/rooms/"+roomID+"/performance", struct{}{})
 }
+
+// StartWithLipSync presses Start with "Include lip-sync video" ticked.
+func (c *Client) StartWithLipSync(ctx context.Context, roomID string) (*Response, error) {
+	return c.PostJSON(ctx, "/api/v1/rooms/"+roomID+"/performance", map[string]bool{"lipSync": true})
+}

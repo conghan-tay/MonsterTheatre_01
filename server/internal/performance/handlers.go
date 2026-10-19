@@ -29,7 +29,7 @@ type Store interface {
 
 // Starter starts a performance's workflow. *Workflows implements it.
 type Starter interface {
-	Start(ctx context.Context, performanceID, roomID string) error
+	Start(ctx context.Context, performanceID, roomID string, lipSync bool) error
 }
 
 // Service serves the performance endpoints. Start is behind
@@ -64,11 +64,14 @@ type startResponse struct {
 func (s *Service) Start(w http.ResponseWriter, r *http.Request) {
 	director, _ := auth.DirectorFrom(r.Context())
 
-	// The body is empty, but it must be declared as JSON: a form on another
+	// The body says whether to make lip-sync videos, and may be empty
+	// ({}), which means not. It must be declared as JSON: a form on another
 	// site cannot send that type, so it cannot press Start for a director.
-	var body struct{}
+	var body struct {
+		LipSync bool `json:"lipSync"`
+	}
 	if err := httpapi.DecodeJSON(w, r, &body, maxStartBodyBytes); err != nil {
-		httpapi.WriteError(w, http.StatusUnprocessableEntity, "invalid_request", "Send an empty JSON object.")
+		httpapi.WriteError(w, http.StatusUnprocessableEntity, "invalid_request", `Send a JSON object, with "lipSync" true or false if wanted.`)
 		return
 	}
 
@@ -99,7 +102,7 @@ func (s *Service) Start(w http.ResponseWriter, r *http.Request) {
 	log := s.Logger.With("room_id", roomID, "performance_id", p.ID)
 
 	if p.Status == StatusRunning {
-		if err := s.Workflows.Start(r.Context(), p.ID, roomID); err != nil {
+		if err := s.Workflows.Start(r.Context(), p.ID, roomID, body.LipSync); err != nil {
 			if errors.Is(err, context.Canceled) {
 				return
 			}

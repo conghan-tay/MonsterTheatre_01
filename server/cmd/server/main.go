@@ -146,6 +146,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	// A turn's recording, for the same people who may read the room, once
 	// the performance has completed.
 	mux.HandleFunc(performance.AudioRoute, performanceService.Audio)
+	mux.HandleFunc(performance.VideoRoute, performanceService.Video)
 
 	// The room's live connection, for the same people who may read the room.
 	hub := theater.NewHub()

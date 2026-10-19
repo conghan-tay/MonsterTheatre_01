@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -113,4 +114,51 @@ func TestSilentMP3IsWholeFramesWithAnMP3Header(t *testing.T) {
 		header := audio[i*mp3FrameSize : i*mp3FrameSize+2]
 		require.Equal(t, []byte{0xFF, 0xFB}, header, "frame %d starts with an MPEG-1 Layer III sync word", i)
 	}
+}
+
+func TestLipSyncMakesAVideoOfTheTestClip(t *testing.T) {
+	ctx := context.Background()
+	l := &LipSync{}
+	image, err := l.Upload(ctx, providers.UploadRequest{RoomID: "room1", Turn: 2, Filename: "portrait.png", Data: []byte("x")})
+	require.NoError(t, err)
+	audio, err := l.Upload(ctx, providers.UploadRequest{RoomID: "room1", Turn: 2, Filename: "turn-2.mp3", Data: []byte("y")})
+	require.NoError(t, err)
+
+	id, err := l.Submit(ctx, providers.LipSyncRequest{RoomID: "room1", Turn: 2, ImageURL: image, AudioURL: audio, Resolution: "480p"})
+	require.NoError(t, err)
+	result, err := l.Result(ctx, id)
+	require.NoError(t, err)
+	require.Equal(t, providers.LipSyncCompleted, result.Status, "with no script, at once")
+
+	video, err := l.Download(ctx, result.VideoURL)
+	require.NoError(t, err)
+	require.Equal(t, TestVideo(), video)
+	require.Equal(t, "ftyp", string(video[4:8]), "an MP4")
+}
+
+func TestLipSyncIsSlowedAndFailedByScript(t *testing.T) {
+	ctx := context.Background()
+	now := time.Unix(1000, 0)
+	l := &LipSync{
+		Scripts: scriptsWith(t, "room1", `{"lipSyncDelays": {"1": 3000}, "failures": [{"op": "lipsync", "turn": 2, "attempts": 1}]}`),
+		Now:     func() time.Time { return now },
+	}
+
+	id, err := l.Submit(ctx, providers.LipSyncRequest{RoomID: "room1", Turn: 1})
+	require.NoError(t, err)
+	result, err := l.Result(ctx, id)
+	require.NoError(t, err)
+	require.Equal(t, providers.LipSyncPending, result.Status, "turn 1 takes three seconds")
+	now = now.Add(3 * time.Second)
+	result, err = l.Result(ctx, id)
+	require.NoError(t, err)
+	require.Equal(t, providers.LipSyncCompleted, result.Status)
+
+	_, err = l.Submit(ctx, providers.LipSyncRequest{RoomID: "room1", Turn: 2})
+	require.ErrorIs(t, err, ErrInjected, "turn 2's submission fails")
+}
+
+func TestLipSyncResultOfAnUnknownVideoIsAnError(t *testing.T) {
+	_, err := (&LipSync{}).Result(context.Background(), "not-a-fake-id")
+	require.Error(t, err)
 }

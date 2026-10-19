@@ -27,7 +27,7 @@ export AWS_PROFILE="${AWS_PROFILE:-mt-admin}"
 export AWS_REGION="${AWS_REGION:-ap-southeast-1}"
 DATA=MonsterTheatreData
 APP=MonsterTheatreApp
-SECRETS="anthropic-api-key elevenlabs-api-key temporal-api-key share-link-secret"
+SECRETS="anthropic-api-key elevenlabs-api-key wavespeed-api-key temporal-api-key share-link-secret"
 # How often a wait looks again. The tests set it to 0.
 POLL="${AWS_SH_POLL_SECONDS:-20}"
 # Roughly what the app stack costs an hour while it exists (README, "Cost").
@@ -192,7 +192,7 @@ cmd_status() {
     elif secret_is_set "$name"; then
       echo "$name: set"
     else
-      echo "$name: still the placeholder. Set it yourself: README, \"Put the three keys into Secrets Manager\""
+      echo "$name: still the placeholder. Set it yourself: README, \"Put the four keys into Secrets Manager\""
     fi
   done
 
@@ -226,7 +226,7 @@ cmd_deploy_data() {
 
   say "Secrets"
   local name unset=0
-  for name in anthropic-api-key elevenlabs-api-key temporal-api-key; do
+  for name in anthropic-api-key elevenlabs-api-key wavespeed-api-key temporal-api-key; do
     if secret_is_set "$name"; then
       echo "$name: set"
     else
@@ -234,7 +234,7 @@ cmd_deploy_data() {
       unset=1
     fi
   done
-  [ "$unset" -eq 0 ] || echo "Set the placeholders yourself, in your own terminal: README, \"Put the three keys into Secrets Manager\"."
+  [ "$unset" -eq 0 ] || echo "Set the placeholders yourself, in your own terminal: README, \"Put the four keys into Secrets Manager\"."
   echo "$DATA is deployed, migrated, and granted."
 }
 
@@ -242,7 +242,7 @@ cmd_deploy_app() {
   local mode="${1:-}"
   case "$mode" in
   test | live) ;;
-  *) die "deploy-app needs a mode: test (stand-in providers, spends nothing) or live (Claude and ElevenLabs)" ;;
+  *) die "deploy-app needs a mode: test (stand-in providers, spends nothing) or live (Claude, ElevenLabs, and WaveSpeed for lip sync)" ;;
   esac
   require_identity
   require_not_busy
@@ -252,7 +252,7 @@ cmd_deploy_app() {
   secret_is_set temporal-api-key || die "the secret temporal-api-key still holds its placeholder; the worker would not start. Set it first (README)."
   if [ "$mode" = live ]; then
     local name
-    for name in anthropic-api-key elevenlabs-api-key; do
+    for name in anthropic-api-key elevenlabs-api-key wavespeed-api-key; do
       secret_is_set "$name" || die "the secret $name still holds its placeholder; live mode needs it. Set it first (README)."
     done
   fi
@@ -443,14 +443,14 @@ cmd_destroy_data() {
   fi
 
   # Deleted with no recovery window, so the names are free for the next
-  # deploy-data. The three keys must then be put in again.
+  # deploy-data. The four keys must then be put in again.
   say "Deleting the secrets for good"
   local name
   for name in $SECRETS; do
     aws secretsmanager delete-secret --secret-id "monster-theatre/$name" --force-delete-without-recovery >/dev/null 2>&1 || true
     echo "deleted monster-theatre/$name"
   done
-  echo "$DATA is gone. deploy-data creates it again, empty; the three keys then need putting in again."
+  echo "$DATA is gone. deploy-data creates it again, empty; the four keys then need putting in again."
 }
 
 cmd_cycle() {

@@ -64,10 +64,13 @@ func (m *memStore) ByID(_ context.Context, id string) (Performance, error) {
 type fakeStarter struct {
 	err    error
 	starts []string
+	// lipSync is what each start was asked, in order.
+	lipSync []bool
 }
 
-func (f *fakeStarter) Start(_ context.Context, performanceID, _ string) error {
+func (f *fakeStarter) Start(_ context.Context, performanceID, _ string, lipSync bool) error {
 	f.starts = append(f.starts, performanceID)
+	f.lipSync = append(f.lipSync, lipSync)
 	return f.err
 }
 
@@ -85,16 +88,22 @@ func newService(store *memStore, starter *fakeStarter) *Service {
 // middleware's context so the handler reads the director the usual way.
 func press(t *testing.T, svc *Service, room, director string) (int, map[string]any) {
 	t.Helper()
+	return pressWith(t, svc, room, director, "{}")
+}
+
+// pressWith sends a Start with the given JSON body.
+func pressWith(t *testing.T, svc *Service, room, director, body string) (int, map[string]any) {
+	t.Helper()
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/v1/rooms/{roomId}/performance", svc.Start)
-	r := httptest.NewRequest(http.MethodPost, "/api/v1/rooms/"+room+"/performance", strings.NewReader("{}"))
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/rooms/"+room+"/performance", strings.NewReader(body))
 	r.Header.Set("Content-Type", "application/json")
 	r = r.WithContext(auth.WithDirector(r.Context(), auth.Identity{DirectorID: director}))
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, r)
-	var body map[string]any
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body), "body: %s", w.Body)
-	return w.Code, body
+	var answer map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &answer), "body: %s", w.Body)
+	return w.Code, answer
 }
 
 func errorCode(body map[string]any) string {
@@ -189,6 +198,29 @@ func TestStartMustBeSentAsJSON(t *testing.T) {
 	require.Empty(t, starter.starts)
 }
 
+func TestStartPassesOnWhetherToMakeLipSyncVideos(t *testing.T) {
+	store, starter := &memStore{}, &fakeStarter{}
+	svc := newService(store, starter)
+
+	status, _ := pressWith(t, svc, roomID, directorID, `{"lipSync": true}`)
+	require.Equal(t, http.StatusCreated, status)
+	status, _ = pressWith(t, svc, roomID, directorID, `{"lipSync": false}`)
+	require.Equal(t, http.StatusOK, status)
+	status, _ = press(t, svc, roomID, directorID)
+	require.Equal(t, http.StatusOK, status)
+	require.Equal(t, []bool{true, false, false}, starter.lipSync, "an empty object, as before, means no lip sync")
+}
+
+func TestStartRefusesALipSyncChoiceThatIsNotTrueOrFalse(t *testing.T) {
+	store, starter := &memStore{}, &fakeStarter{}
+	svc := newService(store, starter)
+
+	status, body := pressWith(t, svc, roomID, directorID, `{"lipSync": "yes"}`)
+	require.Equal(t, http.StatusUnprocessableEntity, status)
+	require.Equal(t, "invalid_request", errorCode(body))
+	require.Nil(t, store.row, "nothing is started")
+}
+
 // The workflow publishes clip URLs long before any browser fetches one, so
 // the URL it builds and the route the server registers must agree.
 func TestAudioURLIsMatchedByAudioRoute(t *testing.T) {
@@ -207,6 +239,25 @@ func TestAudioURLIsMatchedByAudioRoute(t *testing.T) {
 		require.Equal(t, performanceID, gotID, "url: %s", url)
 		require.Equal(t, strconv.Itoa(turn), gotTurn, "url: %s", url)
 	}
+}
+
+func TestVideoURLIsMatchedByVideoRoute(t *testing.T) {
+	const performanceID = "33333333-3333-4333-8333-333333333333"
+	var gotID, gotTurn string
+	mux := http.NewServeMux()
+	mux.HandleFunc(VideoRoute, func(_ http.ResponseWriter, r *http.Request) {
+		gotID, gotTurn = r.PathValue("performanceId"), r.PathValue("turn")
+	})
+	url := VideoURL(performanceID, 4)
+	require.Equal(t, "/api/v1/performances/"+performanceID+"/turns/4/video", url)
+	mux.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, url, nil))
+	require.Equal(t, performanceID, gotID)
+	require.Equal(t, "4", gotTurn)
+}
+
+func TestALipSyncRunMayTakeLonger(t *testing.T) {
+	require.Equal(t, 30*time.Minute, RunTimeout(false), "as before")
+	require.Equal(t, 45*time.Minute, RunTimeout(true), "turn 8's video may be waited for for up to 25 minutes")
 }
 
 func TestWorkflowIDIsDerivedFromThePerformance(t *testing.T) {

@@ -59,6 +59,13 @@ type recorder struct {
 
 	// children are the IDs of the child workflows started, in order.
 	children []string
+
+	// The lip-sync activities' inputs, and errors to return for failTurn.
+	uploads     []activities.LipSyncInputs
+	submissions []activities.LipSyncSubmission
+	waits       []activities.LipSyncWait
+	submitErr   error
+	awaitErr    error
 }
 
 // newRun returns a test environment with every activity mocked. Each before
@@ -80,11 +87,12 @@ func newRun(t *testing.T, before ...func(*testsuite.TestWorkflowEnvironment)) (*
 
 	env.OnActivity(a.FetchContext, mock.Anything, "room-1").Return(activities.RoomContext{
 		Scene:              providers.Scene{Topic: "A biscuit"},
-		CharacterA:         activities.Character{Name: "Grumble", VoiceID: "voice-a"},
-		CharacterB:         activities.Character{Name: "Fizz", VoiceID: "voice-b"},
+		CharacterA:         activities.Character{Name: "Grumble", VoiceID: "voice-a", PortraitKey: "rooms/room-1/portrait-a"},
+		CharacterB:         activities.Character{Name: "Fizz", VoiceID: "voice-b", PortraitKey: "rooms/room-1/portrait-b"},
 		VoteWindow:         testWindow,
 		PremiereCountdown:  testCountdown,
 		ChoicesRetryWindow: testRetryWindow,
+		LipSyncResolution:  "480p",
 	}, nil)
 	env.OnActivity(a.GenerateChoices, mock.Anything, mock.Anything).Return(
 		func(_ context.Context, in activities.ChoicesInput) (activities.ChoicesResult, error) {
@@ -111,6 +119,29 @@ func newRun(t *testing.T, before ...func(*testsuite.TestWorkflowEnvironment)) (*
 				return "", rec.speechErr
 			}
 			return activities.AudioKey(in.PerformanceID, in.Turn), nil
+		})
+	env.OnActivity(a.UploadLipSyncInputs, mock.Anything, mock.Anything).Return(
+		func(_ context.Context, in activities.LipSyncInputs) (activities.LipSyncUploads, error) {
+			rec.uploads = append(rec.uploads, in)
+			return activities.LipSyncUploads{
+				ImageURL: "https://files.example/" + in.PortraitKey, AudioURL: fmt.Sprintf("https://files.example/turn-%d.mp3", in.Turn),
+			}, nil
+		})
+	env.OnActivity(a.SubmitLipSync, mock.Anything, mock.Anything).Return(
+		func(_ context.Context, in activities.LipSyncSubmission) (string, error) {
+			rec.submissions = append(rec.submissions, in)
+			if rec.submitErr != nil && in.Turn == rec.failTurn {
+				return "", rec.submitErr
+			}
+			return fmt.Sprintf("pred-%d", in.Turn), nil
+		})
+	env.OnActivity(a.AwaitLipSync, mock.Anything, mock.Anything).Return(
+		func(_ context.Context, in activities.LipSyncWait) (string, error) {
+			rec.waits = append(rec.waits, in)
+			if rec.awaitErr != nil && in.Turn == rec.failTurn {
+				return "", rec.awaitErr
+			}
+			return activities.VideoKey(in.PerformanceID, in.Turn), nil
 		})
 	env.OnActivity(a.Publish, mock.Anything, mock.Anything).Return(
 		func(_ context.Context, update performance.Update) error {

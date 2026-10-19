@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -62,7 +63,11 @@ func (f *fakeObjects) Get(_ context.Context, key string) (*objectstore.Object, e
 	if !ok {
 		return nil, objectstore.ErrNotFound
 	}
-	return &objectstore.Object{Body: seekingBody{bytes.NewReader([]byte(data))}, Size: int64(len(data)), ContentType: "audio/mpeg"}, nil
+	contentType := "audio/mpeg"
+	if strings.HasSuffix(key, ".mp4") {
+		contentType = "video/mp4"
+	}
+	return &objectstore.Object{Body: seekingBody{bytes.NewReader([]byte(data))}, Size: int64(len(data)), ContentType: contentType}, nil
 }
 
 type audioFixture struct {
@@ -97,6 +102,7 @@ func newAudio() *audioFixture {
 func (f *audioFixture) request(method, url, byteRange string) *httptest.ResponseRecorder {
 	mux := http.NewServeMux()
 	mux.HandleFunc(AudioRoute, f.svc.Audio)
+	mux.HandleFunc(VideoRoute, f.svc.Video)
 	r := httptest.NewRequest(method, url, nil)
 	if byteRange != "" {
 		r.Header.Set("Range", byteRange)
@@ -269,6 +275,92 @@ func TestFailedStateSaysWhy(t *testing.T) {
 
 	// A row marked failed with no reason recorded.
 	require.Equal(t, FailureInternal, FailedState(Performance{ID: "perf-1", Status: StatusFailed}).Failure.Code)
+}
+
+// footage is turn 3's lip-sync video in these tests.
+const footage = "mp4 bytes, ten"
+
+// withVideo gives the completed performance a video for turn 3 only, kept
+// where its script says.
+func (f *audioFixture) withVideo() *audioFixture {
+	key := "performances/" + performanceID + "/turn-3.mp4"
+	f.store.row.Script.Turns = make([]ScriptTurn, Turns)
+	for i := range f.store.row.Script.Turns {
+		f.store.row.Script.Turns[i].Turn = i + 1
+	}
+	f.store.row.Script.Turns[2].VideoKey = key
+	f.objects.objects[key] = footage
+	return f
+}
+
+func TestVideoServesACompletedPerformancesVideo(t *testing.T) {
+	f := newAudio().withVideo()
+	w := f.get(VideoURL(performanceID, 3))
+
+	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body)
+	require.Equal(t, footage, w.Body.String())
+	require.Equal(t, "video/mp4", w.Header().Get("Content-Type"))
+	require.Equal(t, "bytes", w.Header().Get("Accept-Ranges"))
+	require.Equal(t, "private, max-age=604800, immutable", w.Header().Get("Cache-Control"))
+	require.Equal(t, []string{roomID}, f.door.asked, "the caller is checked against the performance's own room")
+
+	ranged := f.request(http.MethodGet, VideoURL(performanceID, 3), "bytes=0-2")
+	require.Equal(t, http.StatusPartialContent, ranged.Code)
+	require.Equal(t, "mp4", ranged.Body.String())
+}
+
+func TestVideoForATurnWithoutOne(t *testing.T) {
+	f := newAudio().withVideo()
+	w := f.get(VideoURL(performanceID, 2))
+	require.Equal(t, http.StatusNotFound, w.Code, "body: %s", w.Body)
+	require.Equal(t, "not_found", responseCode(t, w))
+	require.Empty(t, f.objects.opened, "nothing is read for a turn that has no video")
+}
+
+func TestVideoFollowsTheAudiosRules(t *testing.T) {
+	f := newAudio().withVideo()
+	f.store.row.Status = StatusRunning
+	w := f.get(VideoURL(performanceID, 3))
+	require.Equal(t, http.StatusConflict, w.Code, "nothing is seen before the premiere")
+	require.Equal(t, "performance_not_completed", responseCode(t, w))
+
+	f = newAudio().withVideo()
+	f.door.refuse = true
+	w = f.get(VideoURL(performanceID, 3))
+	require.Equal(t, http.StatusForbidden, w.Code)
+	require.Empty(t, f.objects.opened)
+}
+
+func TestPremiereStateHasAVideoForEachTurnThatHasOne(t *testing.T) {
+	p := Performance{ID: "perf-1", Status: StatusCompleted}
+	for turn := 1; turn <= Turns; turn++ {
+		p.Script.Turns = append(p.Script.Turns, ScriptTurn{Turn: turn, Speaker: "A", Winner: Choice{ID: "c1", Text: "kept"}})
+	}
+	p.Script.Turns[4].VideoKey = "performances/perf-1/turn-5.mp4"
+
+	clips := PremiereState(p).Premiere.Clips
+	require.Equal(t, VideoURL("perf-1", 5), clips[4].VideoURL)
+	for i, clip := range clips {
+		if i != 4 {
+			require.Empty(t, clip.VideoURL, "turn %d has no video", i+1)
+		}
+	}
+	sent, err := json.Marshal(clips[0])
+	require.NoError(t, err)
+	require.NotContains(t, string(sent), "videoUrl", "absent, not empty, where there is none")
+}
+
+func TestAFinishedRunsRevisionIsTheOneItsPremiereWasPublishedAt(t *testing.T) {
+	p := Performance{ID: "perf-1", Status: StatusCompleted}
+	require.Equal(t, LastRevision, PremiereRevision(p), "a run saved before revisions were stored, or without lip sync")
+	p.Script.PremiereRevision = 31
+	require.Equal(t, 31, PremiereRevision(p), "a lip-sync run, with its progress updates")
+}
+
+func TestProgressIsPartOfTheState(t *testing.T) {
+	sent, err := json.Marshal(State{Phase: PhasePreparingPremiere, Turn: Turns, Progress: &Progress{Ready: 2, Total: Turns}})
+	require.NoError(t, err)
+	require.JSONEq(t, `{"phase":"preparing_premiere","turn":8,"progress":{"ready":2,"total":8}}`, string(sent))
 }
 
 func TestLastRevisionIsThreeUpdatesATurnAndThePremiere(t *testing.T) {

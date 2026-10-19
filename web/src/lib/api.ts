@@ -87,6 +87,7 @@ export const api = {
   join: (roomId: string, token: string, nickname: string) =>
     request<Entered>("/api/v1/audience-sessions", json({ roomId, token, nickname })),
   // The Start button. Safe to repeat: a room has one performance.
-  start: (roomId: string) =>
-    request<Performance>(`/api/v1/rooms/${encodeURIComponent(roomId)}/performance`, json({})),
+  // lipSync asks for a lip-sync video of each line (D055).
+  start: (roomId: string, lipSync = false) =>
+    request<Performance>(`/api/v1/rooms/${encodeURIComponent(roomId)}/performance`, json({ lipSync })),
 };

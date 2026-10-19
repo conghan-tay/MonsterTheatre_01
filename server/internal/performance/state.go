@@ -28,13 +28,19 @@ const (
 	PhaseGenerating    = "generating"
 	PhaseVoting        = "voting"
 	PhasePreparingLine = "preparing_line"
-	PhasePremiere      = "premiere"
-	PhaseFailed        = "failed"
+	// PhasePreparingPremiere is published only in a run with lip sync, once
+	// the turns are over and while the last videos are being made. It
+	// carries Progress (docs/decisions.md, D055).
+	PhasePreparingPremiere = "preparing_premiere"
+	PhasePremiere          = "premiere"
+	PhaseFailed            = "failed"
 )
 
-// LastRevision is the revision of the premiere, the last update of every
-// completed run: three updates a turn, then one. The revision goes up with
-// each publish whether or not it reached Redis, so this needs no storing.
+// LastRevision is the revision of the premiere in a run without lip sync:
+// three updates a turn, then one. The revision goes up with each publish
+// whether or not it reached Redis. A run with lip sync publishes its
+// progress before the premiere, so its premiere comes later and its
+// revision is stored (PremiereRevision).
 const LastRevision = 3*Turns + 1
 
 // How a round's winner was decided.
@@ -78,6 +84,16 @@ type State struct {
 	Premiere *Premiere `json:"premiere,omitempty"`
 	// Failure is set in the failed phase.
 	Failure *Failure `json:"failure,omitempty"`
+	// Progress is set in the preparing_premiere phase.
+	Progress *Progress `json:"progress,omitempty"`
+}
+
+// Progress is how many of a run's lip-sync videos are ready: "2 of 8 clips
+// have been generated". A line whose video failed counts as ready, since
+// nothing more is waited for.
+type Progress struct {
+	Ready int `json:"ready"`
+	Total int `json:"total"`
 }
 
 // Failure is why a performance ended early. Code is stable and is what the
@@ -147,6 +163,9 @@ type Clip struct {
 	// browser plays it as given and never builds one itself
 	// (docs/decisions.md, D037).
 	URL string `json:"url"`
+	// VideoURL is the turn's lip-sync video, if it has one: the portrait
+	// speaking, without sound, played alongside the recording (D056).
+	VideoURL string `json:"videoUrl,omitempty"`
 }
 
 // AudioRoute is the route that serves a turn's recording, and AudioURL the
@@ -158,6 +177,15 @@ const AudioRoute = "GET /api/v1/performances/{performanceId}/turns/{turn}/audio"
 // AudioURL is where a browser fetches a turn's recording.
 func AudioURL(performanceID string, turn int) string {
 	return fmt.Sprintf("/api/v1/performances/%s/turns/%d/audio", performanceID, turn)
+}
+
+// VideoRoute serves a turn's lip-sync video, and VideoURL is one video's
+// path on it.
+const VideoRoute = "GET /api/v1/performances/{performanceId}/turns/{turn}/video"
+
+// VideoURL is where a browser fetches a turn's lip-sync video.
+func VideoURL(performanceID string, turn int) string {
+	return fmt.Sprintf("/api/v1/performances/%s/turns/%d/video", performanceID, turn)
 }
 
 // Vote is one vote as the server hands it to the workflow.
@@ -197,6 +225,10 @@ type Update struct {
 // Script is the final record of a performance, saved on its row.
 type Script struct {
 	Turns []ScriptTurn `json:"turns"`
+	// PremiereRevision is the revision the premiere was published at. It
+	// is recorded only by runs with lip sync, whose progress updates move
+	// it past LastRevision (PremiereRevision).
+	PremiereRevision int `json:"premiereRevision,omitempty"`
 }
 
 // ScriptTurn is one turn of the final script.
@@ -215,10 +247,23 @@ type ScriptTurn struct {
 	TagsApplied bool `json:"tagsApplied"`
 	// Model is the language model that wrote the choices and the tags.
 	Model string `json:"model"`
+	// VideoKey is where the turn's lip-sync video is stored, if it has one.
+	VideoKey string `json:"videoKey,omitempty"`
+}
+
+// PremiereRevision is the revision a completed performance's premiere was
+// published at: recorded with its script, or LastRevision for a run that
+// recorded none. A finished room's snapshot is given it, so that an update
+// still on its way, such as lip-sync progress, is older and is dropped.
+func PremiereRevision(p Performance) int {
+	if p.Script.PremiereRevision > 0 {
+		return p.Script.PremiereRevision
+	}
+	return LastRevision
 }
 
 // PremiereState is the state of a completed performance, rebuilt from its
-// row. It is the state the premiere update carried, at LastRevision, so a
+// row. It is the state the premiere update carried, at PremiereRevision, so a
 // browser that connects after the run holds what those who watched it hold
 // (docs/decisions.md, D039). The start time is then in the past, which is
 // how a browser knows to offer the recording from the beginning.
@@ -228,6 +273,9 @@ func PremiereState(p Performance) State {
 	for i, turn := range p.Script.Turns {
 		lines[i] = Line{Turn: turn.Turn, Speaker: turn.Speaker, Text: turn.Winner.Text}
 		clips[i] = Clip{Turn: turn.Turn, Speaker: turn.Speaker, URL: AudioURL(p.ID, turn.Turn)}
+		if turn.VideoKey != "" {
+			clips[i].VideoURL = VideoURL(p.ID, turn.Turn)
+		}
 	}
 	return State{
 		Phase:         PhasePremiere,

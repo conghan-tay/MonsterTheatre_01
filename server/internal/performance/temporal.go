@@ -25,6 +25,9 @@ const (
 
 	// runTimeout bounds a run that hangs (docs/system-design.md, section 4).
 	runTimeout = 30 * time.Minute
+	// lipSyncRunTimeout is for a run with lip sync: turn 8's line may be
+	// waited for for up to 25 minutes after the turns end (D055).
+	lipSyncRunTimeout = 45 * time.Minute
 )
 
 // Fields of a stream entry.
@@ -44,6 +47,9 @@ func WorkflowID(performanceID string) string {
 type WorkflowInput struct {
 	PerformanceID string
 	RoomID        string
+	// LipSync asks for a lip-sync video of each line, as the director
+	// chose when pressing Start.
+	LipSync bool
 }
 
 // Workflows reaches performance workflows through Temporal. It is the
@@ -53,18 +59,26 @@ type Workflows struct {
 	TaskQueue string
 }
 
+// RunTimeout is how long a run may take before it is ended as hung.
+func RunTimeout(lipSync bool) time.Duration {
+	if lipSync {
+		return lipSyncRunTimeout
+	}
+	return runTimeout
+}
+
 // Start starts the workflow for a performance. It is safe to repeat: if the
 // workflow is already running, or has already run, nothing happens.
-func (w *Workflows) Start(ctx context.Context, performanceID, roomID string) error {
+func (w *Workflows) Start(ctx context.Context, performanceID, roomID string, lipSync bool) error {
 	_, err := w.Client.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
 		ID:                 WorkflowID(performanceID),
 		TaskQueue:          w.TaskQueue,
-		WorkflowRunTimeout: runTimeout,
+		WorkflowRunTimeout: RunTimeout(lipSync),
 		// A running one is left running...
 		WorkflowIDConflictPolicy: enumspb.WORKFLOW_ID_CONFLICT_POLICY_USE_EXISTING,
 		// ...and a finished one is never run again: one performance per room.
 		WorkflowIDReusePolicy: enumspb.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE,
-	}, WorkflowName, WorkflowInput{PerformanceID: performanceID, RoomID: roomID})
+	}, WorkflowName, WorkflowInput{PerformanceID: performanceID, RoomID: roomID, LipSync: lipSync})
 	var alreadyStarted *serviceerror.WorkflowExecutionAlreadyStarted
 	if errors.As(err, &alreadyStarted) {
 		return nil

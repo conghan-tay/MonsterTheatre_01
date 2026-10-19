@@ -55,9 +55,11 @@ const (
 	PhaseGenerating    = "generating"
 	PhaseVoting        = "voting"
 	PhasePreparingLine = "preparing_line"
-	PhasePremiere      = "premiere"
-	PhaseRecovering    = "recovering"
-	PhaseFailed        = "failed"
+	// PhasePreparingPremiere follows the turns in a lip-sync run only.
+	PhasePreparingPremiere = "preparing_premiere"
+	PhasePremiere          = "premiere"
+	PhaseRecovering        = "recovering"
+	PhaseFailed            = "failed"
 )
 
 // State is the performance state a snapshot or update carries. Every update
@@ -78,6 +80,14 @@ type State struct {
 	Premiere *Premiere `json:"premiere"`
 	// Failure is set in the failed phase: why the run could not continue.
 	Failure *Failure `json:"failure"`
+	// Progress is set in the preparing_premiere phase of a lip-sync run.
+	Progress *Progress `json:"progress"`
+}
+
+// Progress is how many of a run's lip-sync videos are ready.
+type Progress struct {
+	Ready int `json:"ready"`
+	Total int `json:"total"`
 }
 
 // Failure is why a performance ended early.
@@ -118,6 +128,8 @@ type Clip struct {
 	Turn    int    `json:"turn"`
 	Speaker string `json:"speaker"`
 	URL     string `json:"url"`
+	// VideoURL is the turn's lip-sync video, if it has one.
+	VideoURL string `json:"videoUrl"`
 }
 
 // Conn is one browser's WebSocket to the server.

@@ -308,10 +308,12 @@ func (s *Service) snapshot(ctx context.Context, v *viewing) (int, performance.St
 // finished is the snapshot of a performance whose row says it has ended.
 func finished(p performance.Performance) (int, performance.State) {
 	if p.Status == performance.StatusCompleted {
-		// The premiere as it was published. The row is marked a moment
-		// before that update goes out; a browser that connects in between
-		// is sent this, and the update is then dropped as nothing new.
-		return performance.LastRevision, performance.PremiereState(p)
+		// The premiere as it was published, at the revision it was
+		// published at. The row is marked a moment before that update goes
+		// out; a browser that connects in between is sent this, and the
+		// update, or a lip-sync progress update still on its way, is then
+		// dropped as nothing new.
+		return performance.PremiereRevision(p), performance.PremiereState(p)
 	}
 	// The row does not record the revision a run failed at. Zero lets a
 	// failed update still on its way through, which says the same.

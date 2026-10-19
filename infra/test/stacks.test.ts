@@ -3,7 +3,11 @@ import assert from "node:assert/strict";
 import { App } from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
 
-import { Config, Mode } from "../lib/config";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+
+import { Config, Mode, loadConfig } from "../lib/config";
 import { DataStack } from "../lib/data-stack";
 import { AppStack } from "../lib/app-stack";
 
@@ -78,10 +82,10 @@ test("the database is one Aurora DSQL cluster that cannot be deleted by accident
   data.hasResourceProperties("AWS::DSQL::Cluster", { DeletionProtectionEnabled: true });
 });
 
-test("there are four secrets, and only the share-link one is given a generated value on purpose", () => {
+test("there are five secrets, and only the share-link one is given a generated value on purpose", () => {
   const { data } = synth("test");
-  data.resourceCountIs("AWS::SecretsManager::Secret", 4);
-  for (const name of ["anthropic-api-key", "elevenlabs-api-key", "temporal-api-key", "share-link-secret"]) {
+  data.resourceCountIs("AWS::SecretsManager::Secret", 5);
+  for (const name of ["anthropic-api-key", "elevenlabs-api-key", "wavespeed-api-key", "temporal-api-key", "share-link-secret"]) {
     data.hasResourceProperties("AWS::SecretsManager::Secret", { Name: `monster-theatre/${name}` });
   }
   data.hasResourceProperties("AWS::SecretsManager::Secret", {
@@ -216,7 +220,7 @@ test("no secret value is written into a task definition", () => {
     const { app } = synth(mode);
     for (const name of ["server", "worker", "web"]) {
       const names = Object.keys(env(container(app, name)));
-      for (const secret of ["SHARE_LINK_SECRET", "TEMPORAL_API_KEY", "ANTHROPIC_API_KEY", "ELEVENLABS_API_KEY"]) {
+      for (const secret of ["SHARE_LINK_SECRET", "TEMPORAL_API_KEY", "ANTHROPIC_API_KEY", "ELEVENLABS_API_KEY", "WAVESPEED_API_KEY"]) {
         assert.ok(!names.includes(secret), `${mode}/${name}: ${secret} is not a plain variable`);
       }
     }
@@ -229,6 +233,7 @@ test("test mode uses the stand-in providers and is not given the provider keys",
   const vars = env(worker);
   assert.equal(vars.LLM_PROVIDER, "fake");
   assert.equal(vars.TTS_PROVIDER, "fake");
+  assert.equal(vars.LIPSYNC_PROVIDER, "fake");
   assert.equal(vars.VOTE_WINDOW, "2s");
   assert.equal(vars.PREMIERE_COUNTDOWN, "1s");
   assert.equal(vars.CHOICES_RETRY_WINDOW, "4s");
@@ -243,10 +248,29 @@ test("live mode uses the real providers, with their keys and the default timings
   assert.equal(vars.TTS_PROVIDER, "elevenlabs");
   assert.equal(vars.LLM_MODEL, "claude-sonnet-5-5");
   assert.equal(vars.TTS_MODEL, "eleven_v4_turbo");
-  for (const timing of ["VOTE_WINDOW", "PREMIERE_COUNTDOWN", "CHOICES_RETRY_WINDOW"]) {
+  assert.equal(vars.LIPSYNC_PROVIDER, "wavespeed");
+  assert.equal(vars.LIPSYNC_RESOLUTION, "480p", "480p unless config.json says otherwise");
+  for (const timing of ["VOTE_WINDOW", "PREMIERE_COUNTDOWN", "CHOICES_RETRY_WINDOW", "LIPSYNC_POLL_INTERVAL"]) {
     assert.equal(vars[timing], undefined, `${timing} is left at the worker's default`);
   }
-  assert.deepEqual(secretNames(worker), ["ANTHROPIC_API_KEY", "ELEVENLABS_API_KEY", "TEMPORAL_API_KEY"]);
+  assert.deepEqual(secretNames(worker), ["ANTHROPIC_API_KEY", "ELEVENLABS_API_KEY", "TEMPORAL_API_KEY", "WAVESPEED_API_KEY"]);
+});
+
+test("the lip-sync resolution can be set in config.json", () => {
+  const cdkApp = new App();
+  const where = { account: "123456789012", region: config.region };
+  const data = new DataStack(cdkApp, "MonsterTheatreData", { env: where });
+  const app = new AppStack(cdkApp, "MonsterTheatreApp", { env: where, data, config: { ...config, lipSyncResolution: "720p" }, mode: "live" });
+  assert.equal(env(container(Template.fromStack(app), "worker")).LIPSYNC_RESOLUTION, "720p");
+});
+
+test("a lip-sync resolution that is not 480p or 720p is refused", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mt-config-"));
+  const file = path.join(dir, "config.json");
+  fs.writeFileSync(file, JSON.stringify({ ...config, lipSyncResolution: "1080p" }));
+  assert.throws(() => loadConfig(file), /lipSyncResolution/);
+  fs.writeFileSync(file, JSON.stringify(config));
+  assert.equal(loadConfig(file).lipSyncResolution, undefined, "and it may be left out");
 });
 
 test("the web app is given nothing: no variables and no secrets", () => {

@@ -34,7 +34,7 @@ The log below is kept in full, including entries that were later replaced. These
 | D036 | Every update carries the whole state, not a change |
 | D037 | The premiere's clip list carries each clip's URL |
 | D038 | Choice generation has no stand-in lines: retry for a window, then fail the run |
-| D039 | A finished room's snapshot comes from its row: the premiere as published, at revision 25, with its start time stored |
+| D039 | A finished room's snapshot comes from its row: the premiere as published, at the revision it was published at (25 without lip sync), with its start time stored |
 | D040 | Stored objects are read through a body that can seek, so the standard library answers range requests |
 | D041 | A browser that cannot be given the state is sent a `recovering` snapshot and kept; it asks again with `resync` |
 | D042 | A run found dead is detected by a refused query, marked failed, and announced to its whole room |
@@ -50,6 +50,8 @@ The log below is kept in full, including entries that were later replaced. These
 | D052 | Two stacks: one kept between demos, one destroyed; real providers only when asked for |
 | D053 | Each turn's line is tagged and voiced in a child workflow that runs in the background; the premiere waits for all eight, and a line that cannot be voiced stops the run at once |
 | D054 | While a premiere line plays, its speaker takes the stage: the portrait as large as the window allows at its own shape, the line beneath it, the rest of the page dark and blurred |
+| D055 | Lip sync, if the director asks: each voiced line becomes a WaveSpeed InfiniteTalk video in its child workflow, polled for, not called back; a line whose video fails keeps its portrait; the room is told the progress before the premiere |
+| D056 | A lip-sync video plays muted on the stage, alongside the recording played as before |
 
 Superseded or withdrawn: D002, D004, D006, D010, D011, D012, D014, D016, D019, D020, D021, and the data-lake half of D003.
 
@@ -735,6 +737,8 @@ This algorithm was run through the spike's three scenarios and was correct in ev
 
 ## D039 — A finished room's snapshot is its last published state
 
+**Amended 2026-10-18 ([D055](#d055--lip-sync-with-wavespeed-infinitetalk-asked-for-at-start)):** "At revision 25" holds only for a run without lip sync. A run with lip sync publishes progress before its premiere, so its premiere comes later; that revision is stored with the script, and the snapshot is sent at it.
+
 **Decision:** A browser that connects to a room whose performance has completed is sent the `premiere` state exactly as it was published, at revision 25, rebuilt from the performance row. The premiere's start time is stored on the row for this. There is no `completed` phase on the WebSocket. A failed room's snapshot is `failed` with its reason, at revision 0.
 
 **Context / requirement:** Until step 12 a finished room's snapshot only named a phase, `completed` or `failed`, at revision 0. The brief requires that reopening the room link shows the script and replays the premiere, so the snapshot needed the lines and the clips. Three things were open: its shape, its revision, and what a browser connecting during the countdown is told, since the start time was computed after the row was saved and stored nowhere.
@@ -1018,3 +1022,73 @@ This algorithm was run through the spike's three scenarios and was correct in ev
 - It was checked in Chromium only, at 1280×720 and 390×844.
 
 **Status:** accepted — the user's request, and the plan approved on 2026-10-18.
+
+## D055 — Lip sync with WaveSpeed InfiniteTalk, asked for at Start
+
+**Decision:** The director's Start has a checkbox, **Include lip-sync video**, unticked by default. Ticked, each line's child workflow (D053) does three more things after voicing the line:
+1. It uploads the speaker's portrait and the recording to WaveSpeed.
+2. It submits one InfiniteTalk video.
+3. It waits for the video, then stores it beside the recording.
+
+How the run treats it:
+- A line whose video cannot be made keeps no video and is played with its portrait. The run still reaches its premiere.
+- After turn 8, any video not yet ready is waited for in a new phase, `preparing_premiere`, which publishes `progress: {ready, total}` each time the count changes.
+- The premiere's clips carry `videoUrl` where there is a video.
+- Unticked, nothing differs from before: no new phase, revisions 1 to 25.
+
+**Context / requirement:** The user asked for lip-sync video of each line, with the resolution configurable (480p for now), the audience kept informed during a wait that can be about six minutes for a fifteen-second clip, and the director able to leave it out. The user chose four of the behaviours below on 2026-10-18: a line falls back on failure, the box is unticked by default, the AWS code is prepared but nothing deployed, and the video plays muted (D056). After asking how polling would work, the user also agreed to polling inside an activity every 20 seconds.
+
+**Chosen approach:**
+- **The three steps are three activities, because they are retried differently.**
+  - Uploading is retried (3 attempts).
+  - **Submitting is tried once.** WaveSpeed warns that a submission whose answer was lost "may still have been created and billed", and there is no way to cancel one.
+  - Waiting (`AwaitLipSync`) polls inside the activity every 20 seconds (`LIPSYNC_POLL_INTERVAL`), with a heartbeat after each poll, a one-minute heartbeat timeout, and fifteen minutes in all. Its input is the prediction's ID, so a retry after a worker dies carries on polling and never resubmits.
+  - A failed video, or an answer that says the request is wrong (4xx other than 408 and 429), ends the wait at once. Rate limits and server errors are waited through.
+- **Inputs are uploaded, because InfiniteTalk reads its image and audio from URLs** and ours are private. They go to WaveSpeed's own file store (`POST /api/v3/media/uploads`, then a PUT to a signed URL), which keeps them seven days. The API key is sent only to the API, never to the storage hosts.
+- **The video is downloaded and stored** at `performances/{id}/turn-{n}.mp4`, because WaveSpeed's outputs are temporary. It is served at `/api/v1/performances/{id}/turns/{n}/video` on the same terms as the recording. Its key is kept in the script JSON, so there is no migration.
+- **The premiere's revision is saved with the script** (`premiereRevision`) in a lip-sync run. A finished room's snapshot then uses it rather than 25, so a progress update still on its way is dropped rather than shown after the premiere.
+- **Timeouts:**
+  - Each lip-sync step adds 20 minutes to a line's child workflow timeout.
+  - A lip-sync run's own timeout is 45 minutes rather than 30, because turn 8's line may be waited for that long.
+- **Settings:** `LIPSYNC_PROVIDER` (`fake` or `wavespeed`, `fake` by default), `LIPSYNC_RESOLUTION` (`480p` or `720p`), and `WAVESPEED_API_KEY`.
+- **On AWS:** live mode uses WaveSpeed at `lipSyncResolution` from `infra/config.json` (480p if not set). Test mode uses the stand-in and is not given the key.
+
+**Why it fits:**
+- Videos are made while the voting goes on, so usually only the last few are waited for.
+- Polling inside one activity costs a few Temporal actions a line: one activity, plus heartbeats, which the SDK throttles. A workflow timer and an activity per poll would cost about 36 a line, and about 100 history events.
+- One waiting line is one sleeping goroutine. The worker runs up to 1000 activities at once by default.
+
+**Alternatives considered:**
+- **WaveSpeed's webhooks:** these need a public HTTPS endpoint, which local development lacks and whose AWS address changes on every recreate (D049). They also need a second secret checked on the server, and a signal from the server to the workflow.
+- **Polling with workflow timers:** more actions and history, for the sole gain of not holding a worker slot.
+- **Failing the run when a video fails:** a fifteen-minute wait could end in a failed room. The user chose the fallback.
+- **Pre-signed S3 URLs instead of uploading:** these would not work locally, where objects are on disk.
+
+**Tradeoffs and consequences:**
+- **Cost:** WaveSpeed's published price is 0.03 USD a second at 480p and 0.06 at 720p, with a 3-second minimum, so about 2.40 USD a performance of eight ten-second lines at 480p. A submission that times out is not retried, so its video, if made, is paid for and unused.
+- **Data:** portraits and recordings leave for WaveSpeed and are kept there seven days.
+- **Waiting:** while a line's video is waited for, the worker holds one activity slot for it. About 125 lip-sync performances at once would use the default 1000.
+- **Revisions:** a lip-sync run's premiere comes after revision 25.
+- **The deployment:** live mode now needs a fifth secret set (`deploy-app live` refuses while it is a placeholder).
+- **Checked once against WaveSpeed itself (2026-10-18, approved by the user, one 480p call):** the client, unchanged, uploaded a 907 KB PNG portrait and an 8.64 s recording, submitted once, polled, and downloaded the video. The answer shapes matched what the client expects. The video took 123 s to generate (the user had seen up to six minutes for fifteen seconds) and was 640×608, the portrait's own near-square shape rather than 16:9. Its video track was 8.52 s against the recording's 8.64 s, and it carries its own AAC copy of the speech, which the stage mutes (D056). The mouth visibly moves with the speech in frames taken across it. Not checked: the charge as billed, a failed or timed-out video, rate limits, and how long output URLs last.
+
+**Status:** accepted — requested by the user and approved in the plan on 2026-10-18.
+
+## D056 — A lip-sync video plays muted, alongside the recording
+
+**Decision:** At the premiere, a line with a video shows the video on the stage (D054) in the portrait's place, muted, inline, and started as it appears. The line's sound is its recording, played through the page's one audio element exactly as without lip sync (D044). The page fetches each video whole during the countdown, as it does the recordings. A video that cannot be fetched is skipped, and the portrait is shown.
+
+**Context / requirement:** Browsers play sound only on a page that has had a click, and Safari only through an element started in that click. A muted video may play at any time.
+
+**Chosen approach:** `usePremiere` keeps a second list of fetched videos and hands the stage the playing clip's, or nothing. The stage sizes the video to its own shape, as it does a portrait.
+
+**Why it fits:** Nothing about the audio changes, so D044's playback rules and their tests stand. The video and the recording are started together, and a clip is about ten seconds, so they should not drift apart noticeably. That has not been checked with real videos.
+
+**Alternatives considered:** Letting the video play its own sound. That would need a second element started inside the Enter theatre click for Safari, and would change D044's design.
+
+**Tradeoffs and consequences:**
+- Whether the lips match the sound depends on the two starting together. That was not measured.
+- If a video is shorter than its recording, its last frame stays until the recording ends.
+- The page holds the videos in memory during the premiere: an estimated 1 to 3 MB each at 480p.
+
+**Status:** accepted — chosen by the user on 2026-10-18.

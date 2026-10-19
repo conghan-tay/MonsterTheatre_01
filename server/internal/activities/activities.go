@@ -1,7 +1,7 @@
 // Package activities holds everything the performance workflow does that
 // touches the outside world: the database, Redis, the object store, the
-// language model, and the speech service. Workflow code may do none of
-// that itself.
+// language model, the speech service, and the lip-sync service. Workflow
+// code may do none of that itself.
 package activities
 
 import (
@@ -52,6 +52,10 @@ type Activities struct {
 	Objects      objectstore.Store
 	Dialogue     providers.DialogueModel
 	Speech       providers.Speech
+	LipSync      providers.LipSync
+	// LipSyncPollInterval is how long AwaitLipSync waits between asking
+	// whether a video is done.
+	LipSyncPollInterval time.Duration
 	// The settings below are handed to the workflow by FetchContext, so
 	// that the values a run used are in its history.
 	VoteWindow        time.Duration
@@ -61,7 +65,10 @@ type Activities struct {
 	ChoicesRetryWindow time.Duration
 	// LineLimit is the longest a generated line may be, in characters.
 	LineLimit int
-	Now       func() time.Time
+	// LipSyncResolution is the lip-sync videos' resolution, "480p" or
+	// "720p".
+	LipSyncResolution string
+	Now               func() time.Time
 }
 
 // Character is a character as the workflow needs it.
@@ -69,6 +76,8 @@ type Character struct {
 	Name    string
 	Brief   string
 	VoiceID string
+	// PortraitKey is where the character's portrait is stored, for lip sync.
+	PortraitKey string
 }
 
 // RoomContext is everything a run needs to know before its first turn.
@@ -79,6 +88,7 @@ type RoomContext struct {
 	VoteWindow         time.Duration
 	PremiereCountdown  time.Duration
 	ChoicesRetryWindow time.Duration
+	LipSyncResolution  string
 }
 
 // FetchContext loads the room's scene and characters, and the run's settings.
@@ -91,7 +101,7 @@ func (a *Activities) FetchContext(ctx context.Context, roomID string) (RoomConte
 		return RoomContext{}, err
 	}
 	character := func(c rooms.Character) Character {
-		return Character{Name: c.Name, Brief: c.Brief, VoiceID: c.VoiceID}
+		return Character{Name: c.Name, Brief: c.Brief, VoiceID: c.VoiceID, PortraitKey: c.PortraitKey}
 	}
 	return RoomContext{
 		Scene:              providers.Scene{Topic: room.Scene.Topic, Description: room.Scene.Description, Genre: room.Scene.Genre},
@@ -100,6 +110,7 @@ func (a *Activities) FetchContext(ctx context.Context, roomID string) (RoomConte
 		VoteWindow:         a.VoteWindow,
 		PremiereCountdown:  a.PremiereCountdown,
 		ChoicesRetryWindow: a.ChoicesRetryWindow,
+		LipSyncResolution:  a.LipSyncResolution,
 	}, nil
 }
 

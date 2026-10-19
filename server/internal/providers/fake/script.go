@@ -17,6 +17,9 @@ const (
 	OpChoices = "choices"
 	OpTags    = "tags"
 	OpSpeech  = "speech"
+	// OpLipSync fails a lip-sync submission. It is tried once, so any
+	// attempts of one or more fail it.
+	OpLipSync = "lipsync"
 )
 
 // ErrInjected is the error returned for a scripted failure.
@@ -28,7 +31,8 @@ var ErrInjected = errors.New("fake provider: scripted failure")
 //
 //	{
 //	  "choices":  {"1": ["Hello.", "Greetings.", "Oh, it's you."]},
-//	  "failures": [{"op": "speech", "turn": 2, "attempts": 3}]
+//	  "failures": [{"op": "speech", "turn": 2, "attempts": 3}],
+//	  "lipSyncDelays": {"1": 3000}
 //	}
 type Script struct {
 	// Choices maps a turn number to the three lines to offer. Turns not
@@ -36,6 +40,10 @@ type Script struct {
 	Choices map[int][]string `json:"choices"`
 	// Failures lists operations that fail for their first Attempts attempts.
 	Failures []Failure `json:"failures"`
+	// LipSyncDelays maps a turn number to how long, in milliseconds, its
+	// lip-sync video takes after it is submitted. Turns not listed are
+	// ready at once.
+	LipSyncDelays map[int]int `json:"lipSyncDelays"`
 }
 
 // Failure makes one operation on one turn fail for attempts 1..Attempts.

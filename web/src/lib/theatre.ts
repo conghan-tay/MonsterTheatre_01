@@ -1,7 +1,15 @@
 // What the room WebSocket carries, as the server sends it
 // (server/internal/performance/state.go; docs/system-design.md, section 5).
 
-export type Phase = "waiting" | "recovering" | "generating" | "voting" | "preparing_line" | "premiere" | "failed";
+export type Phase =
+  | "waiting"
+  | "recovering"
+  | "generating"
+  | "voting"
+  | "preparing_line"
+  | "preparing_premiere"
+  | "premiere"
+  | "failed";
 
 export type Speaker = "A" | "B";
 
@@ -17,7 +25,12 @@ export type Winner = {
 export type Line = { turn: number; speaker: Speaker; text: string };
 
 // url is a path on this origin; the page plays it as given (D037).
-export type Clip = { turn: number; speaker: Speaker; url: string };
+// videoUrl, when there is one, is the line's lip-sync video, played without
+// sound alongside the recording (D056).
+export type Clip = { turn: number; speaker: Speaker; url: string; videoUrl?: string };
+
+// How many of a lip-sync run's videos are ready, before its premiere (D055).
+export type Progress = { ready: number; total: number };
 
 export type Premiere = { startsAt: string; clips: Clip[] };
 
@@ -39,6 +52,7 @@ export type TheatreState = {
   lines?: Line[];
   premiere?: Premiere;
   failure?: Failure;
+  progress?: Progress;
 };
 
 // Who is in the room's audience, in the order they joined. Only the
@@ -67,5 +81,13 @@ export function nextResult(held: Result | null, state: TheatreState): Result | n
     return { turn: state.turn, speaker: state.speaker, beat: state.beat, winner: state.winner, choices: state.choices ?? [] };
   }
   if (state.phase === "generating" && held && state.turn === held.turn + 1) return held;
+  // The last round's result stays while a lip-sync run's videos are made.
+  if (state.phase === "preparing_premiere" && held && held.turn === TURNS) return held;
   return null;
+}
+
+// progressText is what the room is told while a lip-sync run's videos are
+// made: "2 of 8 clips have been generated…".
+export function progressText({ ready, total }: Progress): string {
+  return `${ready} of ${total} clips ${ready === 1 ? "has" : "have"} been generated…`;
 }

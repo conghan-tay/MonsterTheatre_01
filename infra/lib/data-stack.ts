@@ -22,6 +22,7 @@ export class DataStack extends Stack {
   readonly temporalApiKey: secretsmanager.Secret;
   readonly anthropicApiKey: secretsmanager.Secret;
   readonly elevenLabsApiKey: secretsmanager.Secret;
+  readonly waveSpeedApiKey: secretsmanager.Secret;
 
   constructor(scope: Construct, id: string, props: StackProps) {
     super(scope, id, { ...props, description: "Monster Theatre - database, bucket, secrets, task roles" });
@@ -46,13 +47,14 @@ export class DataStack extends Stack {
       autoDeleteObjects: true,
     });
 
-    // The three keys are created holding a random placeholder. Their real
+    // The four keys are created holding a random placeholder. Their real
     // values are put in by hand (README, "Deploying"), and are never part
     // of a template, a task definition, or this repository.
     const placeholder = (id: string, name: string, description: string) =>
       new secretsmanager.Secret(this, id, { secretName: `monster-theatre/${name}`, description });
     this.anthropicApiKey = placeholder("AnthropicApiKey", "anthropic-api-key", "Anthropic API key, read by the worker");
     this.elevenLabsApiKey = placeholder("ElevenLabsApiKey", "elevenlabs-api-key", "ElevenLabs API key, read by the worker");
+    this.waveSpeedApiKey = placeholder("WaveSpeedApiKey", "wavespeed-api-key", "WaveSpeed API key for lip sync, read by the worker");
     this.temporalApiKey = placeholder("TemporalApiKey", "temporal-api-key", "Temporal Cloud API key, read by the server and the worker");
 
     // Share links are derived from this one. Nobody needs to know it, so it
@@ -69,6 +71,7 @@ export class DataStack extends Stack {
     // which CloudFormation refuses.
     this.exportValue(this.anthropicApiKey.secretArn);
     this.exportValue(this.elevenLabsApiKey.secretArn);
+    this.exportValue(this.waveSpeedApiKey.secretArn);
 
     const taskRole = (id: string, description: string) =>
       new iam.Role(this, id, { assumedBy: new iam.ServicePrincipal("ecs-tasks.amazonaws.com"), description });

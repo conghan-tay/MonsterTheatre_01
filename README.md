@@ -187,6 +187,12 @@ To see the lines, run this from the repository root, with the worker's output sa
 grep '"msg":"claude call"' worker.log | jq -c '{kind, turn, caching, input_tokens, cache_write_tokens, cache_read_tokens, cost_usd, cost_without_cache_usd, room_cost_usd}'
 ```
 
+### Prompt-injection eval
+
+`make injection-eval` asks the real Claude model to resist prompt injection: 13 attacks hidden in a room's scene, characters, dialogue, or the line to tag, each trying to make the model write a canary word, plus one control. Each runs 3 times on the prompt as shipped. The 10 attacks on the choices call also run 3 times on the prompt from before the hardening, to show what it changes. It fails if any attack works on the shipped prompt more than once in three.
+
+It is **paid** (about 70 calls, roughly 0.20 US dollars) and never part of `make test`, where it shows as skipped. It reads `ANTHROPIC_API_KEY` from the environment or `.env`, prints its estimate, and writes a report to `.data/evals/injection-<time>.md`.
+
 ### Lip sync
 
 Above **Start performance** the director has a checkbox, **Include lip-sync video**, unticked by default. Ticked, each voiced line is also turned into a video of its speaker's portrait speaking it, by WaveSpeed's InfiniteTalk model, and at the premiere that video plays on the stage in place of the portrait. The sound is still the recording. Unticked, nothing changes.

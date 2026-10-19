@@ -444,6 +444,7 @@ Before starting this step, load the relevant AWS skills as the project's instruc
 - **Cost log:** one worker line per Claude call (`claude call`), logged before the answer is judged, with tokens, cost, cost without caching, and the room's running totals. Prices are in `server/internal/providers/anthropic/cost.go`.
 - **Injection hardening:** `<` and `>` in text from people are escaped inside the prompts' tags, and both system prompts say tagged text is story material, never instructions.
 - **Tests:** 20 new: the adapter (markers, a byte-identical prefix across turns, the same text with caching off, log fields and cost, failed answers logged, room totals and pruning, unpriced models, escaping, prompt wording) and the worker (the setting and how it reaches the adapter).
+- **A live injection eval,** added 2026-10-20 after a review pointed out the hardening was unmeasured: `make injection-eval`, paid and run only by hand. It has 13 attacks and a control, 3 runs each, with the choices attacks also run on the pre-hardening prompt, and fails if an attack works more than once in three. Free tests check its grader, pass rule, skip, baseline prompt, and a dry run against a stand-in.
 - **Measured once** (six real Sonnet 5.5 choices calls, approved by the user): turn 1 wrote 1,232 tokens to the cache, and turns 2 and 3 read them. Three turns cost $0.0090 with caching against $0.0132 without; over eight turns that is about 1.6 US cents saved per performance. No full performance was run.
 
 ## 4. Points to settle along the way

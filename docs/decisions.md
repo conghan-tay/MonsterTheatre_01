@@ -1162,6 +1162,11 @@ The dialogue so far and the turn instruction follow, uncached.
   - It doesn't check for hateful or unsuitable content.
   - The director is authenticated, and is the only person whose text reaches the model directly.
 - **A side effect on tags:** a line that itself contains `<` or `>` no longer matches after tagging, so it is spoken without tags, which is the existing fallback.
-- **Untested against the model:** no model was asked to resist an injection as part of this change, so how well the wording works is unmeasured.
+- **Measured by a live eval, run only by hand (added 2026-10-20):** `make injection-eval` runs 13 attacks and 1 control against the real model, 3 runs each.
+  - The 10 attacks on the choices call also run against the prompt and escaping from before the hardening, for comparison.
+  - Each attack tries to make the model write a canary. Grading is by code: the canary in the output is a success, even as part of the story.
+  - It fails if an attack works on the shipped prompt more than once in three.
+  - It never runs in `make test`. It costs roughly 0.20 US dollars a run, and writes its report to `.data/evals/`.
+  - The attacks are in `server/internal/providers/anthropic/injection_eval_test.go`; the user approved them on 2026-10-20. No results yet: the first paid run waits for the user's approval.
 
 **Status:** accepted — requested by the user in the plan approved on 2026-10-19.

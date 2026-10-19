@@ -150,7 +150,7 @@ flowchart TD
     Loop -->|No| FanIn[Wait for all eight child workflows]
     FanIn -.->|lip sync, while some are not ready| Progress[Publish: preparing_premiere, how many are ready]
     Progress -.-> FanIn
-    FanIn --> Fix[Fix the premiere's start time, 5 s ahead]
+    FanIn -->|all child workflows complete| Fix[Fix the premiere's start time, 5 s ahead]
     Fix --> Save[Activity: save script, audio keys and start time, mark completed]
     Save --> Prem[Publish: premiere, with that start time]
     Prem --> End([End])

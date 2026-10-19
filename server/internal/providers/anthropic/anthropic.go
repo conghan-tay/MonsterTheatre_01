@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"strings"
 
 	sdk "github.com/anthropics/anthropic-sdk-go"
@@ -198,11 +199,14 @@ func (m *Model) ask(ctx context.Context, c call, system string, user []string, c
 func (m *Model) logUsage(c call, model string, usage sdk.Usage) {
 	cost, withoutCache, priced := price(model, usage.InputTokens, usage.CacheCreationInputTokens, usage.CacheReadInputTokens, usage.OutputTokens)
 	total := m.totals.add(c.room, cost, withoutCache)
+	// Dollars are rounded to a ten-millionth, a thousandth of a cent, so the
+	// lines read cleanly; the room totals add the unrounded figures.
+	round := func(v float64) float64 { return math.Round(v*1e7) / 1e7 }
 	dollars := func(v float64) any {
 		if !priced {
 			return "unpriced"
 		}
-		return v
+		return round(v)
 	}
 	m.Logger.Info("claude call",
 		"kind", c.kind, "room_id", c.room, "turn", c.turn, "attempt", c.attempt,
@@ -212,7 +216,7 @@ func (m *Model) logUsage(c call, model string, usage sdk.Usage) {
 		"cache_read_tokens", usage.CacheReadInputTokens,
 		"output_tokens", usage.OutputTokens,
 		"cost_usd", dollars(cost), "cost_without_cache_usd", dollars(withoutCache),
-		"room_calls", total.calls, "room_cost_usd", total.cost, "room_cost_without_cache_usd", total.withoutCache,
+		"room_calls", total.calls, "room_cost_usd", round(total.cost), "room_cost_without_cache_usd", round(total.withoutCache),
 	)
 }
 

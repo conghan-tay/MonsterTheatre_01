@@ -337,3 +337,19 @@ func TestNewLogsNothingUnlessGivenALogger(t *testing.T) {
 	_, err := m.EnhanceTags(context.Background(), providers.TagsRequest{Text: "x"})
 	require.NoError(t, err)
 }
+
+func TestLoggedDollarsAreRoundedSoTheyReadCleanly(t *testing.T) {
+	// The real call that logged 0.0042959999999999995: 1318 input and 166
+	// output tokens on Sonnet 5.5 is $0.004296.
+	a := &api{response: withUsage(`{"line1":"a","line2":"b","line3":"c"}`, "end_turn", "claude-sonnet-5-5", 1318, 0, 0, 166)}
+	m, buf := loggedModel(t, a)
+	_, err := m.GenerateChoices(context.Background(), choicesRequest)
+	require.NoError(t, err)
+
+	raw := buf.String()
+	require.NotContains(t, raw, "0.0042959999", "no floating-point noise in the line")
+	line := logged(buf)[0]
+	for _, field := range []string{"cost_usd", "cost_without_cache_usd", "room_cost_usd", "room_cost_without_cache_usd"} {
+		require.Equal(t, 0.004296, line[field], field)
+	}
+}

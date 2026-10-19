@@ -179,7 +179,7 @@ If a provider keeps failing, the performance fails and browsers are told why: th
 
 The choices call asks Claude to cache the start of its prompt, the system prompt and the room's scene and characters, so turns 2 to 8 read it at a tenth of the price. Set `LLM_PROMPT_CACHING=false` to send the same prompt without caching, to compare. The tags call is too short to cache.
 
-Every Claude call writes one worker log line, `claude call`: its tokens (`input_tokens`, `cache_write_tokens`, `cache_read_tokens`, `output_tokens`), its cost in US dollars, what it would have cost without caching, and the room's running totals (`room_calls`, `room_cost_usd`, `room_cost_without_cache_usd`). The last line of a performance shows the whole run. The totals are kept in the worker's memory, so a worker restart starts them again. Prices are a dated table in `server/internal/providers/anthropic/cost.go`; a model not in it is logged as `unpriced`.
+Every Claude call writes one worker log line, `claude call`: its tokens (`input_tokens`, `cache_write_tokens`, `cache_read_tokens`, `output_tokens`), its cost in US dollars (rounded to a ten-millionth), what it would have cost without caching, and the room's running totals (`room_calls`, `room_cost_usd`, `room_cost_without_cache_usd`). The last line of a performance shows the whole run. The totals are kept in the worker's memory, so a worker restart starts them again. Prices are a dated table in `server/internal/providers/anthropic/cost.go`; a model not in it is logged as `unpriced`.
 
 To see the lines, run this from the repository root, with the worker's output saved to a file:
 

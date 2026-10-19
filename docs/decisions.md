@@ -1115,6 +1115,7 @@ The dialogue so far and the turn instruction follow, uncached.
 - **What is logged:** the usage is logged before the answer is judged, so a refused, cut-off, or unusable answer, which is paid for all the same, is counted.
 - **Prices:** cost comes from a dated table in code: Claude Sonnet 5.5 (input $2, cache write $2.50, cache read $0.20, output $10 per million tokens), Claude Opus 5.5, and Claude Haiku 4.5, from Anthropic's published rates as listed on 2026-09-25. Any other model is logged as `unpriced`, with its tokens.
 - **Room totals** are kept in the worker's memory, reset on a restart, and dropped after an hour without a call.
+- **Logged dollar figures are rounded** to a ten-millionth (a thousandth of a cent), so the lines read cleanly. The room totals add the unrounded figures.
 
 **Why it fits:**
 - The fixed beginning is roughly a thousand tokens, written to the cache on turn 1 and read at a tenth of the price on turns 2 to 8 and on every retry.

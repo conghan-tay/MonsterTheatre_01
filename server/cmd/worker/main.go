@@ -50,7 +50,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	acts, chosen, closeDeps, err := buildActivities(ctx, cfg)
+	acts, chosen, closeDeps, err := buildActivities(ctx, cfg, logger)
 	if err != nil {
 		return err
 	}
@@ -82,6 +82,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		"tts_provider", cfg.TTSProvider,
 		"llm_model", cfg.LLMModel,
 		"tts_model", cfg.TTSModel,
+		"llm_prompt_caching", cfg.LLMPromptCaching != "false" && cfg.LLMPromptCaching != "0",
 		"lipsync_provider", cfg.LipSyncProvider,
 		"lipsync_resolution", cfg.LipSyncResolution,
 		"vote_window", cfg.VoteWindow.String(),
@@ -107,7 +108,7 @@ type backends struct {
 //
 // The settings are checked here, before the worker takes any work, so a
 // mistake stops the process at once and not in the middle of a performance.
-func buildActivities(ctx context.Context, cfg config.Config) (*activities.Activities, backends, func(), error) {
+func buildActivities(ctx context.Context, cfg config.Config, logger *slog.Logger) (*activities.Activities, backends, func(), error) {
 	if cfg.VoteWindow <= 0 {
 		return nil, backends{}, nil, errors.New(`VOTE_WINDOW must be a positive duration such as "10s"`)
 	}
@@ -126,7 +127,11 @@ func buildActivities(ctx context.Context, cfg config.Config) (*activities.Activi
 	if err != nil {
 		return nil, backends{}, nil, err
 	}
-	dialogue, speech, err := buildProviders(cfg, lineLength)
+	caching, err := promptCaching(cfg)
+	if err != nil {
+		return nil, backends{}, nil, err
+	}
+	dialogue, speech, err := buildProviders(cfg, lineLength, caching, logger)
 	if err != nil {
 		return nil, backends{}, nil, err
 	}
@@ -179,7 +184,10 @@ func buildActivities(ctx context.Context, cfg config.Config) (*activities.Activi
 // what is missing, and not at the first turn of a performance.
 //
 // lineLength is how long a line the language model is asked to write.
-func buildProviders(cfg config.Config, lineLength int) (providers.DialogueModel, providers.Speech, error) {
+//
+// caching turns Claude's prompt caching on, and logger receives a line per
+// Claude call with its tokens and cost (docs/decisions.md, D057).
+func buildProviders(cfg config.Config, lineLength int, caching bool, logger *slog.Logger) (providers.DialogueModel, providers.Speech, error) {
 	scripts := fake.Scripts{Dir: cfg.FakeScriptDir}
 
 	var dialogue providers.DialogueModel
@@ -191,7 +199,10 @@ func buildProviders(cfg config.Config, lineLength int) (providers.DialogueModel,
 		if key == "" {
 			return nil, nil, errors.New("LLM_PROVIDER is anthropic but ANTHROPIC_API_KEY is not set")
 		}
-		dialogue = anthropic.New(key, cfg.LLMModel, lineLength)
+		claude := anthropic.New(key, cfg.LLMModel, lineLength)
+		claude.Caching = caching
+		claude.Logger = logger
+		dialogue = claude
 	default:
 		return nil, nil, fmt.Errorf(`LLM_PROVIDER %q is not supported; use "fake" or "anthropic"`, cfg.LLMProvider)
 	}
@@ -231,5 +242,19 @@ func buildLipSync(cfg config.Config) (providers.LipSync, error) {
 		return &wavespeed.LipSync{APIKey: key}, nil
 	default:
 		return nil, fmt.Errorf(`LIPSYNC_PROVIDER %q is not supported; use "fake" or "wavespeed"`, cfg.LipSyncProvider)
+	}
+}
+
+// promptCaching reads LLM_PROMPT_CACHING. It is on unless turned off, and
+// anything but true, false, 1, or 0 stops the worker: the setting is flipped
+// to compare costs, so a typo must not quietly mean "on".
+func promptCaching(cfg config.Config) (bool, error) {
+	switch cfg.LLMPromptCaching {
+	case "", "true", "1":
+		return true, nil
+	case "false", "0":
+		return false, nil
+	default:
+		return false, fmt.Errorf(`LLM_PROMPT_CACHING %q is not supported; use "true" or "false"`, cfg.LLMPromptCaching)
 	}
 }

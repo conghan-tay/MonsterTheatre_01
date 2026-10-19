@@ -53,7 +53,7 @@ One performance involves at most 11 WebSocket connections, 25 published updates,
 | Redis Streams | Two streams, each read whole by every server and forwarded to that server's browsers. `performance-updates`: the worker publishes performance updates (D024). `room-notices`: a server publishes news of its own for the others (D046). Held by Valkey 8.1, which speaks the Redis protocol: one ElastiCache node on AWS, a container locally (D051) |
 | PostgreSQL | Rooms, audience sessions, and one row per performance. Aurora DSQL on AWS, a plain PostgreSQL container locally (D032) |
 | S3 | Portraits and the eight turn recordings, and, with lip sync, a video per turn |
-| Language model | Choice generation and audio-tag enhancement, behind a configurable adapter (D017) |
+| Language model | Choice generation and audio-tag enhancement, behind a configurable adapter (D017). The choices call uses prompt caching unless `LLM_PROMPT_CACHING=false`, and every call's tokens and cost are logged (D057) |
 | ElevenLabs | Speech for each winning line: one request per turn to the Text to Dialogue convert endpoint with `eleven_v4_turbo`, the speaker's voice, and the tagged text |
 | WaveSpeed | Only when the director asks for lip sync at Start: a video of each line's speaker, made by the InfiniteTalk model from the portrait and the recording. Both are uploaded to WaveSpeed, the video is polled for, then downloaded and kept in S3 (D055) |
 | Director login | Built into the Go server: administrator-created accounts with hashed passwords, a login form, and a session cookie (D029). Handlers receive a verified director ID from one piece of middleware, so the mechanism can be swapped later |
@@ -437,6 +437,7 @@ Two pages show a room live, and both use one component for it (`web/src/componen
 - **Database.** On AWS the server and worker connect to Aurora DSQL with short-lived IAM tokens issued to their task roles, through a scoped database role, `monster_app`, which can read and write the five tables and cannot change the schema (D048). There is no database password to store. Migrations run as `admin`, from an administrator's machine.
 - **Storage.** The S3 bucket is private, encrypted, and refuses requests not made over TLS. Browsers reach portraits, audio, and videos only through the server's authorised endpoints.
 - **Lip sync (D055).** When a director asks for it, the speaker's portrait and each recording are uploaded to WaveSpeed, which keeps uploads for seven days, and the video it makes is downloaded and kept with the recordings. The WaveSpeed key is sent only to WaveSpeed's API, never to the storage hosts it uploads to or downloads from.
+- **Prompt injection (D058).** Text from people (the director's scene and characters, and the lines the audience chose) reaches Claude only inside tags, with `<` and `>` escaped so it cannot close them, and both system prompts say tagged text is story material, never instructions. The answer is still forced into a JSON schema and checked. Nothing classifies the content itself.
 - **Network.** Only CloudFront is reachable from the internet. The load balancer and the cache have no public address, and the load balancer admits only CloudFront's origin-facing addresses; the tasks have one each, for outbound calls, and their security groups admit only the load balancer (D050). The hop from CloudFront to the load balancer is plain HTTP inside AWS's network (D049).
 - **Input limits.** The validation bounds in section 5 apply to every upload and text field.
 
@@ -465,6 +466,7 @@ Two pages show a room live, and both use one component for it (`web/src/componen
 - On AWS there is one cache node and one task of each kind, so any one of them failing interrupts the service until it is replaced. Old database rows are never removed (review item 13).
 - The public address is CloudFront's own and changes if the distribution is recreated, which changes every share link already sent.
 - Workflow code is changed without Temporal's versioning. A run in flight when a worker with changed code starts cannot be replayed, and says `recovering` until its 30-minute timeout. Deploy between runs (D053).
+- The cost of Claude calls is logged per call, with each room's running total kept in the worker's memory; a worker restart starts the totals again, and ElevenLabs and WaveSpeed costs are not logged (D057).
 - Lip sync (D055): a video submission whose answer is lost is not retried, so that line has no video though WaveSpeed may have made, and charged for, one. While a line's video is waited for, the worker holds one activity slot for it; about 125 lip-sync performances at once would use the default 1000. Whether the video's lips match the separately played recording has not been checked with real videos (D056).
 - A browser that connects while a turn's lines are being written does not see the previous round's result; only browsers that were told it keep it on screen (D053).
 

@@ -436,6 +436,16 @@ Before starting this step, load the relevant AWS skills as the project's instruc
 - **AWS (code only, nothing deployed):** a fifth secret, `monster-theatre/wavespeed-api-key`, which live mode passes to the worker with WaveSpeed selected. `deploy-app live` refuses while it is a placeholder.
 - **Checked once against WaveSpeed** (one 480p call, approved by the user): upload, submit, poll, and download all worked with the client as written. An 8.64 s line took 123 s to generate and came back 640×608 and 0.12 s shorter than its recording. Not checked: a real failure, rate limits, and the billed amount.
 
+### After step 15 — prompt caching and prompt-injection hardening
+
+**Done 2026-10-19.** Not one of the fifteen steps. Asked for by the user, taking two parts of an earlier plan (`docs/ai-features-plan.md`): prompt caching with a simple cost log, and injection hardening with no extra model calls. Decisions: D057, D058.
+
+- **Prompt caching:** the choices call marks the system prompt and the room's context (scene and characters) for the cache. The dialogue and turn instruction follow, uncached. `LLM_PROMPT_CACHING` turns it off; any value other than true or false stops the worker. The tags call is too short to cache.
+- **Cost log:** one worker line per Claude call (`claude call`), logged before the answer is judged, with tokens, cost, cost without caching, and the room's running totals. Prices are in `server/internal/providers/anthropic/cost.go`.
+- **Injection hardening:** `<` and `>` in text from people are escaped inside the prompts' tags, and both system prompts say tagged text is story material, never instructions.
+- **Tests:** 20 new: the adapter (markers, a byte-identical prefix across turns, the same text with caching off, log fields and cost, failed answers logged, room totals and pruning, unpriced models, escaping, prompt wording) and the worker (the setting and how it reaches the adapter).
+- **Not measured:** real cache hits and the real saving. That needs a paid run.
+
 ## 4. Points to settle along the way
 
 These are items 11 to 16 in [the review](review.md), placed where they come up:

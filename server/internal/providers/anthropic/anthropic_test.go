@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/anthropics/anthropic-sdk-go/option"
@@ -61,6 +62,16 @@ func newModel(t *testing.T, a *api) *Model {
 	return New("test-key", "", testTarget, option.WithBaseURL(srv.URL))
 }
 
+// userText is the last request's user message, all its text blocks joined:
+// the choices message is split in two, the room's context and the turn.
+func userText(a *api) string {
+	var b strings.Builder
+	for _, block := range a.request["messages"].([]any)[0].(map[string]any)["content"].([]any) {
+		b.WriteString(block.(map[string]any)["text"].(string))
+	}
+	return b.String()
+}
+
 // testTarget is the line length the adapter under test asks for.
 const testTarget = 130
 
@@ -106,7 +117,7 @@ func TestGenerateChoicesAsksWithTheWholeSceneAndParsesThreeLines(t *testing.T) {
 	// The user message carries everything that changes from turn to turn.
 	messages := a.request["messages"].([]any)
 	require.Len(t, messages, 1, "one user turn and no prefilled answer")
-	user := messages[0].(map[string]any)["content"].([]any)[0].(map[string]any)["text"].(string)
+	user := userText(a)
 	for _, want := range []string{
 		"Who ate the last biscuit", "A cramped kitchen at midnight.", "comedy",
 		"Grumble", "A tired swamp monster who denies everything.",
@@ -122,22 +133,19 @@ func TestGenerateChoicesAsksWithTheWholeSceneAndParsesThreeLines(t *testing.T) {
 func TestGenerateChoicesSaysWhenTheSceneIsStartingOrEnding(t *testing.T) {
 	a := &api{response: message(`{"line1":"a","line2":"b","line3":"c"}`, "end_turn")}
 	m := newModel(t, a)
-	userText := func() string {
-		return a.request["messages"].([]any)[0].(map[string]any)["content"].([]any)[0].(map[string]any)["text"].(string)
-	}
 
 	first := choicesRequest
 	first.Turn, first.History, first.TurnsRemaining, first.Beat = 1, nil, 7, "INTRO"
 	_, err := m.GenerateChoices(context.Background(), first)
 	require.NoError(t, err)
-	require.Contains(t, userText(), "first line of the scene")
+	require.Contains(t, userText(a), "first line of the scene")
 
 	last := choicesRequest
 	last.Turn, last.Speaker, last.TurnsRemaining, last.Beat = 8, "B", 0, "EXPLAIN + PUNCHLINE"
 	_, err = m.GenerateChoices(context.Background(), last)
 	require.NoError(t, err)
-	require.Contains(t, userText(), "Fizz speaks")
-	require.Contains(t, userText(), "final turn")
+	require.Contains(t, userText(a), "Fizz speaks")
+	require.Contains(t, userText(a), "final turn")
 }
 
 func TestEnhanceTagsSendsTheLineAndReturnsTheTaggedOne(t *testing.T) {
@@ -151,7 +159,7 @@ func TestEnhanceTagsSendsTheLineAndReturnsTheTaggedOne(t *testing.T) {
 
 	system := a.request["system"].([]any)[0].(map[string]any)["text"].(string)
 	require.Contains(t, system, "must stay exactly as given")
-	user := a.request["messages"].([]any)[0].(map[string]any)["content"].([]any)[0].(map[string]any)["text"].(string)
+	user := userText(a)
 	require.Contains(t, user, "<line>Ask the cat.</line>")
 	require.Contains(t, user, "Grumble")
 	require.Contains(t, user, "REACT")

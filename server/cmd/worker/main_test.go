@@ -1,11 +1,13 @@
 package main
 
 import (
+	"log/slog"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/config"
+	"github.com/conghan-tay/MonsterTheatre_01/server/internal/providers/anthropic"
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/providers/fake"
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/providers/wavespeed"
 )
@@ -34,5 +36,35 @@ func TestAnUnknownLipSyncProviderOrResolutionStopsTheWorker(t *testing.T) {
 	for _, resolution := range []string{"1080p", "480", ""} {
 		_, err = buildLipSync(config.Config{LipSyncProvider: "fake", LipSyncResolution: resolution})
 		require.ErrorContains(t, err, "LIPSYNC_RESOLUTION", "resolution %q", resolution)
+	}
+}
+
+func TestPromptCachingIsOnUnlessTurnedOff(t *testing.T) {
+	for value, want := range map[string]bool{"": true, "true": true, "1": true, "false": false, "0": false} {
+		got, err := promptCaching(config.Config{LLMPromptCaching: value})
+		require.NoError(t, err, "%q", value)
+		require.Equal(t, want, got, "%q", value)
+	}
+}
+
+func TestAPromptCachingValueThatIsNotTrueOrFalseStopsTheWorker(t *testing.T) {
+	// The usual reading of a true-or-false setting would take a typo as on;
+	// this one is flipped to measure cost, so a typo must not pass.
+	for _, value := range []string{"flase", "yes", "off", "TRUE "} {
+		_, err := promptCaching(config.Config{LLMPromptCaching: value})
+		require.ErrorContains(t, err, "LLM_PROMPT_CACHING", "%q", value)
+	}
+}
+
+func TestTheClaudeAdapterIsGivenTheCachingSettingAndTheLogger(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "a-key")
+	logger := slog.New(slog.DiscardHandler)
+	for _, caching := range []bool{true, false} {
+		dialogue, _, err := buildProviders(config.Config{LLMProvider: "anthropic", TTSProvider: "fake"}, 160, caching, logger)
+		require.NoError(t, err)
+		m, ok := dialogue.(*anthropic.Model)
+		require.True(t, ok)
+		require.Equal(t, caching, m.Caching)
+		require.Same(t, logger, m.Logger)
 	}
 }

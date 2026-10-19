@@ -1,5 +1,9 @@
 // Package anthropic is the language-model adapter backed by Claude, through
 // the official Anthropic Go SDK.
+//
+// Text from people, the director's scene and characters and the lines the
+// audience chose, is placed inside tags and escaped so it cannot close them;
+// the system prompts say it is story material, never instructions (D058).
 package anthropic
 
 import (
@@ -7,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	sdk "github.com/anthropics/anthropic-sdk-go"
@@ -25,6 +30,14 @@ const maxTokens = 16000
 
 // Model is a providers.DialogueModel that asks Claude.
 type Model struct {
+	// Caching marks the fixed start of the choices request for Claude's
+	// prompt cache (docs/decisions.md, D057). New turns it on.
+	Caching bool
+	// Logger receives one line per call: its tokens, its cost, and the
+	// room's running totals. New gives one that discards.
+	Logger *slog.Logger
+	totals roomTotals
+
 	client sdk.Client
 	model  string
 	// choicesPrompt is the choices system prompt with the line length
@@ -48,6 +61,8 @@ func New(apiKey, model string, lineLength int, opts ...option.RequestOption) *Mo
 	}
 	opts = append([]option.RequestOption{option.WithAPIKey(apiKey), option.WithMaxRetries(0)}, opts...)
 	return &Model{
+		Caching:       true,
+		Logger:        slog.New(slog.DiscardHandler),
 		client:        sdk.NewClient(opts...),
 		model:         model,
 		choicesPrompt: fmt.Sprintf(choicesSystemPrompt, lineLength),
@@ -83,7 +98,8 @@ func (m *Model) GenerateChoices(ctx context.Context, req providers.ChoicesReques
 		Line2 string `json:"line2"`
 		Line3 string `json:"line3"`
 	}
-	model, err := m.ask(ctx, m.choicesPrompt, choicesMessage(req), choicesSchema, &answer)
+	model, err := m.ask(ctx, call{kind: "choices", room: req.RoomID, turn: req.Turn, attempt: req.Attempt},
+		m.choicesPrompt, []string{roomContext(req), turnMessage(req)}, m.Caching, choicesSchema, &answer)
 	if err != nil {
 		return providers.Choices{}, fmt.Errorf("generate choices: %w", err)
 	}
@@ -95,24 +111,48 @@ func (m *Model) EnhanceTags(ctx context.Context, req providers.TagsRequest) (pro
 	var answer struct {
 		Tagged string `json:"tagged"`
 	}
-	model, err := m.ask(ctx, tagsSystemPrompt, tagsMessage(req), taggedSchema, &answer)
+	// Never cached: the request is below the model's minimum cacheable
+	// length, so a marker would do nothing.
+	model, err := m.ask(ctx, call{kind: "tags", room: req.RoomID, turn: req.Turn, attempt: req.Attempt},
+		tagsSystemPrompt, []string{tagsMessage(req)}, false, taggedSchema, &answer)
 	if err != nil {
 		return providers.Tagged{}, fmt.Errorf("enhance tags: %w", err)
 	}
 	return providers.Tagged{Text: answer.Tagged, Model: model}, nil
 }
 
+// call says which request a call is, for its log line.
+type call struct {
+	kind          string
+	room          string
+	turn, attempt int
+}
+
 // ask sends one request and decodes the structured answer into out. It
-// returns the ID of the model that answered.
+// returns the ID of the model that answered. user is the user message's
+// text blocks, in order.
+//
+// With cache set, the system prompt and the first user block are marked for
+// the prompt cache: they are what stays the same from one request to the
+// next. Without it the same text is sent unmarked.
 //
 // Effort is low: these are short creative tasks, and the audience is
 // waiting while they run.
-func (m *Model) ask(ctx context.Context, system, user string, schema map[string]any, out any) (string, error) {
+func (m *Model) ask(ctx context.Context, c call, system string, user []string, cache bool, schema map[string]any, out any) (string, error) {
+	systemBlock := sdk.TextBlockParam{Text: system}
+	blocks := make([]sdk.ContentBlockParamUnion, len(user))
+	for i, text := range user {
+		blocks[i] = sdk.ContentBlockParamUnion{OfText: &sdk.TextBlockParam{Text: text}}
+	}
+	if cache {
+		systemBlock.CacheControl = sdk.NewCacheControlEphemeralParam()
+		blocks[0].OfText.CacheControl = sdk.NewCacheControlEphemeralParam()
+	}
 	resp, err := m.client.Messages.New(ctx, sdk.MessageNewParams{
 		Model:     m.model,
 		MaxTokens: maxTokens,
-		System:    []sdk.TextBlockParam{{Text: system}},
-		Messages:  []sdk.MessageParam{sdk.NewUserMessage(sdk.NewTextBlock(user))},
+		System:    []sdk.TextBlockParam{systemBlock},
+		Messages:  []sdk.MessageParam{sdk.NewUserMessage(blocks...)},
 		OutputConfig: sdk.OutputConfigParam{
 			Effort: sdk.OutputConfigEffortLow,
 			Format: sdk.JSONOutputFormatParam{Schema: schema},
@@ -127,6 +167,10 @@ func (m *Model) ask(ctx context.Context, system, user string, schema map[string]
 		}
 		return "", err
 	}
+
+	// Logged before the answer is judged: a refused, cut-off, or unusable
+	// answer was paid for all the same.
+	m.logUsage(c, string(resp.Model), resp.Usage)
 
 	// Checked before the content is read: a refusal or a cut-off answer has
 	// content, but not an answer. Both count as a failed attempt.
@@ -149,27 +193,63 @@ func (m *Model) ask(ctx context.Context, system, user string, schema map[string]
 	return string(resp.Model), nil
 }
 
-// choicesMessage is the part of the request that changes every turn.
-func choicesMessage(req providers.ChoicesRequest) string {
+// logUsage writes one call's tokens and cost, with its room's running
+// totals.
+func (m *Model) logUsage(c call, model string, usage sdk.Usage) {
+	cost, withoutCache, priced := price(model, usage.InputTokens, usage.CacheCreationInputTokens, usage.CacheReadInputTokens, usage.OutputTokens)
+	total := m.totals.add(c.room, cost, withoutCache)
+	dollars := func(v float64) any {
+		if !priced {
+			return "unpriced"
+		}
+		return v
+	}
+	m.Logger.Info("claude call",
+		"kind", c.kind, "room_id", c.room, "turn", c.turn, "attempt", c.attempt,
+		"model", model, "caching", m.Caching,
+		"input_tokens", usage.InputTokens,
+		"cache_write_tokens", usage.CacheCreationInputTokens,
+		"cache_read_tokens", usage.CacheReadInputTokens,
+		"output_tokens", usage.OutputTokens,
+		"cost_usd", dollars(cost), "cost_without_cache_usd", dollars(withoutCache),
+		"room_calls", total.calls, "room_cost_usd", total.cost, "room_cost_without_cache_usd", total.withoutCache,
+	)
+}
+
+// escape keeps text written by people, or lines they chose, from closing
+// the tag it is placed in or opening one of its own: < and > become &lt;
+// and &gt;. An ampersand is left alone; it cannot form a tag, and the tags
+// check compares a line's words letter for letter (docs/decisions.md, D058).
+var escape = strings.NewReplacer("<", "&lt;", ">", "&gt;").Replace
+
+// roomContext is the part of the choices request that is the same on every
+// turn of a performance: the scene and both characters. It is the cached
+// block (D057).
+func roomContext(req providers.ChoicesRequest) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "<scene>\nTopic: %s\n", req.Scene.Topic)
+	fmt.Fprintf(&b, "<scene>\nTopic: %s\n", escape(req.Scene.Topic))
 	if req.Scene.Description != "" {
-		fmt.Fprintf(&b, "Description: %s\n", req.Scene.Description)
+		fmt.Fprintf(&b, "Description: %s\n", escape(req.Scene.Description))
 	}
 	if req.Scene.Genre != "" {
-		fmt.Fprintf(&b, "Genre: %s\n", req.Scene.Genre)
+		fmt.Fprintf(&b, "Genre: %s\n", escape(req.Scene.Genre))
 	}
 	b.WriteString("</scene>\n\n")
 
 	writeCharacter(&b, "A", req.CharacterA)
 	writeCharacter(&b, "B", req.CharacterB)
+	return b.String()
+}
 
+// turnMessage is the part of the choices request that changes every turn.
+func turnMessage(req providers.ChoicesRequest) string {
+	var b strings.Builder
 	b.WriteString("<dialogue_so_far>\n")
 	if len(req.History) == 0 {
 		b.WriteString("(Nothing yet. This is the first line of the scene.)\n")
 	}
 	for _, line := range req.History {
-		fmt.Fprintf(&b, "%s: %s\n", speakerName(line.Speaker, req), line.Text)
+		fmt.Fprintf(&b, "%s: %s\n", speakerName(line.Speaker, req), escape(line.Text))
 	}
 	b.WriteString("</dialogue_so_far>\n\n")
 
@@ -188,26 +268,27 @@ func choicesMessage(req providers.ChoicesRequest) string {
 
 func tagsMessage(req providers.TagsRequest) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "<character>\nName: %s\n", req.Character.Name)
+	fmt.Fprintf(&b, "<character>\nName: %s\n", escape(req.Character.Name))
 	if req.Character.Brief != "" {
-		fmt.Fprintf(&b, "Brief: %s\n", req.Character.Brief)
+		fmt.Fprintf(&b, "Brief: %s\n", escape(req.Character.Brief))
 	}
-	fmt.Fprintf(&b, "</character>\n\nStory beat: %s\n\n<line>%s</line>", req.Beat, req.Text)
+	fmt.Fprintf(&b, "</character>\n\nStory beat: %s\n\n<line>%s</line>", escape(req.Beat), escape(req.Text))
 	return b.String()
 }
 
 func writeCharacter(b *strings.Builder, slot string, c providers.Character) {
-	fmt.Fprintf(b, "<character_%s>\nName: %s\n", strings.ToLower(slot), c.Name)
+	fmt.Fprintf(b, "<character_%s>\nName: %s\n", strings.ToLower(slot), escape(c.Name))
 	if c.Brief != "" {
-		fmt.Fprintf(b, "Brief: %s\n", c.Brief)
+		fmt.Fprintf(b, "Brief: %s\n", escape(c.Brief))
 	}
 	fmt.Fprintf(b, "</character_%s>\n\n", strings.ToLower(slot))
 }
 
-// speakerName turns a slot, "A" or "B", into the character's name.
+// speakerName turns a slot, "A" or "B", into the character's name, escaped
+// for use inside a tag.
 func speakerName(slot string, req providers.ChoicesRequest) string {
 	if slot == "B" {
-		return req.CharacterB.Name
+		return escape(req.CharacterB.Name)
 	}
-	return req.CharacterA.Name
+	return escape(req.CharacterA.Name)
 }

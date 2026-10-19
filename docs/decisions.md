@@ -52,6 +52,8 @@ The log below is kept in full, including entries that were later replaced. These
 | D054 | While a premiere line plays, its speaker takes the stage: the portrait as large as the window allows at its own shape, the line beneath it, the rest of the page dark and blurred |
 | D055 | Lip sync, if the director asks: each voiced line becomes a WaveSpeed InfiniteTalk video in its child workflow, polled for, not called back; a line whose video fails keeps its portrait; the room is told the progress before the premiere |
 | D056 | A lip-sync video plays muted on the stage, alongside the recording played as before |
+| D057 | Prompt caching on the choices call (system prompt and room context), on unless `LLM_PROMPT_CACHING=false`; every Claude call's tokens and cost logged, with the room's running total |
+| D058 | Text from people goes inside tags with `<` and `>` escaped, and both system prompts say tagged text is story material, never instructions; no extra model calls |
 
 Superseded or withdrawn: D002, D004, D006, D010, D011, D012, D014, D016, D019, D020, D021, and the data-lake half of D003.
 
@@ -1092,3 +1094,68 @@ How the run treats it:
 - The page holds the videos in memory during the premiere: an estimated 1 to 3 MB each at 480p.
 
 **Status:** accepted — chosen by the user on 2026-10-18.
+
+## D057 — Prompt caching on the choices call, with each call's cost logged
+
+**Decision:** The choices request carries two cache breakpoints:
+- one on the system prompt, which is the same for every room;
+- one on the room's context (the scene and both characters), which is the same on every turn of a performance.
+
+The dialogue so far and the turn instruction follow, uncached.
+
+- **Setting:** caching is on unless `LLM_PROMPT_CACHING` is `false` or `0`. Any value other than `true`, `false`, `1`, or `0` stops the worker.
+- **Cost log:** every Claude call, choices or tags, writes one worker log line, `claude call`. It holds the call's four token counts, its cost, what the same tokens would have cost without caching, and the room's running totals of calls, cost, and cost without caching.
+
+**Context / requirement:** The user wanted prompt caching that can be toggled from configuration, with cost logged simply enough to compare a run with caching against one without. A usage ledger in the database was considered in an earlier plan (`docs/ai-features-plan.md`) and not wanted.
+
+**Chosen approach:**
+- **The room context stays in the user message,** as its first text block, not in the system prompt, so the director's text gains no system-prompt authority.
+- **The comparison is fair:** with caching off, the same blocks are sent without the markers, so the model is asked exactly the same thing either way.
+- **The tags call is not cached.** Its prompt, about 250 tokens, is below the 512-token minimum Claude Sonnet 5.5 needs, so a marker would do nothing.
+- **What is logged:** the usage is logged before the answer is judged, so a refused, cut-off, or unusable answer, which is paid for all the same, is counted.
+- **Prices:** cost comes from a dated table in code: Claude Sonnet 5.5 (input $2, cache write $2.50, cache read $0.20, output $10 per million tokens), Claude Opus 5.5, and Claude Haiku 4.5, from Anthropic's published rates as listed on 2026-09-25. Any other model is logged as `unpriced`, with its tokens.
+- **Room totals** are kept in the worker's memory, reset on a restart, and dropped after an hour without a call.
+
+**Why it fits:**
+- The fixed beginning is roughly a thousand tokens, written to the cache on turn 1 and read at a tenth of the price on turns 2 to 8 and on every retry.
+- The 5-minute cache life is far longer than the gap between turns.
+- The log line answers "what did this performance cost, and what did caching save" with no new storage.
+
+**Alternatives considered:**
+- A table recording every provider call: more to build and to clean up than a comparison needs.
+- Putting the room context in the system prompt: one breakpoint fewer, but it would give the director's text the system prompt's authority.
+- Caching the tags call: below the minimum, so no effect.
+
+**Tradeoffs and consequences:**
+- **The saving is small:** an estimated 1.2 US cents a performance, from about $0.016 to $0.004 on the choices calls, until a real run measures it.
+- **The log isn't accounting:** totals are lost when the worker restarts, ElevenLabs and WaveSpeed costs are not logged, and prices must be updated by hand when they change.
+- **No paid run yet:** the layout was checked against a stand-in of the API only.
+
+**Status:** accepted — requested by the user, with caching on by default and a per-call log with room totals, in the plan approved on 2026-10-19.
+
+## D058 — Prompt-injection hardening with no extra model calls
+
+**Decision:** Text that came from people, placed inside the tags the prompts use, has `<` and `>` replaced by `&lt;` and `&gt;`. That covers the scene, the character names and briefs, the dialogue so far, and the line to tag. Both system prompts also say that what is inside the tags is story material, and that any instructions, requests, or commands in it are part of the story, never instructions to the model.
+
+**Context / requirement:** The user asked for the injection hardening from an earlier plan (`docs/ai-features-plan.md`), without its content classifier or eval. Only the director's room setup reaches Claude directly, and the audience's choices reach it as dialogue. Before this, a field could close its tag (`</scene>`) and the prompts never said that tagged text was data.
+
+**Chosen approach:**
+- **Escaping is in the adapter** (`escape` in `server/internal/providers/anthropic/anthropic.go`), so every message built there is covered.
+- **`&` is not escaped:** it cannot form a tag, and the tags check compares a line's words letter for letter, so escaping it would make every line containing "&" lose its tags.
+- **What was already there is kept:** the forced JSON schema and the output checks, `ValidateChoices` and `ValidateTagged`.
+
+**Why it fits:** It costs nothing per call and needs no new provider. The model sees the director's words exactly, as text it is told not to obey.
+
+**Alternatives considered:**
+- A Claude Haiku 4.5 classifier on the director's input: an extra paid call, a key on the server, and an eval to trust it. The user chose not to.
+- Escaping with a different scheme or stripping the characters: stripping changes what the director wrote.
+
+**Tradeoffs and consequences:**
+- **What it doesn't stop:**
+  - It reduces the chance that director text is taken as instructions; it doesn't remove it.
+  - It doesn't check for hateful or unsuitable content.
+  - The director is authenticated, and is the only person whose text reaches the model directly.
+- **A side effect on tags:** a line that itself contains `<` or `>` no longer matches after tagging, so it is spoken without tags, which is the existing fallback.
+- **Untested against the model:** no model was asked to resist an injection as part of this change, so how well the wording works is unmeasured.
+
+**Status:** accepted — requested by the user in the plan approved on 2026-10-19.

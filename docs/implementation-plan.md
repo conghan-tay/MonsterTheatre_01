@@ -436,6 +436,18 @@ Before starting this step, load the relevant AWS skills as the project's instruc
 - **AWS (code only, nothing deployed):** a fifth secret, `monster-theatre/wavespeed-api-key`, which live mode passes to the worker with WaveSpeed selected. `deploy-app live` refuses while it is a placeholder.
 - **Checked once against WaveSpeed** (one 480p call, approved by the user): upload, submit, poll, and download all worked with the client as written. An 8.64 s line took 123 s to generate and came back 640×608 and 0.12 s shorter than its recording. Not checked: a real failure, rate limits, and the billed amount.
 
+### After step 15 — prompt caching and prompt-injection hardening
+
+**Done 2026-10-19.** Not one of the fifteen steps. Asked for by the user, taking two parts of an earlier plan (`docs/ai-features-plan.md`): prompt caching with a simple cost log, and injection hardening with no extra model calls. Decisions: D057, D058.
+
+- **Prompt caching:** the choices call marks the system prompt and the room's context (scene and characters) for the cache. The dialogue and turn instruction follow, uncached. `LLM_PROMPT_CACHING` turns it off; any value other than true or false stops the worker. The tags call is too short to cache.
+- **Cost log:** one worker line per Claude call (`claude call`), logged before the answer is judged, with tokens, cost, cost without caching, and the room's running totals. Prices are in `server/internal/providers/anthropic/cost.go`.
+- **Injection hardening:** `<` and `>` in text from people are escaped inside the prompts' tags, and both system prompts say tagged text is story material, never instructions.
+- **Tests:** 20 new: the adapter (markers, a byte-identical prefix across turns, the same text with caching off, log fields and cost, failed answers logged, room totals and pruning, unpriced models, escaping, prompt wording) and the worker (the setting and how it reaches the adapter).
+- **A live injection eval,** added 2026-10-20 after a review pointed out the hardening was unmeasured: `make injection-eval`, paid and run only by hand. It has 13 attacks and a control, 3 runs each, with the choices attacks also run on the pre-hardening prompt, and fails if an attack works more than once in three. Free tests check its grader, pass rule, skip, baseline prompt, and a dry run against a stand-in.
+  - **First run** (approved, 72 calls, $0.2337): seven attacks stopped by the hardening that worked 3 in 3 on the old prompt. One attack, a director's rule that every line include a word, worked 3 in 3 on both prompts. The user accepted it as a known limit, so the eval now reports it as "accepted" and doesn't fail on it. Details in D058.
+- **Measured once** (six real Sonnet 5.5 choices calls, approved by the user): turn 1 wrote 1,232 tokens to the cache, and turns 2 and 3 read them. Three turns cost $0.0090 with caching against $0.0132 without; over eight turns that is about 1.6 US cents saved per performance. No full performance was run.
+
 ## 4. Points to settle along the way
 
 These are items 11 to 16 in [the review](review.md), placed where they come up:

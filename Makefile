@@ -1,4 +1,4 @@
-.PHONY: dev infra infra-down migrate server worker web director test test-verbose e2e e2e-verbose web-check web-e2e web-e2e-prod infra-check aws-test
+.PHONY: dev infra infra-down migrate server worker web director test test-verbose e2e e2e-verbose web-check web-e2e web-e2e-prod infra-check aws-test injection-eval
 
 # Start everything; Ctrl-C stops everything.
 dev:
@@ -76,3 +76,8 @@ aws-%:
 # Touches no AWS account. (Listed before the pattern above, so it wins.)
 aws-test:
 	./scripts/aws_test.sh
+
+# The prompt-injection eval against the real Claude model. Paid (about 0.20
+# US dollars a run); never part of make test. Reads the key from .env.
+injection-eval:
+	./scripts/injection-eval.sh

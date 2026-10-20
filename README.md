@@ -175,6 +175,24 @@ The worker's `worker started` log line shows which providers it is using, and it
 
 If a provider keeps failing, the performance fails and browsers are told why: the lines are retried for two minutes, speech three times. Only the audio tags have a fallback, which is to speak the line without them.
 
+### Prompt caching and cost
+
+The choices call asks Claude to cache the start of its prompt, the system prompt and the room's scene and characters, so turns 2 to 8 read it at a tenth of the price. Set `LLM_PROMPT_CACHING=false` to send the same prompt without caching, to compare. The tags call is too short to cache.
+
+Every Claude call writes one worker log line, `claude call`: its tokens (`input_tokens`, `cache_write_tokens`, `cache_read_tokens`, `output_tokens`), its cost in US dollars (rounded to a ten-millionth), what it would have cost without caching, and the room's running totals (`room_calls`, `room_cost_usd`, `room_cost_without_cache_usd`). The last line of a performance shows the whole run. The totals are kept in the worker's memory, so a worker restart starts them again. Prices are a dated table in `server/internal/providers/anthropic/cost.go`; a model not in it is logged as `unpriced`.
+
+To see the lines, run this from the repository root, with the worker's output saved to a file:
+
+```sh
+grep '"msg":"claude call"' worker.log | jq -c '{kind, turn, caching, input_tokens, cache_write_tokens, cache_read_tokens, cost_usd, cost_without_cache_usd, room_cost_usd}'
+```
+
+### Prompt-injection eval
+
+`make injection-eval` asks the real Claude model to resist prompt injection: 13 attacks hidden in a room's scene, characters, dialogue, or the line to tag, each trying to make the model write a canary word, plus one control. Each runs 3 times on the prompt as shipped. The 10 attacks on the choices call also run 3 times on the prompt from before the hardening, to show what it changes. It fails if any attack works on the shipped prompt more than once in three, except attack 7. That one is accepted as a known limit: a director's rule about what every line contains is the director's own creative choice, and the model weaves it into the story (D058). The report still shows it.
+
+It is **paid** (about 70 calls, roughly 0.20 US dollars) and never part of `make test`, where it shows as skipped. It reads `ANTHROPIC_API_KEY` from the environment or `.env`, prints its estimate, and writes a report to `.data/evals/injection-<time>.md`.
+
 ### Lip sync
 
 Above **Start performance** the director has a checkbox, **Include lip-sync video**, unticked by default. Ticked, each voiced line is also turned into a video of its speaker's portrait speaking it, by WaveSpeed's InfiniteTalk model, and at the premiere that video plays on the stage in place of the portrait. The sound is still the recording. Unticked, nothing changes.
@@ -199,6 +217,7 @@ All optional, read by the worker:
 | `TTS_MODEL` | `eleven_v4_turbo` | The ElevenLabs model, when `TTS_PROVIDER` is `elevenlabs` |
 | `CHOICES_RETRY_WINDOW` | `2m` | How long writing a turn's lines is retried before the run fails |
 | `MAX_LINE_LENGTH` | `160` | The longest a generated line may be, in characters. May be set from 60 to 300. About 13 characters are spoken per second, so 160 is roughly 12 seconds a line |
+| `LLM_PROMPT_CACHING` | `true` | Claude's prompt caching on the choices call: `true` or `false` (`1` or `0`). Anything else stops the worker |
 | `LIPSYNC_PROVIDER` | `fake` | `fake` or `wavespeed`. Used only when the director ticks "Include lip-sync video" |
 | `LIPSYNC_RESOLUTION` | `480p` | `480p` or `720p`. Anything else stops the worker at start |
 | `LIPSYNC_POLL_INTERVAL` | `20s` | How often the worker asks whether a video is done. The tests set it shorter |

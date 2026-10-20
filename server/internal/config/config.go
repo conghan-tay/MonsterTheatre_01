@@ -50,6 +50,10 @@ type Config struct {
 	// real provider is asked for.
 	LLMProvider string
 	TTSProvider string
+	// LLMPromptCaching is LLM_PROMPT_CACHING as given: "true", "1", or
+	// unset turn prompt caching on, "false" or "0" turn it off, and the
+	// worker refuses anything else (docs/decisions.md, D057).
+	LLMPromptCaching string
 	// LLMModel and TTSModel name the model each real provider uses. Empty
 	// means that provider's own default.
 	LLMModel string
@@ -102,6 +106,7 @@ func Load() Config {
 		VoiceIDB:          env("VOICE_ID_B", "voice-b-placeholder"),
 		LLMProvider:       env("LLM_PROVIDER", "fake"),
 		TTSProvider:       env("TTS_PROVIDER", "fake"),
+		LLMPromptCaching:  os.Getenv("LLM_PROMPT_CACHING"),
 		LipSyncProvider:   env("LIPSYNC_PROVIDER", "fake"),
 		LipSyncResolution: env("LIPSYNC_RESOLUTION", "480p"),
 		// WaveSpeed asks for at least two seconds between polls, and a

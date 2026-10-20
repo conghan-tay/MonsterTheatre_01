@@ -34,3 +34,5 @@ dist/
 .temporal/
 bin/
 .data/
+
+dev.log

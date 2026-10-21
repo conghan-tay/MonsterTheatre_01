@@ -25,6 +25,8 @@ type api struct {
 	// request is the last request body, decoded.
 	request map[string]any
 	header  http.Header
+	// respond, when set, answers each request in place of response.
+	respond func(request map[string]any) string
 }
 
 func (a *api) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -37,6 +39,10 @@ func (a *api) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	require.NoError(a.t, json.Unmarshal(body, &a.request), "body: %s", body)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(a.status)
+	if a.respond != nil {
+		_, _ = io.WriteString(w, a.respond(a.request))
+		return
+	}
 	_, _ = io.WriteString(w, a.response)
 }
 

@@ -2,9 +2,13 @@ package theater
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
+	"maps"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -19,6 +23,15 @@ const (
 	// streamRetryDelay is the pause after a failed read.
 	streamRetryDelay = time.Second
 	streamBatch      = 100
+	// readerFailingAfter is how long reads may fail before the reader is
+	// unhealthy: a blip is retried quietly.
+	readerFailingAfter = 10 * time.Second
+	// readerStuckAfter is how long the reader may go without finishing a
+	// read before it is unhealthy. A read waits at most streamBlock, so
+	// this means the loop has stopped or is stuck.
+	readerStuckAfter = 15 * time.Second
+	// failureLogEvery is how often a continuing failure is logged again.
+	failureLogEvery = 30 * time.Second
 )
 
 // StreamClient is the part of Redis the reader uses. *redis.Client
@@ -28,9 +41,16 @@ type StreamClient interface {
 	XRead(ctx context.Context, a *redis.XReadArgs) *redis.XStreamSliceCmd
 }
 
-// Broadcaster delivers an update to a room's connections. *Hub implements it.
+// Broadcaster delivers an update to a room's connections and says how many
+// it was queued for and how many were dropped for falling behind. *Hub
+// implements it.
 type Broadcaster interface {
-	Broadcast(roomID string, revision int, msg []byte)
+	Broadcast(roomID string, revision int, msg []byte) (connections, dropped int)
+}
+
+// UpdateWatcher is told of every update read. *StallWatcher implements it.
+type UpdateWatcher interface {
+	Seen(roomID string, revision int, state performance.State)
 }
 
 // NoticeHandler acts on a notice read from the notice stream. *Service
@@ -58,6 +78,88 @@ type StreamReader struct {
 	Logger  *slog.Logger
 	// RetryDelay defaults to streamRetryDelay when zero.
 	RetryDelay time.Duration
+	// Stalls, if set, is told of every update read.
+	Stalls UpdateWatcher
+	// Now defaults to time.Now.
+	Now func() time.Time
+
+	// progress is what Healthy reports on, and what the reader's own log
+	// lines say (docs/decisions.md, D061).
+	mu           sync.Mutex
+	running      bool
+	lastProgress time.Time
+	failingSince time.Time
+	failures     int
+	lastFailLog  time.Time
+	lastIDs      map[string]string
+}
+
+func (s *StreamReader) now() time.Time {
+	if s.Now != nil {
+		return s.Now()
+	}
+	return time.Now()
+}
+
+// started marks the reader as running.
+func (s *StreamReader) started(now time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.running, s.lastProgress = true, now
+}
+
+// readOK records a read that finished, with or without entries, and logs
+// the end of any failure before it.
+func (s *StreamReader) readOK(now time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.failures > 0 {
+		s.Logger.Info("stream reader recovered",
+			"downtime_s", int(now.Sub(s.failingSince).Seconds()), "failures", s.failures, "last_ids", s.lastIDs)
+	}
+	s.lastProgress, s.failingSince, s.failures = now, time.Time{}, 0
+}
+
+// readFailed records a failed call to Redis. It is logged when the failure
+// begins and then every failureLogEvery while it goes on, not on every
+// retry.
+func (s *StreamReader) readFailed(now time.Time, what string, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastProgress = now
+	if s.failures == 0 {
+		s.failingSince = now
+	}
+	s.failures++
+	if s.failures == 1 || now.Sub(s.lastFailLog) >= failureLogEvery {
+		s.lastFailLog = now
+		s.Logger.Error("stream read failed",
+			"op", what, "failures", s.failures, "failing_for_s", int(now.Sub(s.failingSince).Seconds()),
+			"last_ids", s.lastIDs, "error", err.Error())
+	}
+}
+
+// noteIDs records where each stream has been read up to, for the log.
+func (s *StreamReader) noteIDs(ids map[string]string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastIDs = maps.Clone(ids)
+}
+
+// Healthy reports whether the reader is keeping up: running, finishing
+// reads, and not failing for longer than a blip.
+func (s *StreamReader) Healthy(now time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switch {
+	case !s.running:
+		return errors.New("the stream reader is not running")
+	case s.failures > 0 && now.Sub(s.failingSince) > readerFailingAfter:
+		return fmt.Errorf("stream reads failing for %ds", int(now.Sub(s.failingSince).Seconds()))
+	case now.Sub(s.lastProgress) > readerStuckAfter:
+		return fmt.Errorf("no read has finished for %ds", int(now.Sub(s.lastProgress).Seconds()))
+	}
+	return nil
 }
 
 // Run reads until ctx ends. It starts from each stream's end: older entries
@@ -73,6 +175,12 @@ func (s *StreamReader) Run(ctx context.Context) {
 	if delay <= 0 {
 		delay = streamRetryDelay
 	}
+	s.started(s.now())
+	defer func() {
+		s.mu.Lock()
+		s.running = false
+		s.mu.Unlock()
+	}()
 
 	// Where each stream has been read up to, in a fixed order.
 	keys := []string{performance.StreamKey}
@@ -89,12 +197,15 @@ func (s *StreamReader) Run(ctx context.Context) {
 					return
 				}
 			case len(newest) == 0:
+				s.readOK(s.now())
 				lastID[key] = "0-0" // an empty stream: everything in it will be new
 			default:
+				s.readOK(s.now())
 				lastID[key] = newest[0].ID
 			}
 		}
 	}
+	s.noteIDs(lastID)
 
 	for ctx.Err() == nil {
 		// XREAD takes the stream names, then a position for each.
@@ -108,6 +219,7 @@ func (s *StreamReader) Run(ctx context.Context) {
 			Block:   streamBlock,
 		}).Result()
 		if errors.Is(err, redis.Nil) {
+			s.readOK(s.now())
 			continue // nothing new within the block time
 		}
 		if err != nil {
@@ -116,6 +228,7 @@ func (s *StreamReader) Run(ctx context.Context) {
 			}
 			continue
 		}
+		s.readOK(s.now())
 		for _, stream := range streams {
 			for _, entry := range stream.Messages {
 				lastID[stream.Stream] = entry.ID
@@ -126,6 +239,7 @@ func (s *StreamReader) Run(ctx context.Context) {
 				}
 			}
 		}
+		s.noteIDs(lastID)
 	}
 }
 
@@ -140,7 +254,18 @@ func (s *StreamReader) forward(entry redis.XMessage) {
 		s.Logger.Error("theater: malformed update in stream", "stream_id", entry.ID)
 		return
 	}
-	s.Hub.Broadcast(roomID, revision, []byte(message))
+	connections, dropped := s.Hub.Broadcast(roomID, revision, []byte(message))
+
+	// The phase is read only for the log and the stall watcher; the
+	// message itself is the browsers' business.
+	var update performance.Message
+	readable := json.Unmarshal([]byte(message), &update) == nil
+	s.Logger.Info("update broadcast",
+		"room_id", roomID, "performance_id", update.State.PerformanceID, "revision", revision,
+		"phase", update.State.Phase, "stream_id", entry.ID, "connections", connections, "dropped", dropped)
+	if readable && s.Stalls != nil {
+		s.Stalls.Seen(roomID, revision, update.State)
+	}
 }
 
 // pause logs a failure and waits before the next try. It returns false if
@@ -149,7 +274,7 @@ func (s *StreamReader) pause(ctx context.Context, delay time.Duration, what stri
 	if ctx.Err() != nil {
 		return false
 	}
-	s.Logger.Error("theater: could not "+what+"; retrying", "error", err)
+	s.readFailed(s.now(), what, err)
 	select {
 	case <-ctx.Done():
 		return false

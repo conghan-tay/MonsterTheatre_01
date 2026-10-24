@@ -3,7 +3,9 @@
 package theater
 
 import (
+	"log/slog"
 	"sync"
+	"sync/atomic"
 
 	"github.com/coder/websocket"
 )
@@ -43,11 +45,20 @@ type conn struct {
 	// close ends the connection with a close frame. It is safe to call from
 	// any goroutine and more than once.
 	close func(code websocket.StatusCode, reason string)
+	// lastSent is the revision of the last update or snapshot written to
+	// this browser, for the log lines that say where a browser stopped.
+	lastSent atomic.Int64
+	// dropped is set when the hub closes the connection for falling behind.
+	dropped atomic.Bool
 }
 
 // Hub is the in-memory map of room to open connections. It is the only
 // record of who is connected; nothing about connections is stored.
 type Hub struct {
+	// Logger, if set, receives "websocket dropped" for each connection
+	// closed for falling behind.
+	Logger *slog.Logger
+
 	mu     sync.Mutex
 	rooms  map[string]map[*conn]struct{}
 	closed bool
@@ -95,8 +106,8 @@ func (h *Hub) Count(roomID string) int {
 // connection can drop what its snapshot already covered. A connection whose queue is full is closed rather
 // than waited for, so one stalled browser cannot hold up a room; when it
 // reconnects it gets a fresh snapshot.
-func (h *Hub) Broadcast(roomID string, revision int, msg []byte) {
-	h.queue(roomID, nil, outbound{revision: revision, data: msg})
+func (h *Hub) Broadcast(roomID string, revision int, msg []byte) (connections, dropped int) {
+	return h.queue(roomID, nil, outbound{revision: revision, data: msg})
 }
 
 // announce queues a snapshot for every connection in the room but one: the
@@ -131,8 +142,9 @@ func (h *Hub) tell(roomID string, only *conn, msg []byte) {
 }
 
 // queue hands a message to every connection in the room that wanted picks,
-// or to all of them if wanted is nil.
-func (h *Hub) queue(roomID string, wanted func(*conn) bool, out outbound) {
+// or to all of them if wanted is nil. It returns how many it was queued for
+// and how many were dropped instead.
+func (h *Hub) queue(roomID string, wanted func(*conn) bool, out outbound) (queued, dropped int) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for c := range h.rooms[roomID] {
@@ -141,7 +153,14 @@ func (h *Hub) queue(roomID string, wanted func(*conn) bool, out outbound) {
 		}
 		select {
 		case c.send <- out:
+			queued++
 		default:
+			dropped++
+			c.dropped.Store(true)
+			if h.Logger != nil {
+				h.Logger.Warn("websocket dropped",
+					"room_id", roomID, "conn_id", c.id, "last_revision_sent", c.lastSent.Load(), "reason", "too far behind")
+			}
 			delete(h.rooms[roomID], c)
 			go c.close(websocket.StatusPolicyViolation, "too far behind")
 		}
@@ -149,6 +168,7 @@ func (h *Hub) queue(roomID string, wanted func(*conn) bool, out outbound) {
 	if len(h.rooms[roomID]) == 0 {
 		delete(h.rooms, roomID)
 	}
+	return queued, dropped
 }
 
 // CloseAll closes every connection, telling each browser the server is going

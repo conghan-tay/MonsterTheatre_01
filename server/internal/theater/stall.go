@@ -17,17 +17,17 @@ const (
 	// premiere: one video may take its full 15 minutes, and progress is
 	// only published as each one is ready.
 	premiereStallAfter = 16 * time.Minute
-	// stallCheckEvery is how often the watcher looks.
+	// stallCheckEvery is the longest the watcher waits between looks.
 	stallCheckEvery = 5 * time.Second
 	// stallForgetAfter is how long a stalled room is kept: a run whose last
 	// update never reached the stream would otherwise be watched forever.
 	stallForgetAfter = time.Hour
 )
 
-// ReaderHealth reports whether the stream reader is keeping up.
-// *StreamReader implements it.
+// ReaderHealth reports whether the stream reader is getting updates
+// through right now. *StreamReader implements it.
 type ReaderHealth interface {
-	Healthy(now time.Time) error
+	Reading(now time.Time) error
 }
 
 // StallWatcher notices a running performance whose updates have stopped
@@ -116,7 +116,7 @@ func (w *StallWatcher) Check() {
 			"revision", r.revision, "since_update_s", int(now.Sub(r.at).Seconds()),
 		}
 		if w.Reader != nil {
-			err := w.Reader.Healthy(now)
+			err := w.Reader.Reading(now)
 			fields = append(fields, "reader_ok", err == nil)
 			if err != nil {
 				fields = append(fields, "reader_error", err.Error())
@@ -129,9 +129,20 @@ func (w *StallWatcher) Check() {
 	}
 }
 
-// Run checks every few seconds until ctx ends.
+// every is how often the watcher looks: twice per limit, so a stall is
+// reported within half a limit of its starting, but at most every
+// stallCheckEvery and at least every tenth of a second.
+func (w *StallWatcher) every() time.Duration {
+	after := w.After
+	if after <= 0 {
+		after = DefaultStallAfter
+	}
+	return min(stallCheckEvery, max(after/2, 100*time.Millisecond))
+}
+
+// Run checks until ctx ends.
 func (w *StallWatcher) Run(ctx context.Context) {
-	ticker := time.NewTicker(stallCheckEvery)
+	ticker := time.NewTicker(w.every())
 	defer ticker.Stop()
 	for {
 		select {

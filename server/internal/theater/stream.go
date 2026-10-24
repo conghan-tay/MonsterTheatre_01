@@ -147,14 +147,26 @@ func (s *StreamReader) noteIDs(ids map[string]string) {
 }
 
 // Healthy reports whether the reader is keeping up: running, finishing
-// reads, and not failing for longer than a blip.
+// reads, and not failing for longer than a blip. /healthz asks it.
 func (s *StreamReader) Healthy(now time.Time) error {
+	return s.status(now, readerFailingAfter)
+}
+
+// Reading is Healthy without the allowance for a blip: whether updates are
+// getting through at this moment. The stall watcher asks it, since a stall
+// seen during a blip is still one this server could not have seen the end
+// of.
+func (s *StreamReader) Reading(now time.Time) error {
+	return s.status(now, 0)
+}
+
+func (s *StreamReader) status(now time.Time, allowance time.Duration) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	switch {
 	case !s.running:
 		return errors.New("the stream reader is not running")
-	case s.failures > 0 && now.Sub(s.failingSince) > readerFailingAfter:
+	case s.failures > 0 && now.Sub(s.failingSince) >= allowance:
 		return fmt.Errorf("stream reads failing for %ds", int(now.Sub(s.failingSince).Seconds()))
 	case now.Sub(s.lastProgress) > readerStuckAfter:
 		return fmt.Errorf("no read has finished for %ds", int(now.Sub(s.lastProgress).Seconds()))

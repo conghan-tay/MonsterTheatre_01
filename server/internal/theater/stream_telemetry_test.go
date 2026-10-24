@@ -78,11 +78,15 @@ func TestTheReaderIsHealthyOnlyWhileItKeepsReading(t *testing.T) {
 
 	r.readFailed(start.Add(22*time.Second), "read the streams", errors.New("connection refused"))
 	require.NoError(t, r.Healthy(start.Add(30*time.Second)), "a short outage is retried quietly")
+	require.ErrorContains(t, r.Reading(start.Add(30*time.Second)), "failing for 8s",
+		"but the stall watcher is told at once that nothing is getting through")
 	r.readFailed(start.Add(31*time.Second), "read the streams", errors.New("connection refused"))
 	require.ErrorContains(t, r.Healthy(start.Add(33*time.Second)), "failing for 11s")
 
 	r.readOK(start.Add(34 * time.Second))
 	require.NoError(t, r.Healthy(start.Add(35*time.Second)))
+	require.NoError(t, r.Reading(start.Add(35*time.Second)))
+	require.ErrorContains(t, r.Reading(start.Add(50*time.Second)), "no read has finished", "a stuck reader")
 }
 
 func TestAnUpdateThatIsNotJSONIsStillForwarded(t *testing.T) {

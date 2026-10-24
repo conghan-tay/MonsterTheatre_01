@@ -45,7 +45,7 @@ func TestWhenAPerformanceCountsAsStalled(t *testing.T) {
 
 type fakeReaderHealth struct{ err error }
 
-func (f *fakeReaderHealth) Healthy(time.Time) error { return f.err }
+func (f *fakeReaderHealth) Reading(time.Time) error { return f.err }
 
 func stallLines(buf *bytes.Buffer, msg string) []map[string]any {
 	var out []map[string]any
@@ -127,4 +127,10 @@ func TestARoomStalledForAnHourIsForgottenAfterItsLine(t *testing.T) {
 	now = now.Add(61 * time.Minute)
 	w.Check()
 	require.Zero(t, w.watching())
+}
+
+func TestTheWatcherLooksOftenEnoughForItsLimit(t *testing.T) {
+	require.Equal(t, 5*time.Second, (&StallWatcher{}).every(), "90 s by default: every 5 s")
+	require.Equal(t, 500*time.Millisecond, (&StallWatcher{After: time.Second}).every(), "twice per limit")
+	require.Equal(t, 100*time.Millisecond, (&StallWatcher{After: time.Millisecond}).every(), "but not busily")
 }

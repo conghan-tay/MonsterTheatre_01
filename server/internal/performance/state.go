@@ -302,3 +302,9 @@ func FailedState(p Performance) State {
 func RecoveringState(p Performance) State {
 	return State{Phase: PhaseRecovering, PerformanceID: p.ID}
 }
+
+// LogFields name an update's room, revision, phase, and turn for the
+// worker's activity log lines.
+func (u Update) LogFields() []any {
+	return []any{"room_id", u.RoomID, "revision", u.Revision, "phase", u.State.Phase, "turn", u.State.Turn}
+}

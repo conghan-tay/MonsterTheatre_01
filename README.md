@@ -203,6 +203,29 @@ By default the stand-in makes every video a one-second clip and spends nothing. 
 
 The stand-in can be slowed or failed per turn with a fake-provider script: `{"lipSyncDelays": {"1": 25000}, "failures": [{"op": "lipsync", "turn": 2, "attempts": 1}]}`.
 
+### Reading the telemetry
+
+When someone says "the performance froze", the log lines say which part stopped (docs/system-design.md, section 8; D060, D061). With the processes' output saved to files (`make dev` prints all three to the terminal, so redirect it, or use the test stack's `logs` directory), for one room:
+
+```sh
+ROOM=the-room-id
+# Did the server think it stalled, and was its reader working?
+grep '"msg":"performance stalled"' server.log | jq -c "select(.room_id==\"$ROOM\") | {phase, turn, revision, since_update_s, reader_ok, reader_error, connections}"
+# Which calls were slow, and which attempts failed?
+grep -E '"msg":"(provider call|activity finished)"' worker.log | jq -c "select(.room_id==\"$ROOM\") | {msg, activity_type, op, turn, attempt, duration_ms, outcome, will_retry, error}"
+# Was work waiting for a worker?
+grep '"msg":"activity started"' worker.log | jq -c "select(.room_id==\"$ROOM\") | {activity_type, turn, attempt, schedule_to_start_ms}"
+# Did the worker go on publishing while a server stopped broadcasting?
+grep '"msg":"update published"' worker.log | jq -c "select(.room_id==\"$ROOM\") | {revision, phase, stream_id}"
+grep -E '"msg":"(update broadcast|stream read failed|stream reader recovered)"' server.log | jq -c '{msg, room_id, revision, stream_id, connections, error}'
+# Why did a browser go?
+grep '"msg":"websocket disconnected"' server.log | jq -c "select(.room_id==\"$ROOM\") | {conn_id, reason, last_revision_sent, duration_ms}"
+```
+
+`curl -s localhost:8080/healthz` also says whether the server's stream reader is keeping up (`"stream": "ok"`).
+
+The stand-ins can be slowed per turn too, to see what a slow model looks like: `{"delays": [{"op": "choices", "turn": 2, "ms": 3000}]}` (`choices`, `tags`, or `speech`).
+
 ### Settings
 
 All optional, read by the worker:
@@ -222,6 +245,7 @@ All optional, read by the worker:
 | `LIPSYNC_RESOLUTION` | `480p` | `480p` or `720p`. Anything else stops the worker at start |
 | `LIPSYNC_POLL_INTERVAL` | `20s` | How often the worker asks whether a video is done. The tests set it shorter |
 | `FAKE_SCRIPT_DIR` | unset | A directory of `<roomId>.json` scripts for the stand-ins |
+| `STALL_AFTER` | `90s` | Read by the server: how long a running performance may go without an update, past any vote deadline, before the server logs `performance stalled`. The tests set `1s` |
 
 ## End-to-end tests
 
@@ -382,7 +406,7 @@ A key changed later reaches a task only when it restarts, which any `deploy-app`
 ./scripts/aws.sh e2e        # the end-to-end suite, against a deployment in test mode
 ```
 
-`e2e` refuses a deployment in live mode, where each of its performances would be a paid run. It creates directors and reads rows and objects from this machine, as `admin` on the cluster. Of its 52 top-level tests, 20 skip themselves there, each saying why, and stay covered by `make e2e`: six need fake-provider scripts on the worker's disk, three stop the worker, three need a second server, one terminates a workflow, one asks `/healthz`, which is not reachable from outside, and six need a database of their own to empty.
+`e2e` refuses a deployment in live mode, where each of its performances would be a paid run. It creates directors and reads rows and objects from this machine, as `admin` on the cluster. Of its 55 top-level tests, 23 skip themselves there, each saying why, and stay covered by `make e2e`: six need fake-provider scripts on the worker's disk, three stop the worker, three need a second server, one terminates a workflow, one asks `/healthz`, which is not reachable from outside, six need a database of their own to empty, and three read the stack's own log files.
 
 The whole sequence in one command: `./scripts/aws.sh cycle` deploys in test mode, runs the suite, stops if anything failed, clears what the suite left behind, and switches to live. `cycle --teardown-between` destroys and recreates the application stack between the two instead of switching in place, which takes about 35 minutes longer and changes the address.
 

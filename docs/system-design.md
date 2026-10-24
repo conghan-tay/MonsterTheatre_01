@@ -443,9 +443,44 @@ Two pages show a room live, and both use one component for it (`web/src/componen
 
 ## 8. Observability
 
-- Server and worker write structured logs that carry the room ID and performance ID on every line.
-- The Temporal UI is the timeline of a run: each activity, retry, signal, timer, and failure is visible there, and it is where the worker-restart demonstration is shown.
-- There is no metrics system in the prototype.
+Server and worker write JSON log lines. Some have a fixed `msg` that a person, a `jq` query, or (later) a CloudWatch metric filter can count on (D060). Each carries whichever of these IDs it knows: `room_id`, `performance_id`, `turn`; `workflow_id`, `run_id`, `activity_type`, `activity_id`, `attempt`; and on the server `request_id` and `conn_id`.
+
+**Worker:**
+
+| `msg` | When | Says |
+| --- | --- | --- |
+| `activity started` | Each activity attempt begins | `schedule_to_start_ms`: how long it waited for a worker |
+| `activity finished` | Each attempt ends | `duration_ms`, `outcome` (`ok`, `failed`, `timeout`, `canceled`), `will_retry`, `error` |
+| `provider call` | Each call to Claude, ElevenLabs, or WaveSpeed (or a stand-in) | `provider`, `op`, `duration_ms`, `outcome`, `error` |
+| `object put` | Each upload | `key`, `bytes`, `duration_ms`, `outcome`, `error` |
+| `update published` | Each update added to the stream | `revision`, `phase`, `stream_id` |
+| `claude call` | Each Claude call (D057) | tokens and cost, now with the workflow and activity IDs |
+
+**Server:**
+
+| `msg` | When | Says |
+| --- | --- | --- |
+| `http request` | Each request; `/livez` only at debug | `route` (the pattern), `status`, `duration_ms`, `request_id` (also in `X-Request-Id`) |
+| `update broadcast` | Each update read from the stream | `revision`, `phase`, `stream_id` (the worker's), `connections`, `dropped` |
+| `websocket connected`, `websocket disconnected` | A browser connects or goes | `conn_id`; on leaving, `reason`, `last_revision_sent`, `duration_ms` |
+| `websocket dropped` | The hub closes a connection that fell behind | `last_revision_sent` |
+| `resync requested` | A browser asks for a fresh snapshot | `last_revision_sent` |
+| `stream read failed`, `stream reader recovered` | Reads from Redis start and stop failing | `failures`, `failing_for_s` or `downtime_s`, `last_ids` |
+| `performance stalled`, `performance resumed` | A running performance has had no update here for longer than expected, and then has one (D061) | `phase`, `revision`, `since_update_s`, `reader_ok`, `connections`; `stalled_for_s` |
+
+`/healthz` has a `stream` check: it fails when reads have failed for more than 10 s, or none has finished for 15 s. The load balancer still asks `/livez` (D061).
+
+**What "the performance froze" turns out to be:**
+
+| Cause | What the lines show |
+| --- | --- |
+| A slow provider | `provider call` with a long `duration_ms`; on every server, `performance stalled` with `reader_ok` true, in `generating` |
+| Retries | `activity finished` with `outcome` failed and `will_retry` true, then `attempt` 2, 3… |
+| Work queued, or no worker | A long `schedule_to_start_ms`, or no `activity started` while the servers report a stall |
+| Delivery stopped on one server | The worker's `update published` revisions keep rising, and other servers' `update broadcast` goes on; that server logs `stream read failed` and `performance stalled` with `reader_ok` false, and its `/healthz` names `stream` |
+| One browser | `websocket dropped` or `websocket disconnected` with its `reason` and `last_revision_sent` |
+
+Matching a published update to its broadcast: the worker's `stream_id` is the server's. The Temporal UI remains the timeline of one run: each activity, retry, signal, timer, and failure. There is no metrics system yet, and nothing alarms; CloudWatch metric filters and alarms on these lines are the next piece of work.
 
 ## 9. Limits accepted for the prototype
 
@@ -469,6 +504,9 @@ Two pages show a room live, and both use one component for it (`web/src/componen
 - The cost of Claude calls is logged per call, with each room's running total kept in the worker's memory; a worker restart starts the totals again, and ElevenLabs and WaveSpeed costs are not logged (D057).
 - Lip sync (D055): a video submission whose answer is lost is not retried, so that line has no video though WaveSpeed may have made, and charged for, one. While a line's video is waited for, the worker holds one activity slot for it; about 125 lip-sync performances at once would use the default 1000. Whether the video's lips match the separately played recording has not been checked with real videos (D056).
 - A browser that connects while a turn's lines are being written does not see the previous round's result; only browsers that were told it keep it on screen (D053).
+- The stall watcher (D061) knows only the rooms whose updates its server has read since it started: a server restarted during a run reports no stall for it until the next update arrives. A run whose last update never reached the stream is reported once and forgotten an hour later.
+- `will_retry` on `activity finished` is the worker's reading of the retry policy's attempt limit; a `ScheduleToClose` window (the choices retry window) can end the retries sooner than it says.
+- Nothing alarms on the log lines yet, and nothing restarts a server whose `/healthz` names `stream`.
 
 ## 10. Next step
 

@@ -78,6 +78,10 @@ type Config struct {
 	// ChoicesRetryWindow is how long choice generation is retried, in
 	// total, before the run fails. Zero is refused, like the two above.
 	ChoicesRetryWindow time.Duration
+	// StallAfter is how long a running performance may go without an update
+	// reaching a server, past any vote deadline, before that server logs it
+	// as stalled (docs/decisions.md, D061). Zero is refused by the server.
+	StallAfter time.Duration
 	// MaxLineLength is the longest a generated line may be, in characters.
 	// Zero means the variable was set but is not a whole number; the worker
 	// refuses that, and any value outside the allowed range.
@@ -116,6 +120,7 @@ func Load() Config {
 		VoteWindow:          envDuration("VOTE_WINDOW", 10*time.Second),
 		PremiereCountdown:   envDuration("PREMIERE_COUNTDOWN", 5*time.Second),
 		ChoicesRetryWindow:  envDuration("CHOICES_RETRY_WINDOW", 2*time.Minute),
+		StallAfter:          envDuration("STALL_AFTER", 90*time.Second),
 		MaxLineLength:       envInt("MAX_LINE_LENGTH", providers.DefaultLineLimit),
 		LLMModel:            os.Getenv("LLM_MODEL"),
 		TTSModel:            os.Getenv("TTS_MODEL"),

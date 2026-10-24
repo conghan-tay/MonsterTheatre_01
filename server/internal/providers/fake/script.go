@@ -3,6 +3,7 @@
 package fake
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // Operations that a script can make fail.
@@ -44,6 +46,33 @@ type Script struct {
 	// lip-sync video takes after it is submitted. Turns not listed are
 	// ready at once.
 	LipSyncDelays map[int]int `json:"lipSyncDelays"`
+	// Delays slow one operation on one turn, on every attempt, the way a
+	// slow provider would. The wait ends early if the call is cancelled.
+	Delays []Delay `json:"delays"`
+}
+
+// Delay makes one operation on one turn take Ms milliseconds longer.
+type Delay struct {
+	Op   string `json:"op"`
+	Turn int    `json:"turn"`
+	Ms   int    `json:"ms"`
+}
+
+// wait holds a call for its scripted delay, or until ctx ends.
+func (s Script) wait(ctx context.Context, op string, turn int) error {
+	for _, d := range s.Delays {
+		if d.Op != op || d.Turn != turn || d.Ms <= 0 {
+			continue
+		}
+		timer := time.NewTimer(time.Duration(d.Ms) * time.Millisecond)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		}
+	}
+	return nil
 }
 
 // Failure makes one operation on one turn fail for attempts 1..Attempts.

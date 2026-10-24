@@ -39,6 +39,16 @@ type Script struct {
 	// LipSyncDelays maps a turn to how long its lip-sync video takes, in
 	// milliseconds after it is submitted.
 	LipSyncDelays map[int]int `json:"lipSyncDelays,omitempty"`
+	// Delays slow an operation on a turn, on every attempt.
+	Delays []Delay `json:"delays,omitempty"`
+}
+
+// Delay makes one operation on one turn take Ms milliseconds longer, as a
+// slow provider would.
+type Delay struct {
+	Op   string `json:"op"`
+	Turn int    `json:"turn"`
+	Ms   int    `json:"ms"`
 }
 
 // Write stores the script where the fakes read it. scriptDir is the stack's

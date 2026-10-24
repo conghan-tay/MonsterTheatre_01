@@ -458,6 +458,32 @@ Before starting this step, load the relevant AWS skills as the project's instruc
 - **Tests:** three new: every case sends its injected text in the field the report names; the example rule; and a dry run against a stand-in that obeys the old prompt and resists the shipped one, which checks the section as written.
 - **One paid run** (approved, 72 calls, $0.2495): pass. Case 2 shows the old prompt writing "This is case file ZEBRA-7731, Grumble" and the shipped prompt staying in the story. Attack 7 worked 0 in 3 on the shipped prompt this time (3 in 3, then 1 in 3, before), and attack 5 worked 2 in 3 on the old prompt (3 in 3 twice before). The report is in `.data/evals/injection-20261021T064513Z.md`.
 
+### After step 15 — observability: telling delays from delivery failures
+
+**Done 2026-10-24.** Not one of the fifteen steps. Asked for by the user, because "the performance froze" could be slow generation, retries, queued work, or browsers no longer being updated. Decisions: D060, D061. This is the first of two pull requests; the second adds CloudWatch metric filters, alarms, and email through SNS.
+
+- **Worker:**
+  - An activity interceptor writes `activity started` (with the time queued) and `activity finished` (duration, outcome, `will_retry`) for each attempt, with the workflow, run, activity, room, performance, and turn IDs.
+  - Wrappers time each provider call and upload.
+  - `Publish` logs each update's stream ID.
+  - The workflow's lines and `claude call` gain the IDs they lacked.
+- **Server:**
+  - Each request gets an ID and an `http request` line.
+  - The stream reader logs when reads start and stop failing, and `/healthz` checks it.
+  - Each update broadcast is logged with its stream ID and reach.
+  - Connections log why they ended and their last revision; a dropped one is logged.
+  - A stall watcher logs a running performance whose updates stop arriving, and whether this server's reader was working (`STALL_AFTER`, 90 s by default).
+- **Fake providers:** they can delay `choices`, `tags`, or `speech` per turn.
+- **Tests:**
+  - Unit tests for each line.
+  - Three E2E simulations, each checked against what the processes logged:
+    - a model call delayed by 3 s;
+    - turn 2's recording blocked from being stored;
+    - the second server's Redis cut by a proxy for more than ten seconds, then restored.
+  - Each was shown to fail when the telemetry it checks was removed.
+  - `make e2e`: 81 passed, twice.
+- **Not shown:** anything on AWS, real providers' durations, or load.
+
 ## 4. Points to settle along the way
 
 These are items 11 to 16 in [the review](review.md), placed where they come up:

@@ -1,15 +1,20 @@
 package workflow
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	"go.temporal.io/sdk/converter"
+	"go.temporal.io/sdk/log"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/workflow"
@@ -37,7 +42,9 @@ type published struct {
 // recorder stands in for the outside world: it answers every activity and
 // keeps what the workflow asked for.
 type recorder struct {
-	env        *testsuite.TestWorkflowEnvironment
+	env *testsuite.TestWorkflowEnvironment
+	// logs is what the workflows logged, as JSON lines.
+	logs       *bytes.Buffer
 	publishes  []published
 	publishErr error
 	choices    []activities.ChoicesInput
@@ -74,8 +81,10 @@ type recorder struct {
 func newRun(t *testing.T, before ...func(*testsuite.TestWorkflowEnvironment)) (*testsuite.TestWorkflowEnvironment, *recorder) {
 	t.Helper()
 	var suite testsuite.WorkflowTestSuite
+	logs := &bytes.Buffer{}
+	suite.SetLogger(log.NewStructuredLogger(slog.New(slog.NewJSONHandler(logs, nil))))
 	env := suite.NewTestWorkflowEnvironment()
-	rec := &recorder{env: env}
+	rec := &recorder{env: env, logs: logs}
 	var a *activities.Activities
 	env.RegisterWorkflowWithOptions(PrepareLine, workflow.RegisterOptions{Name: PrepareLineName})
 	env.SetOnChildWorkflowStartedListener(func(info *workflow.Info, _ workflow.Context, _ converter.EncodedValues) {
@@ -643,6 +652,17 @@ func TestSpeechFailingThreeTimesFailsTheRun(t *testing.T) {
 		}
 	}
 	require.Equal(t, 3, attempts)
+
+	var stopped map[string]any
+	for _, line := range strings.Split(rec.logs.String(), "\n") {
+		if strings.Contains(line, "a line could not be voiced") {
+			require.NoError(t, json.Unmarshal([]byte(line), &stopped))
+		}
+	}
+	require.NotNil(t, stopped, "the run says where it stopped")
+	require.Equal(t, testInput.RoomID, stopped["room_id"])
+	require.Equal(t, testInput.PerformanceID, stopped["performance_id"])
+	require.EqualValues(t, 2, stopped["turn"])
 }
 
 func TestSpeechFailingOnTheLastTurnFailsTheRunBeforeThePremiere(t *testing.T) {

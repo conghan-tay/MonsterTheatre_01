@@ -149,7 +149,7 @@ func (r *run) fail(ctx workflow.Context, cause error) {
 		PerformanceID: r.in.PerformanceID, Reason: code,
 	}).Get(ctx, nil)
 	if err != nil {
-		workflow.GetLogger(ctx).Error("could not mark the performance failed", "error", err)
+		logger(ctx, r.in.RoomID, r.in.PerformanceID).Error("could not mark the performance failed", "error", err)
 	}
 	r.publish(ctx, performance.State{
 		Phase: performance.PhaseFailed, Turn: r.state.Turn, Failure: performance.NewFailure(code),
@@ -348,7 +348,7 @@ func (r *run) prepareLine(root workflow.Context, in LineInput) {
 		var line PreparedLine
 		if err := child.Get(ctx, &line); err != nil {
 			if r.lineFailure == nil {
-				workflow.GetLogger(ctx).Error("a line could not be voiced; stopping the run", "turn", in.Turn, "error", err)
+				logger(ctx, r.in.RoomID, r.in.PerformanceID).Error("a line could not be voiced; stopping the run", "turn", in.Turn, "error", err)
 				r.lineFailure = err
 				r.stop()
 			}
@@ -377,7 +377,7 @@ func (r *run) publish(ctx workflow.Context, next performance.State) {
 		RoomID: r.in.RoomID, Revision: r.revision, State: r.state,
 	}).Get(ctx, nil)
 	if err != nil {
-		workflow.GetLogger(ctx).Warn("publish failed; continuing", "revision", r.revision, "phase", next.Phase, "error", err)
+		logger(ctx, r.in.RoomID, r.in.PerformanceID).Warn("publish failed; continuing", "revision", r.revision, "phase", next.Phase, "error", err)
 	}
 }
 

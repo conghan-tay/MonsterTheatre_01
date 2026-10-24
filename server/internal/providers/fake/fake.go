@@ -20,13 +20,16 @@ var _ providers.DialogueModel = Dialogue{}
 
 // GenerateChoices returns the scripted lines for the turn, or three
 // predictable defaults.
-func (d Dialogue) GenerateChoices(_ context.Context, req providers.ChoicesRequest) (providers.Choices, error) {
+func (d Dialogue) GenerateChoices(ctx context.Context, req providers.ChoicesRequest) (providers.Choices, error) {
 	script, err := d.Scripts.For(req.RoomID)
 	if err != nil {
 		return providers.Choices{}, err
 	}
 	if script.fails(OpChoices, req.Turn, req.Attempt) {
 		return providers.Choices{}, ErrInjected
+	}
+	if err := script.wait(ctx, OpChoices, req.Turn); err != nil {
+		return providers.Choices{}, err
 	}
 	if lines, ok := script.Choices[req.Turn]; ok {
 		return providers.Choices{Lines: lines, Model: ModelName}, nil
@@ -39,13 +42,16 @@ func (d Dialogue) GenerateChoices(_ context.Context, req providers.ChoicesReques
 }
 
 // EnhanceTags prefixes one fixed tag and leaves the words unchanged.
-func (d Dialogue) EnhanceTags(_ context.Context, req providers.TagsRequest) (providers.Tagged, error) {
+func (d Dialogue) EnhanceTags(ctx context.Context, req providers.TagsRequest) (providers.Tagged, error) {
 	script, err := d.Scripts.For(req.RoomID)
 	if err != nil {
 		return providers.Tagged{}, err
 	}
 	if script.fails(OpTags, req.Turn, req.Attempt) {
 		return providers.Tagged{}, ErrInjected
+	}
+	if err := script.wait(ctx, OpTags, req.Turn); err != nil {
+		return providers.Tagged{}, err
 	}
 	return providers.Tagged{Text: "[excited] " + req.Text, Model: ModelName}, nil
 }
@@ -58,13 +64,16 @@ type Speech struct {
 var _ providers.Speech = Speech{}
 
 // Synthesize returns a short silent MP3.
-func (s Speech) Synthesize(_ context.Context, req providers.SpeechRequest) ([]byte, error) {
+func (s Speech) Synthesize(ctx context.Context, req providers.SpeechRequest) ([]byte, error) {
 	script, err := s.Scripts.For(req.RoomID)
 	if err != nil {
 		return nil, err
 	}
 	if script.fails(OpSpeech, req.Turn, req.Attempt) {
 		return nil, ErrInjected
+	}
+	if err := script.wait(ctx, OpSpeech, req.Turn); err != nil {
+		return nil, err
 	}
 	return SilentMP3(), nil
 }

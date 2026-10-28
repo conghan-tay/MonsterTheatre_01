@@ -6,6 +6,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -105,4 +106,23 @@ func TestEveryUploadIsLoggedWithItsKeyAndSize(t *testing.T) {
 	require.Equal(t, "ok", got[0]["outcome"])
 	require.Equal(t, "failed", got[1]["outcome"])
 	require.Equal(t, "rename: is a directory", got[1]["error"])
+}
+
+func TestACallThatEndsAfterTheDeadlineIsAWarning(t *testing.T) {
+	logger, lines := captured()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	<-ctx.Done()
+	s := Store{Next: stubStore{}, Logger: logger}
+	require.NoError(t, s.Put(ctx, "k", strings.NewReader("x"), "text/plain"))
+	d := Dialogue{Next: stubDialogue{}, Provider: "anthropic", Logger: logger}
+	_, err := d.GenerateChoices(ctx, providers.ChoicesRequest{})
+	require.NoError(t, err)
+
+	for _, msg := range []string{"object put", "provider call"} {
+		got := only(lines(), msg)
+		require.Len(t, got, 1, msg)
+		require.Equal(t, "timeout", got[0]["outcome"], msg)
+		require.Equal(t, "WARN", got[0]["level"], msg)
+	}
 }

@@ -133,6 +133,15 @@ func TestTelemetryShowsAFailedUploadAndWhereTheRunStopped(t *testing.T) {
 		require.EqualValues(t, i+1, a.Number("attempt"))
 		require.Equal(t, i < 2, a["will_retry"], "attempt %d", i+1)
 	}
+	// Only a first attempt's wait is queue time; a retry's also holds the
+	// earlier attempts and the backoff, and is named for that.
+	starts := logged(t, "worker", "activity started", 3,
+		inRoom(room.RoomID, field("activity_type", "Synthesize"), field("turn", 2)))
+	require.Contains(t, starts[0], "schedule_to_start_ms")
+	for _, retry := range starts[1:] {
+		require.NotContains(t, retry, "schedule_to_start_ms", "attempt %v", retry["attempt"])
+		require.GreaterOrEqual(t, retry.Number("since_first_scheduled_ms"), 1000.0, "it includes the backoff")
+	}
 	stopped := logged(t, "worker", "a line could not be voiced; stopping the run", 1, inRoom(room.RoomID))[0]
 	require.Equal(t, started.PerformanceID, stopped.String("performance_id"))
 

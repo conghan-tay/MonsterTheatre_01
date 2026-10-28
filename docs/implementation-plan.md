@@ -483,6 +483,12 @@ Before starting this step, load the relevant AWS skills as the project's instruc
   - Each was shown to fail when the telemetry it checks was removed.
   - `make e2e`: 81 passed, twice.
 - **Not shown:** anything on AWS, real providers' durations, or load.
+- **Fixed after review (2026-10-28):**
+  - queue time on first attempts only;
+  - a late return logged as a timeout;
+  - a panicking attempt still writes `activity finished`.
+
+  Each fix has a test, written to fail first; the upload simulation also checks the retries' lines.
 
 ## 4. Points to settle along the way
 

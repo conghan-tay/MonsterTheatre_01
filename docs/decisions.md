@@ -1252,6 +1252,10 @@ Each line carries whichever IDs it knows: room, performance, turn, workflow, run
 - **`will_retry` is the worker's reading** of the retry policy's attempt limit and non-retryable error types. A `ScheduleToClose` window can end the retries sooner.
 - **The provider wrappers** time the call as the activity made it, including the stand-ins. ElevenLabs and WaveSpeed costs are still not logged (D057).
 - **Nothing alarms on these lines yet;** that is the next piece of work.
+- **2026-10-28, after a review of PR #24:**
+  - **Retries:** `schedule_to_start_ms` is now logged on first attempts only. Temporal's `ScheduledTime` is when the activity was first scheduled, so a retry's gap included its earlier attempts and backoff (1 s and 3 s in the upload simulation). The SDK doesn't give an interceptor the current attempt's scheduling time. A retry carries `since_first_scheduled_ms` instead.
+  - **Late returns:** an attempt that returns after its deadline is logged as a `timeout` with a warning, as Temporal counts it; before, it read `ok`.
+  - **Panics:** a panicking attempt now writes `activity finished` with `outcome: panic`. It is not recovered: Temporal's own "Activity panic." line, its stack, and the retry are as before.
 
 **Status:** accepted — requested by the user in the plan approved on 2026-10-24.
 

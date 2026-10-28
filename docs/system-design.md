@@ -449,8 +449,8 @@ Server and worker write JSON log lines. Some have a fixed `msg` that a person, a
 
 | `msg` | When | Says |
 | --- | --- | --- |
-| `activity started` | Each activity attempt begins | `schedule_to_start_ms`: how long it waited for a worker |
-| `activity finished` | Each attempt ends | `duration_ms`, `outcome` (`ok`, `failed`, `timeout`, `canceled`), `will_retry`, `error` |
+| `activity started` | Each activity attempt begins | `schedule_to_start_ms`: how long it waited for a worker, on a first attempt only. A retry has `since_first_scheduled_ms`, which also holds the earlier attempts and the backoff |
+| `activity finished` | Each attempt ends, including one that panics | `duration_ms`, `outcome` (`ok`, `failed`, `timeout`, `canceled`, `panic`), `will_retry`, `error`. A result returned after the deadline is a `timeout`, as Temporal counts it |
 | `provider call` | Each call to Claude, ElevenLabs, or WaveSpeed (or a stand-in) | `provider`, `op`, `duration_ms`, `outcome`, `error` |
 | `object put` | Each upload | `key`, `bytes`, `duration_ms`, `outcome`, `error` |
 | `update published` | Each update added to the stream | `revision`, `phase`, `stream_id` |
@@ -476,7 +476,7 @@ Server and worker write JSON log lines. Some have a fixed `msg` that a person, a
 | --- | --- |
 | A slow provider | `provider call` with a long `duration_ms`; on every server, `performance stalled` with `reader_ok` true, in `generating` |
 | Retries | `activity finished` with `outcome` failed and `will_retry` true, then `attempt` 2, 3… |
-| Work queued, or no worker | A long `schedule_to_start_ms`, or no `activity started` while the servers report a stall |
+| Work queued, or no worker | A long `schedule_to_start_ms` on first attempts, or no `activity started` while the servers report a stall |
 | Delivery stopped on one server | The worker's `update published` revisions keep rising, and other servers' `update broadcast` goes on; that server logs `stream read failed` and `performance stalled` with `reader_ok` false, and its `/healthz` names `stream` |
 | One browser | `websocket dropped` or `websocket disconnected` with its `reason` and `last_revision_sent` |
 

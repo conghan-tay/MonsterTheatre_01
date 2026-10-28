@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/interceptor"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
@@ -146,4 +147,62 @@ func TestTimedLogsOneLineWithTheContextFields(t *testing.T) {
 	require.Equal(t, "failed", got[0]["outcome"])
 	require.Equal(t, "boom", got[0]["error"])
 	require.Equal(t, "WARN", got[0]["level"], "a failure is a warning")
+}
+
+func TestQueueTimeIsReportedOnlyForAFirstAttempt(t *testing.T) {
+	at := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
+	first := queueFields(activity.Info{Attempt: 1, ScheduledTime: at, StartedTime: at.Add(200 * time.Millisecond)})
+	require.Equal(t, []any{"schedule_to_start_ms", int64(200)}, first)
+
+	// Temporal's ScheduledTime is when the activity was first scheduled, so
+	// on a retry the gap holds the earlier attempts and the backoff.
+	third := queueFields(activity.Info{Attempt: 3, ScheduledTime: at, StartedTime: at.Add(3 * time.Second)})
+	require.NotContains(t, third, "schedule_to_start_ms", "a retry's wait is not queue time")
+	require.Equal(t, []any{"since_first_scheduled_ms", int64(3000)}, third)
+}
+
+func TestALateReturnIsATimeout(t *testing.T) {
+	three := &temporal.RetryPolicy{MaximumAttempts: 3}
+	require.Equal(t, "timeout", outcome(nil, context.DeadlineExceeded), "Temporal discards a result returned after the deadline")
+	require.True(t, willRetry(nil, 1, three, context.DeadlineExceeded))
+	require.False(t, willRetry(nil, 3, three, context.DeadlineExceeded))
+
+	logger, lines := captured()
+	w := &workerInterceptor{logger: logger, now: time.Now}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	_, err := (&activityInbound{w: w}).observe(ctx, activity.Info{Attempt: 1, RetryPolicy: three}, nil,
+		func(ctx context.Context) (any, error) {
+			<-ctx.Done()
+			return "too late", nil
+		})
+	require.NoError(t, err, "what the activity returned is passed on unchanged")
+
+	finished := only(lines(), "activity finished")
+	require.Len(t, finished, 1)
+	require.Equal(t, "timeout", finished[0]["outcome"])
+	require.Equal(t, true, finished[0]["will_retry"])
+	require.Equal(t, "WARN", finished[0]["level"])
+	require.Equal(t, "returned after its deadline", finished[0]["error"])
+}
+
+func TestAPanickedAttemptStillFinishesItsLine(t *testing.T) {
+	logger, lines := captured()
+	var s testsuite.WorkflowTestSuite
+	env := s.NewTestActivityEnvironment()
+	env.SetWorkerOptions(worker.Options{Interceptors: []interceptor.WorkerInterceptor{NewInterceptor(logger)}})
+	work := func(ctx context.Context, in roomInput) error { panic("nil map") }
+	env.RegisterActivity(work)
+
+	_, err := env.ExecuteActivity(work, roomInput{Room: "room-1", Perf: "perf-1"})
+	var panicked *temporal.PanicError
+	require.ErrorAs(t, err, &panicked, "Temporal still handles the panic itself")
+	require.Contains(t, panicked.Error(), "nil map")
+
+	finished := only(lines(), "activity finished")
+	require.Len(t, finished, 1, "one start, one finish")
+	require.Equal(t, "panic", finished[0]["outcome"])
+	require.Equal(t, "room-1", finished[0]["room_id"])
+	require.Equal(t, "WARN", finished[0]["level"])
+	require.Contains(t, finished[0]["error"], "Activity panic.")
 }

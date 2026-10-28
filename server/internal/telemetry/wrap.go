@@ -117,12 +117,16 @@ func (s Store) Put(ctx context.Context, key string, body io.Reader, contentType 
 	counted := &counter{r: body}
 	start := now()
 	err := s.Next.Put(ctx, key, counted, contentType)
+	ended := outcome(err, ctx.Err())
 	fields := append(append([]any{}, Fields(ctx)...),
 		"key", key, "bytes", counted.n,
-		"duration_ms", now().Sub(start).Milliseconds(), "outcome", outcome(err, ctx.Err()))
-	if err != nil {
+		"duration_ms", now().Sub(start).Milliseconds(), "outcome", ended)
+	switch {
+	case err != nil:
 		s.Logger.Warn("object put", append(fields, "error", err.Error())...)
-	} else {
+	case ended != "ok":
+		s.Logger.Warn("object put", fields...)
+	default:
 		s.Logger.Info("object put", fields...)
 	}
 	return err

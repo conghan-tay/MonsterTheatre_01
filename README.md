@@ -213,8 +213,8 @@ ROOM=the-room-id
 grep '"msg":"performance stalled"' server.log | jq -c "select(.room_id==\"$ROOM\") | {phase, turn, revision, since_update_s, reader_ok, reader_error, connections}"
 # Which calls were slow, and which attempts failed?
 grep -E '"msg":"(provider call|activity finished)"' worker.log | jq -c "select(.room_id==\"$ROOM\") | {msg, activity_type, op, turn, attempt, duration_ms, outcome, will_retry, error}"
-# Was work waiting for a worker?
-grep '"msg":"activity started"' worker.log | jq -c "select(.room_id==\"$ROOM\") | {activity_type, turn, attempt, schedule_to_start_ms}"
+# Was work waiting for a worker? (First attempts only: a retry's wait includes its backoff.)
+grep '"msg":"activity started"' worker.log | jq -c "select(.room_id==\"$ROOM\" and .attempt==1) | {activity_type, turn, schedule_to_start_ms}"
 # Did the worker go on publishing while a server stopped broadcasting?
 grep '"msg":"update published"' worker.log | jq -c "select(.room_id==\"$ROOM\") | {revision, phase, stream_id}"
 grep -E '"msg":"(update broadcast|stream read failed|stream reader recovered)"' server.log | jq -c '{msg, room_id, revision, stream_id, connections, error}'

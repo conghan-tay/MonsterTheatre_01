@@ -77,7 +77,13 @@ type activityInbound struct {
 }
 
 func (a *activityInbound) ExecuteActivity(ctx context.Context, in *interceptor.ExecuteActivityInput) (any, error) {
-	info := activity.GetInfo(ctx)
+	return a.observe(ctx, activity.GetInfo(ctx), in.Args, func(ctx context.Context) (any, error) {
+		return a.Next.ExecuteActivity(ctx, in)
+	})
+}
+
+// observe logs one attempt's start and end around call.
+func (a *activityInbound) observe(ctx context.Context, info activity.Info, args []any, call func(context.Context) (any, error)) (any, error) {
 	fields := []any{
 		"workflow_id", info.WorkflowExecution.ID,
 		"run_id", info.WorkflowExecution.RunID,
@@ -86,7 +92,7 @@ func (a *activityInbound) ExecuteActivity(ctx context.Context, in *interceptor.E
 		"attempt", info.Attempt,
 	}
 	fromInput := false
-	for _, arg := range in.Args {
+	for _, arg := range args {
 		if f, ok := arg.(LogFielder); ok {
 			fields = append(fields, f.LogFields()...)
 			fromInput = slices.Contains(f.LogFields(), "performance_id")
@@ -101,25 +107,64 @@ func (a *activityInbound) ExecuteActivity(ctx context.Context, in *interceptor.E
 	ctx = WithFields(ctx, fields)
 
 	start := a.w.now()
-	queued := int64(0)
-	if !info.ScheduledTime.IsZero() && !info.StartedTime.IsZero() {
-		queued = info.StartedTime.Sub(info.ScheduledTime).Milliseconds()
-	}
-	a.w.logger.Info("activity started", append(slices.Clone(fields), "schedule_to_start_ms", queued)...)
+	a.w.logger.Info("activity started", append(slices.Clone(fields), queueFields(info)...)...)
 
-	result, err := a.Next.ExecuteActivity(ctx, in)
+	// A panic is left to Temporal, which recovers it outside this
+	// interceptor, logs "Activity panic." with its value and stack, and
+	// fails the attempt. It is not recovered here, so that line and the
+	// retry are exactly as they would be without the interceptor; the
+	// attempt's own line is still written.
+	returned := false
+	defer func() {
+		if returned {
+			return
+		}
+		a.w.logger.Warn("activity finished", append(slices.Clone(fields),
+			"duration_ms", a.w.now().Sub(start).Milliseconds(),
+			"outcome", "panic",
+			"will_retry", willRetry(errPanicked, info.Attempt, info.RetryPolicy, nil),
+			"error", errPanicked.Error())...)
+	}()
 
+	result, err := call(ctx)
+	returned = true
+
+	ctxErr := ctx.Err()
 	done := append(slices.Clone(fields),
 		"duration_ms", a.w.now().Sub(start).Milliseconds(),
-		"outcome", outcome(err, ctx.Err()),
-		"will_retry", willRetry(err, info.Attempt, info.RetryPolicy, ctx.Err()),
+		"outcome", outcome(err, ctxErr),
+		"will_retry", willRetry(err, info.Attempt, info.RetryPolicy, ctxErr),
 	)
-	if err != nil {
+	switch {
+	case err != nil:
 		a.w.logger.Warn("activity finished", append(done, "error", err.Error())...)
-	} else {
+	case errors.Is(ctxErr, context.DeadlineExceeded):
+		// Temporal discards a result returned after the deadline and counts
+		// the attempt as timed out.
+		a.w.logger.Warn("activity finished", append(done, "error", "returned after its deadline")...)
+	default:
 		a.w.logger.Info("activity finished", done...)
 	}
 	return result, err
+}
+
+// errPanicked stands for a panic on the attempt's line.
+var errPanicked = errors.New(`panicked; see the SDK's "Activity panic." line for the value and stack`)
+
+// queueFields is how long the attempt waited to be picked up. Temporal's
+// ScheduledTime is when the activity was first scheduled, not the current
+// attempt, and the SDK does not give an interceptor the current attempt's.
+// So only a first attempt's gap is queue time; a later attempt's also holds
+// the earlier attempts and the retry backoff, and is named for what it is.
+func queueFields(info activity.Info) []any {
+	if info.ScheduledTime.IsZero() || info.StartedTime.IsZero() {
+		return nil
+	}
+	gap := info.StartedTime.Sub(info.ScheduledTime).Milliseconds()
+	if info.Attempt <= 1 {
+		return []any{"schedule_to_start_ms", gap}
+	}
+	return []any{"since_first_scheduled_ms", gap}
 }
 
 // performanceFromWorkflow reads the performance ID out of a performance's
@@ -138,10 +183,12 @@ func performanceFromWorkflow(workflowID string) string {
 // error: a deadline there is the activity's timeout.
 func outcome(err, ctxErr error) string {
 	switch {
+	case errors.Is(ctxErr, context.DeadlineExceeded):
+		// Even with no error: a result returned after the deadline is
+		// discarded, and the attempt is a timeout.
+		return "timeout"
 	case err == nil:
 		return "ok"
-	case errors.Is(ctxErr, context.DeadlineExceeded):
-		return "timeout"
 	case errors.Is(ctxErr, context.Canceled):
 		return "canceled"
 	default:
@@ -154,6 +201,9 @@ func outcome(err, ctxErr error) string {
 // error types. Temporal has the last word, and a ScheduleToClose limit can
 // still end the retries sooner.
 func willRetry(err error, attempt int32, policy *temporal.RetryPolicy, ctxErr error) bool {
+	if err == nil && errors.Is(ctxErr, context.DeadlineExceeded) {
+		err = ctxErr // a late result is a timeout, retried like one
+	}
 	if err == nil || errors.Is(ctxErr, context.Canceled) {
 		return false
 	}
@@ -179,10 +229,14 @@ func timed(ctx context.Context, logger *slog.Logger, now func() time.Time, msg s
 	start := now()
 	err := call()
 	fields := append(slices.Clone(Fields(ctx)), extra...)
-	fields = append(fields, "duration_ms", now().Sub(start).Milliseconds(), "outcome", outcome(err, ctx.Err()))
-	if err != nil {
+	ended := outcome(err, ctx.Err())
+	fields = append(fields, "duration_ms", now().Sub(start).Milliseconds(), "outcome", ended)
+	switch {
+	case err != nil:
 		logger.Warn(msg, append(fields, "error", err.Error())...)
-	} else {
+	case ended != "ok":
+		logger.Warn(msg, fields...)
+	default:
 		logger.Info(msg, fields...)
 	}
 	return err

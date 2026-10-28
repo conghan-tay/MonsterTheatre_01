@@ -17,6 +17,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/interceptor"
 	"go.temporal.io/sdk/worker"
 	sdkworkflow "go.temporal.io/sdk/workflow"
 
@@ -32,6 +33,7 @@ import (
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/providers/fake"
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/providers/wavespeed"
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/rooms"
+	"github.com/conghan-tay/MonsterTheatre_01/server/internal/telemetry"
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/temporalclient"
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/workflow"
 )
@@ -64,7 +66,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	}
 	defer temporalClient.Close()
 
-	w := worker.New(temporalClient, cfg.TemporalTaskQueue, worker.Options{})
+	w := worker.New(temporalClient, cfg.TemporalTaskQueue, workerOptions(logger))
 	w.RegisterWorkflowWithOptions(workflow.Performance, sdkworkflow.RegisterOptions{Name: performance.WorkflowName})
 	w.RegisterWorkflowWithOptions(workflow.PrepareLine, sdkworkflow.RegisterOptions{Name: workflow.PrepareLineName})
 	w.RegisterActivity(acts)
@@ -170,10 +172,28 @@ func buildActivities(ctx context.Context, cfg config.Config, logger *slog.Logger
 		LineLimit:           cfg.MaxLineLength,
 		Now:                 time.Now,
 	}
+	instrument(acts, cfg, logger)
 	return acts, backends{database: database, objectStore: objectStore}, func() {
 		redisClient.Close()
 		pool.Close()
 	}, nil
+}
+
+// workerOptions log every activity attempt the worker runs
+// (docs/decisions.md, D060).
+func workerOptions(logger *slog.Logger) worker.Options {
+	return worker.Options{Interceptors: []interceptor.WorkerInterceptor{telemetry.NewInterceptor(logger)}}
+}
+
+// instrument times every call the activities make to a provider or the
+// object store, and has them log each update they publish
+// (docs/decisions.md, D060).
+func instrument(acts *activities.Activities, cfg config.Config, logger *slog.Logger) {
+	acts.Dialogue = telemetry.Dialogue{Next: acts.Dialogue, Provider: cfg.LLMProvider, Logger: logger}
+	acts.Speech = telemetry.Speech{Next: acts.Speech, Provider: cfg.TTSProvider, Logger: logger}
+	acts.LipSync = telemetry.LipSync{Next: acts.LipSync, Provider: cfg.LipSyncProvider, Logger: logger}
+	acts.Objects = telemetry.Store{Next: acts.Objects, Logger: logger}
+	acts.Logger = logger
 }
 
 // buildProviders chooses the language model and the speech service.

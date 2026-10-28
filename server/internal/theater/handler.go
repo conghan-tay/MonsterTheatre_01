@@ -3,9 +3,11 @@ package theater
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -121,7 +123,9 @@ func (s *Service) ServeWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	roomID := viewer.Room.ID
-	log := s.Logger.With("room_id", roomID, "viewer_id", viewer.ID, "director", viewer.AsDirector)
+	connID := uuid.NewString()
+	log := s.Logger.With("room_id", roomID, "viewer_id", viewer.ID, "director", viewer.AsDirector,
+		"conn_id", connID, "request_id", httpapi.RequestID(r.Context()))
 
 	if !viewer.AsDirector {
 		// Only for inspection, so a failure does not turn the browser away.
@@ -143,7 +147,7 @@ func (s *Service) ServeWS(w http.ResponseWriter, r *http.Request) {
 
 	var closeOnce sync.Once
 	c := &conn{
-		id:       uuid.NewString(),
+		id:       connID,
 		send:     make(chan outbound, sendBuffer),
 		replies:  make(chan []byte),
 		resync:   make(chan struct{}, 1),
@@ -161,7 +165,15 @@ func (s *Service) ServeWS(w http.ResponseWriter, r *http.Request) {
 	}
 	defer s.Hub.remove(roomID, c)
 	log.Info("websocket connected")
-	defer log.Info("websocket disconnected")
+	connectedAt := time.Now()
+	var readErr atomic.Pointer[error]
+	writeEnd := "the connection ended"
+	defer func() {
+		log.Info("websocket disconnected",
+			"reason", disconnectReason(c, readErr.Load(), writeEnd),
+			"last_revision_sent", c.lastSent.Load(),
+			"duration_ms", time.Since(connectedAt).Milliseconds())
+	}()
 
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
@@ -186,6 +198,7 @@ func (s *Service) ServeWS(w http.ResponseWriter, r *http.Request) {
 		for {
 			_, data, err := ws.Read(ctx)
 			if err != nil {
+				readErr.Store(&err)
 				return
 			}
 			reply := in.handle(ctx, data)
@@ -201,7 +214,21 @@ func (s *Service) ServeWS(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	s.writeLoop(ctx, ws, v, revision)
+	writeEnd = s.writeLoop(ctx, ws, v, revision)
+}
+
+// disconnectReason says why a connection ended, for its last log line: the
+// hub dropped it, the browser closed it or went away, or writing failed.
+func disconnectReason(c *conn, readErr *error, writeEnd string) string {
+	switch {
+	case c.dropped.Load():
+		return "too far behind"
+	case readErr != nil && websocket.CloseStatus(*readErr) != -1:
+		return fmt.Sprintf("browser closed (%d)", websocket.CloseStatus(*readErr))
+	case readErr != nil && !errors.Is(*readErr, context.Canceled):
+		return "read failed: " + (*readErr).Error()
+	}
+	return writeEnd
 }
 
 // AudienceChanged is called by the audience service when someone is
@@ -262,6 +289,7 @@ func (s *Service) sendSnapshot(ctx context.Context, ws *websocket.Conn, v *viewi
 	if err := write(ctx, ws, snapshotMessage(revision, state)); err != nil {
 		return 0, false
 	}
+	v.conn.lastSent.Store(int64(revision))
 	return revision, true
 }
 
@@ -370,7 +398,7 @@ func (s *Service) dead(ctx context.Context, v *viewing, p performance.Performanc
 // first snapshot is taken after the connection joins the room: while this
 // loop is taking the snapshot it writes nothing, so every update published
 // meanwhile is queued behind it and then sent or dropped by its revision.
-func (s *Service) writeLoop(ctx context.Context, ws *websocket.Conn, v *viewing, snapshotRevision int) {
+func (s *Service) writeLoop(ctx context.Context, ws *websocket.Conn, v *viewing, snapshotRevision int) string {
 	c := v.conn
 	interval, timeout := s.PingInterval, s.PongTimeout
 	if interval <= 0 {
@@ -385,22 +413,26 @@ func (s *Service) writeLoop(ctx context.Context, ws *websocket.Conn, v *viewing,
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			return "the connection ended"
 		case update := <-c.send:
 			if !update.always && update.revision <= snapshotRevision {
 				continue
 			}
 			if err := write(ctx, ws, update.data); err != nil {
-				return
+				return "write failed: " + err.Error()
+			}
+			if update.revision > 0 {
+				c.lastSent.Store(int64(update.revision))
 			}
 		case reply := <-c.replies:
 			if err := write(ctx, ws, reply); err != nil {
-				return
+				return "write failed: " + err.Error()
 			}
 		case <-c.resync:
+			v.log.Info("resync requested", "last_revision_sent", c.lastSent.Load())
 			revision, ok := s.sendSnapshot(ctx, ws, v)
 			if !ok {
-				return
+				return "the snapshot could not be sent"
 			}
 			snapshotRevision = revision
 		case <-ticker.C:
@@ -408,7 +440,7 @@ func (s *Service) writeLoop(ctx context.Context, ws *websocket.Conn, v *viewing,
 			err := ws.Ping(pingCtx)
 			cancel()
 			if err != nil {
-				return // no pong: the browser is gone
+				return "no pong" // the browser is gone
 			}
 		}
 	}

@@ -19,6 +19,7 @@ import (
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/config"
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/db"
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/health"
+	"github.com/conghan-tay/MonsterTheatre_01/server/internal/httpapi"
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/logging"
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/objectstore"
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/performance"
@@ -41,6 +42,9 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	if cfg.StallAfter <= 0 {
+		return errors.New(`STALL_AFTER must be a positive duration such as "90s"`)
+	}
 	// Checked first, so a missing secret stops the server before it listens.
 	shareLinks, err := rooms.NewShareLinks(cfg.ShareLinkSecret, cfg.PublicBaseURL)
 	if err != nil {
@@ -76,6 +80,10 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	}
 	defer temporalClient.Close()
 
+	// The reader of the two streams is made here so /healthz can ask it
+	// how it is doing; it is given the hub and started below.
+	reader := &theater.StreamReader{Redis: redisClient, Logger: logger}
+
 	mux := http.NewServeMux()
 	// What the load balancer asks. It checks nothing, on purpose.
 	mux.Handle("GET /livez", health.Live())
@@ -87,6 +95,11 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		health.Check{Name: "temporal", Run: func(ctx context.Context) error {
 			_, err := temporalClient.CheckHealth(ctx, &client.CheckHealthRequest{})
 			return err
+		}},
+		// Whether this server is still reading what the worker publishes
+		// (docs/decisions.md, D061). The load balancer does not ask.
+		health.Check{Name: "stream", Run: func(context.Context) error {
+			return reader.Healthy(time.Now())
 		}},
 	))
 
@@ -150,6 +163,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 
 	// The room's live connection, for the same people who may read the room.
 	hub := theater.NewHub()
+	hub.Logger = logger
 	theaterService := &theater.Service{
 		Rooms:        roomService,
 		Audience:     audienceService,
@@ -169,14 +183,21 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	// Updates the worker publishes are read from Redis here and forwarded to
 	// each room's connections, from startup until the process stops.
 	// Notices, the servers' own news for one another, arrive the same way.
-	go (&theater.StreamReader{Redis: redisClient, Hub: hub, Notices: theaterService, Logger: logger}).Run(ctx)
+	// The stall watcher reports a running performance whose updates stop
+	// arriving here, and whether the reader was working (D061).
+	stalls := &theater.StallWatcher{
+		After: cfg.StallAfter, Logger: logger, Now: time.Now, Reader: reader, Connections: hub.Count,
+	}
+	reader.Hub, reader.Notices, reader.Stalls = hub, theaterService, stalls
+	go reader.Run(ctx)
+	go stalls.Run(ctx)
 	mux.HandleFunc("GET /api/v1/rooms/{roomId}/ws", theaterService.ServeWS)
 	// Open to anyone holding a valid share link.
 	mux.HandleFunc("POST /api/v1/audience-sessions", audienceService.Join)
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           mux,
+		Handler:           httpapi.Logged(logger, mux),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

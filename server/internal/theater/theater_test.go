@@ -520,12 +520,15 @@ type broadcast struct {
 type recordingHub struct {
 	mu   sync.Mutex
 	sent []broadcast
+	// connections and dropped are what Broadcast reports.
+	connections, dropped int
 }
 
-func (r *recordingHub) Broadcast(roomID string, revision int, msg []byte) {
+func (r *recordingHub) Broadcast(roomID string, revision int, msg []byte) (int, int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.sent = append(r.sent, broadcast{roomID, revision, string(msg)})
+	return r.connections, r.dropped
 }
 
 func (r *recordingHub) all() []broadcast {

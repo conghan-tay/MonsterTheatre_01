@@ -162,3 +162,37 @@ func TestLipSyncResultOfAnUnknownVideoIsAnError(t *testing.T) {
 	_, err := (&LipSync{}).Result(context.Background(), "not-a-fake-id")
 	require.Error(t, err)
 }
+
+func TestAScriptedDelaySlowsThatOperationAndTurnOnly(t *testing.T) {
+	scripts := scriptsWith(t, "room-1", `{"delays":[{"op":"choices","turn":2,"ms":300},{"op":"speech","turn":1,"ms":300}]}`)
+	d, s := Dialogue{Scripts: scripts}, Speech{Scripts: scripts}
+	ctx := context.Background()
+
+	took := func(fn func() error) time.Duration {
+		start := time.Now()
+		require.NoError(t, fn())
+		return time.Since(start)
+	}
+	require.GreaterOrEqual(t, took(func() error {
+		_, err := d.GenerateChoices(ctx, providers.ChoicesRequest{RoomID: "room-1", Turn: 2, Attempt: 1})
+		return err
+	}), 300*time.Millisecond)
+	require.Less(t, took(func() error {
+		_, err := d.GenerateChoices(ctx, providers.ChoicesRequest{RoomID: "room-1", Turn: 1, Attempt: 1})
+		return err
+	}), 200*time.Millisecond, "another turn is not slowed")
+	require.GreaterOrEqual(t, took(func() error {
+		_, err := s.Synthesize(ctx, providers.SpeechRequest{RoomID: "room-1", Turn: 1, Attempt: 1})
+		return err
+	}), 300*time.Millisecond)
+}
+
+func TestADelayEndsWhenTheCallIsCancelled(t *testing.T) {
+	scripts := scriptsWith(t, "room-1", `{"delays":[{"op":"tags","turn":1,"ms":60000}]}`)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := Dialogue{Scripts: scripts}.EnhanceTags(ctx, providers.TagsRequest{RoomID: "room-1", Turn: 1, Attempt: 1, Text: "Hi."})
+	require.ErrorIs(t, err, context.DeadlineExceeded, "like a real call that timed out")
+	require.Less(t, time.Since(start), 2*time.Second)
+}

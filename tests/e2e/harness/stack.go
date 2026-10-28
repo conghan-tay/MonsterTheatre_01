@@ -72,6 +72,7 @@ type Stack struct {
 	server          *process
 	secondServer    *process
 	worker          *process
+	redisProxy      *proxy
 }
 
 // Start brings the whole stack up. On failure it tears down whatever it
@@ -204,6 +205,10 @@ func StartWith(ctx context.Context, opts Options) (stack *Stack, err error) {
 		// so the test of that failure takes seconds and not minutes.
 		"CHOICES_RETRY_WINDOW": "4s",
 		"PREMIERE_COUNTDOWN":   "1s",
+		// How long a running performance may go without an update before a
+		// server logs it as stalled. Short, so the telemetry tests can see
+		// one in seconds; every other test only gains a log line.
+		"STALL_AFTER": "1s",
 	})
 
 	if err := s.build(ctx); err != nil {
@@ -221,8 +226,15 @@ func StartWith(ctx context.Context, opts Options) (stack *Stack, err error) {
 		return nil, err
 	}
 	s.SecondBaseURL = fmt.Sprintf("http://127.0.0.1:%d", secondPort)
+	// The second server reaches Redis through a proxy that a test can cut,
+	// to break that server's stream reader alone (CutSecondServerRedis).
+	if s.redisProxy, err = startProxy("localhost:6379"); err != nil {
+		return nil, err
+	}
 	// A later entry overrides an earlier one with the same name.
-	secondEnv := append(append([]string{}, s.env...), fmt.Sprintf("HTTP_ADDR=127.0.0.1:%d", secondPort))
+	secondEnv := append(append([]string{}, s.env...),
+		fmt.Sprintf("HTTP_ADDR=127.0.0.1:%d", secondPort),
+		fmt.Sprintf("REDIS_URL=redis://%s/1", s.redisProxy.addr()))
 	if s.secondServer, err = startProcess("server-2", s.LogDir, secondEnv, s.bin("server")); err != nil {
 		return nil, err
 	}
@@ -267,6 +279,7 @@ func (s *Stack) Stop() {
 	s.worker.kill()
 	s.server.kill()
 	s.secondServer.kill()
+	s.redisProxy.close()
 	s.temporal.kill()
 	if s.startedCompose {
 		cmd := exec.Command("docker", "compose", "stop")

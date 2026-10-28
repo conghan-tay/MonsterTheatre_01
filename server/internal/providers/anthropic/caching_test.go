@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/providers"
+	"github.com/conghan-tay/MonsterTheatre_01/server/internal/telemetry"
 )
 
 // withUsage is a Messages API response with the given usage figures.
@@ -352,4 +353,22 @@ func TestLoggedDollarsAreRoundedSoTheyReadCleanly(t *testing.T) {
 	for _, field := range []string{"cost_usd", "cost_without_cache_usd", "room_cost_usd", "room_cost_without_cache_usd"} {
 		require.Equal(t, 0.004296, line[field], field)
 	}
+}
+
+func TestACallInsideAnActivityCarriesItsWorkflowAndActivityIDs(t *testing.T) {
+	a := &api{response: withUsage(`{"line1":"a","line2":"b","line3":"c"}`, "end_turn", "claude-sonnet-5-5", 300, 0, 1000, 500)}
+	m, buf := loggedModel(t, a)
+	ctx := telemetry.WithFields(context.Background(), []any{
+		"workflow_id", "performance/p-1", "run_id", "run-1", "activity_type", "GenerateChoices",
+		"activity_id", "5", "attempt", 1, "room_id", "room-1", "turn", 3,
+	})
+	_, err := m.GenerateChoices(ctx, choicesRequest)
+	require.NoError(t, err)
+
+	line := logged(buf)[0]
+	require.Equal(t, "performance/p-1", line["workflow_id"])
+	require.Equal(t, "run-1", line["run_id"])
+	require.Equal(t, "5", line["activity_id"])
+	require.Equal(t, "room-1", line["room_id"])
+	require.Equal(t, 1, strings.Count(buf.String(), `"room_id"`), "the room is logged once, not twice")
 }

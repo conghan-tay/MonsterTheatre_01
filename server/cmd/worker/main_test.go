@@ -6,10 +6,13 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/conghan-tay/MonsterTheatre_01/server/internal/activities"
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/config"
+	"github.com/conghan-tay/MonsterTheatre_01/server/internal/objectstore"
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/providers/anthropic"
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/providers/fake"
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/providers/wavespeed"
+	"github.com/conghan-tay/MonsterTheatre_01/server/internal/telemetry"
 )
 
 func TestLipSyncIsTheStandInUnlessWaveSpeedIsAskedFor(t *testing.T) {
@@ -67,4 +70,28 @@ func TestTheClaudeAdapterIsGivenTheCachingSettingAndTheLogger(t *testing.T) {
 		require.Equal(t, caching, m.Caching)
 		require.Same(t, logger, m.Logger)
 	}
+}
+
+func TestEveryProviderAndTheStoreAreTimedAndTheActivitiesLogged(t *testing.T) {
+	logger := slog.New(slog.DiscardHandler)
+	acts := &activities.Activities{
+		Dialogue: fake.Dialogue{}, Speech: fake.Speech{}, LipSync: &fake.LipSync{},
+	}
+	store, err := objectstore.NewFS(t.TempDir())
+	require.NoError(t, err)
+	acts.Objects = store
+	instrument(acts, config.Config{LLMProvider: "fake", TTSProvider: "fake", LipSyncProvider: "fake"}, logger)
+
+	d, ok := acts.Dialogue.(telemetry.Dialogue)
+	require.True(t, ok, "the language model is timed")
+	require.Equal(t, "fake", d.Provider)
+	_, ok = acts.Speech.(telemetry.Speech)
+	require.True(t, ok, "speech is timed")
+	_, ok = acts.LipSync.(telemetry.LipSync)
+	require.True(t, ok, "lip sync is timed")
+	_, ok = acts.Objects.(telemetry.Store)
+	require.True(t, ok, "uploads are timed")
+	require.Same(t, logger, acts.Logger, "published updates are logged")
+
+	require.Len(t, workerOptions(logger).Interceptors, 1, "every activity attempt is logged")
 }

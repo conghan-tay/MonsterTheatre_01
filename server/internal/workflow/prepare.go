@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"go.temporal.io/sdk/log"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
@@ -96,7 +97,7 @@ func PrepareLine(ctx workflow.Context, in LineInput) (PreparedLine, error) {
 	}).Get(ctx, &tagged)
 	tagsApplied := err == nil
 	if err != nil {
-		workflow.GetLogger(ctx).Warn("tagging failed; speaking the line without tags", "turn", in.Turn, "error", err)
+		logger(ctx, in.RoomID, in.PerformanceID).Warn("tagging failed; speaking the line without tags", "turn", in.Turn, "error", err)
 		tagged = in.Text
 	}
 
@@ -118,7 +119,7 @@ func PrepareLine(ctx workflow.Context, in LineInput) (PreparedLine, error) {
 // could not be made.
 func lipSync(ctx workflow.Context, in LineInput) string {
 	var a *activities.Activities
-	log := workflow.GetLogger(ctx)
+	log := logger(ctx, in.RoomID, in.PerformanceID)
 
 	var uploads activities.LipSyncUploads
 	err := workflow.ExecuteActivity(workflow.WithActivityOptions(ctx, uploadOptions), a.UploadLipSyncInputs, activities.LipSyncInputs{
@@ -145,4 +146,11 @@ func lipSync(ctx workflow.Context, in LineInput) string {
 		return ""
 	}
 	return videoKey
+}
+
+// logger is the workflow's logger with the room and the performance named
+// on every line (docs/decisions.md, D060). Temporal adds the workflow and
+// run IDs, and leaves out lines written while history is replayed.
+func logger(ctx workflow.Context, roomID, performanceID string) log.Logger {
+	return log.With(workflow.GetLogger(ctx), "room_id", roomID, "performance_id", performanceID)
 }

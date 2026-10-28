@@ -19,6 +19,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go/option"
 
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/providers"
+	"github.com/conghan-tay/MonsterTheatre_01/server/internal/telemetry"
 )
 
 // DefaultModel is used when LLM_MODEL is not set.
@@ -171,7 +172,7 @@ func (m *Model) ask(ctx context.Context, c call, system string, user []string, c
 
 	// Logged before the answer is judged: a refused, cut-off, or unusable
 	// answer was paid for all the same.
-	m.logUsage(c, string(resp.Model), resp.Usage)
+	m.logUsage(ctx, c, string(resp.Model), resp.Usage)
 
 	// Checked before the content is read: a refusal or a cut-off answer has
 	// content, but not an answer. Both count as a failed attempt.
@@ -195,8 +196,9 @@ func (m *Model) ask(ctx context.Context, c call, system string, user []string, c
 }
 
 // logUsage writes one call's tokens and cost, with its room's running
-// totals.
-func (m *Model) logUsage(c call, model string, usage sdk.Usage) {
+// totals. Inside an activity it also carries the workflow's and activity's
+// IDs (docs/decisions.md, D060).
+func (m *Model) logUsage(ctx context.Context, c call, model string, usage sdk.Usage) {
 	cost, withoutCache, priced := price(model, usage.InputTokens, usage.CacheCreationInputTokens, usage.CacheReadInputTokens, usage.OutputTokens)
 	total := m.totals.add(c.room, cost, withoutCache)
 	// Dollars are rounded to a ten-millionth, a thousandth of a cent, so the
@@ -208,7 +210,7 @@ func (m *Model) logUsage(c call, model string, usage sdk.Usage) {
 		}
 		return round(v)
 	}
-	m.Logger.Info("claude call",
+	m.Logger.Info("claude call", append(telemetry.ActivityIDs(ctx),
 		"kind", c.kind, "room_id", c.room, "turn", c.turn, "attempt", c.attempt,
 		"model", model, "caching", m.Caching,
 		"input_tokens", usage.InputTokens,
@@ -217,7 +219,7 @@ func (m *Model) logUsage(c call, model string, usage sdk.Usage) {
 		"output_tokens", usage.OutputTokens,
 		"cost_usd", dollars(cost), "cost_without_cache_usd", dollars(withoutCache),
 		"room_calls", total.calls, "room_cost_usd", round(total.cost), "room_cost_without_cache_usd", round(total.withoutCache),
-	)
+	)...)
 }
 
 // escape keeps text written by people, or lines they chose, from closing

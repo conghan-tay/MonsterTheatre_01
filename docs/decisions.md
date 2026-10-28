@@ -55,6 +55,8 @@ The log below is kept in full, including entries that were later replaced. These
 | D057 | Prompt caching on the choices call (system prompt and room context), on unless `LLM_PROMPT_CACHING=false`; every Claude call's tokens and cost logged, with the room's running total |
 | D058 | Text from people goes inside tags with `<` and `>` escaped, and both system prompts say tagged text is story material, never instructions; no extra model calls |
 | D059 | The injection eval's report shows, for each case, the injected text and one answer on each prompt: the first run that held the canary, else the first answer |
+| D060 | Telemetry is named JSON log lines with the same IDs throughout: each activity attempt, provider call, upload, published and broadcast update, request, and connection, with durations and outcomes |
+| D061 | Each server watches for running performances whose updates stop arriving, and says whether its own stream reader was working; `/healthz` checks the reader, and the load balancer still does not |
 
 Superseded or withdrawn: D002, D004, D006, D010, D011, D012, D014, D016, D019, D020, D021, and the data-lake half of D003.
 
@@ -1210,3 +1212,89 @@ Each answer is labelled with what happened in its run: canary found, resisted, r
 - **No extra calls:** the eval keeps text it was already receiving.
 
 **Status:** accepted — requested by the user in the plan approved on 2026-10-21.
+
+## D060 — Telemetry as named log lines, with the same IDs throughout
+
+**Decision:** The server and worker write JSON log lines with a fixed `msg` for each event that tells where a performance is or what stopped it. They are listed in docs/system-design.md, section 8:
+- each activity attempt starting and finishing;
+- each provider call and upload;
+- each update published and broadcast;
+- each HTTP request;
+- each connection's end, and each one dropped;
+- the stream reader failing and recovering.
+
+Each line carries whichever IDs it knows: room, performance, turn, workflow, run, activity type and ID, attempt, and on the server the request and connection IDs. Durations are in milliseconds. A published update and its broadcast carry the same Redis stream ID.
+
+**Context / requirement:** The user reported that "the performance froze" could mean slow generation, retries, queued work, or browsers no longer being updated, and that low CPU and healthy endpoints can't tell these apart. Before this, most activities logged nothing. The Claude line had no workflow fields, nothing had a duration, and the server logged nothing per request.
+
+**Chosen approach:**
+- **One activity interceptor** (`server/internal/telemetry`) writes the attempt lines from Temporal's activity info.
+  - Its `schedule_to_start_ms` is how queued work shows.
+  - It reads the room, performance, and turn from the activity's input (a `LogFields` method on each input type), or the performance from the workflow ID.
+  - It puts the same fields on the context, for the lines logged inside the activity.
+- **Thin wrappers** around the provider interfaces and the object store time each call. The provider packages are unchanged.
+- **The workflow's own lines** gain the room and performance; Temporal adds the workflow and run.
+- **On the server:**
+  - A middleware gives each request an ID, kept from `X-Request-Id` if it is short and plain.
+  - The hub reports how many connections each update reached and how many it dropped.
+  - Each connection remembers the last revision it was sent and why it ended.
+- **The fake providers** can delay an operation per turn, to show a slow provider without a paid call.
+
+**Why it fits:** It uses the logger every process already has, adds no library or collector, and the lines are readable locally with `jq` and countable on AWS with CloudWatch metric filters. The user chose this over OpenTelemetry and CloudWatch's Embedded Metric Format on 2026-10-24.
+
+**Alternatives considered:**
+- **OpenTelemetry traces and metrics:** a collector beside each Fargate task, and a backend to send them to.
+- **Embedded Metric Format:** ties the log format to CloudWatch.
+- **Logging from inside each provider package:** three places to keep alike, and the IDs to pass to each.
+
+**Tradeoffs and consequences:**
+- **More lines:** about 80 more worker lines per run, and one per HTTP request. The liveness check is logged only at debug, because the load balancer asks every 30 s.
+- **`will_retry` is the worker's reading** of the retry policy's attempt limit and non-retryable error types. A `ScheduleToClose` window can end the retries sooner.
+- **The provider wrappers** time the call as the activity made it, including the stand-ins. ElevenLabs and WaveSpeed costs are still not logged (D057).
+- **Nothing alarms on these lines yet;** that is the next piece of work.
+- **2026-10-28, after a review of PR #24:**
+  - **Retries:** `schedule_to_start_ms` is now logged on first attempts only. Temporal's `ScheduledTime` is when the activity was first scheduled, so a retry's gap included its earlier attempts and backoff (1 s and 3 s in the upload simulation). The SDK doesn't give an interceptor the current attempt's scheduling time. A retry carries `since_first_scheduled_ms` instead.
+  - **Late returns:** an attempt that returns after its deadline is logged as a `timeout` with a warning, as Temporal counts it; before, it read `ok`.
+  - **Panics:** a panicking attempt now writes `activity finished` with `outcome: panic`. It is not recovered: Temporal's own "Activity panic." line, its stack, and the retry are as before.
+
+**Status:** accepted — requested by the user in the plan approved on 2026-10-24.
+
+## D061 — A stall watcher on each server, and a stream check in `/healthz`
+
+**Decision:** Each server tracks every running performance whose updates it has read. When one goes without an update for longer than expected, it logs `performance stalled` once, and `performance resumed` when the next update arrives. "Longer than expected" depends on the phase:
+- **voting:** `STALL_AFTER` past the round's deadline;
+- **waiting for a lip-sync premiere:** 16 minutes;
+- **anything else:** `STALL_AFTER`, which defaults to 90 s.
+
+The line says whether the server's own stream reader was getting updates through at that moment (`reader_ok`), and how many connections in the room were waiting. `/healthz` gains a `stream` check, which fails after 10 s of failed reads or 15 s without a finished read. The load balancer still asks only `/livez`.
+
+**Context / requirement:** The same report as D060. A stall seen only in the browser can't be told from a run that stopped; a stall seen by the server can be, if the server also knows whether it was still reading.
+
+**Chosen approach:**
+- **The watcher is fed by the stream reader,** so it sees exactly what this server would have passed to browsers.
+- **`reader_ok` asks the reader without allowance** (`Reading`): any failing read means this server could not have seen the next update.
+- **`/healthz` allows 10 s** (`Healthy`), so a blip of Redis does not show.
+- **The watcher looks twice per limit,** at most every 5 s.
+- **Rooms are forgotten** at the premiere, on failure, or an hour after a stall.
+- **The thresholds are judgment calls:**
+  - 90 s is under the 2-minute choices retry window, on purpose: a run that is retrying is the freeze people see, and the attempt lines say why.
+  - 16 minutes is the lip-sync wait's 15 plus one.
+
+**Why it fits:** It needs no new store or process. Every server runs it on what it already reads, and two servers seeing the same stall, or only one, is itself the answer to "is it the run or the delivery".
+
+**Alternatives considered:**
+- **A watchdog in the workflow:** it would see the run but not the delivery, and it would change workflow code.
+- **A sweep of the database:** the row has no last-update time.
+- **Pointing the load balancer at `/healthz`:**
+  - It would replace a server whose reader was failing, but also every server at once whenever Redis blinked, closing every WebSocket.
+  - Left as it is; an alarm on the stall and reader lines is the next piece of work.
+
+**Tradeoffs and consequences:**
+- **What the watcher can't see:**
+  - It knows only rooms whose updates its server has read since it started.
+  - A run whose last update never reached the stream is reported once, then forgotten.
+- **What the stall line can't tell:**
+  - The provider calls and retries behind a stall; the worker's lines do.
+- **`STALL_AFTER` is a server setting.** The E2E stack sets it to 1 s, so every test there may add stall lines; only the telemetry tests read them.
+
+**Status:** accepted — requested by the user in the plan approved on 2026-10-24.

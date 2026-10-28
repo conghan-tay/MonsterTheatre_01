@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"time"
 
@@ -21,6 +22,7 @@ import (
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/performance"
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/providers"
 	"github.com/conghan-tay/MonsterTheatre_01/server/internal/rooms"
+	"github.com/conghan-tay/MonsterTheatre_01/server/internal/telemetry"
 )
 
 // streamMaxLen is roughly how many updates the stream keeps. Nothing reads
@@ -69,6 +71,9 @@ type Activities struct {
 	// "720p".
 	LipSyncResolution string
 	Now               func() time.Time
+	// Logger receives "update published" for each update added to the
+	// stream. Nil logs nothing.
+	Logger *slog.Logger
 }
 
 // Character is a character as the workflow needs it.
@@ -247,7 +252,7 @@ func (a *Activities) Publish(ctx context.Context, update performance.Update) err
 	if err != nil {
 		return temporal.NewNonRetryableApplicationError("encode update", "EncodeUpdate", err)
 	}
-	return a.Stream.XAdd(ctx, &redis.XAddArgs{
+	id, err := a.Stream.XAdd(ctx, &redis.XAddArgs{
 		Stream: performance.StreamKey,
 		MaxLen: streamMaxLen,
 		Approx: true,
@@ -256,7 +261,18 @@ func (a *Activities) Publish(ctx context.Context, update performance.Update) err
 			performance.StreamFieldRevision: strconv.Itoa(update.Revision),
 			performance.StreamFieldMessage:  message,
 		},
-	}).Err()
+	}).Result()
+	if err != nil {
+		return err
+	}
+	// The stream ID is what the server's "update broadcast" line carries,
+	// so the two can be matched (docs/decisions.md, D060).
+	if a.Logger != nil {
+		a.Logger.Info("update published", append(telemetry.ActivityIDs(ctx),
+			"room_id", update.RoomID, "revision", update.Revision, "phase", update.State.Phase,
+			"turn", update.State.Turn, "stream_id", id)...)
+	}
+	return nil
 }
 
 // CompleteInput is a finished performance.

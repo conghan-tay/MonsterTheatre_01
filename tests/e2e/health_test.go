@@ -29,7 +29,7 @@ func TestStackIsHealthy(t *testing.T) {
 	}
 	require.NoError(t, resp.Decode(&body))
 	require.Equal(t, "ok", body.Status)
-	require.Equal(t, map[string]string{"database": "ok", "redis": "ok", "temporal": "ok"}, body.Checks)
+	require.Equal(t, map[string]string{"database": "ok", "redis": "ok", "temporal": "ok", "stream": "ok"}, body.Checks)
 }
 
 func TestWorkerCanBeStoppedAndRestarted(t *testing.T) {
